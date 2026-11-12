@@ -206,3 +206,66 @@ fn to_precision(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::str(&conv::to_precision(n, p as usize)))
 }
 
+/// Formato en-US: separador de milhar e até 3 casas decimais.
+pub fn locale_format(n: f64, max_frac: usize) -> String {
+    if !n.is_finite() {
+        return if n.is_nan() { "NaN".into() } else if n > 0.0 { "∞".into() } else { "-∞".into() };
+    }
+    let s = conv::to_fixed(n.abs(), max_frac);
+    let (int, frac) = match s.split_once('.') {
+        Some((i, f)) => (i.to_string(), f.trim_end_matches('0').to_string()),
+        None => (s.clone(), String::new()),
+    };
+    let mut grouped = String::new();
+    for (i, ch) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(ch);
+    }
+    let sign = if n < 0.0 && (int != "0" || !frac.is_empty()) { "-" } else { "" };
+    if frac.is_empty() { format!("{sign}{grouped}") } else { format!("{sign}{grouped}.{frac}") }
+}
+
+fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = this_number(vm, a, "toLocaleString")?;
+    Ok(Value::str(&super::intl::number_to_locale_string(vm, n, &a.arg(0), &a.arg(1))?))
+}
+
+fn value_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Number(this_number(vm, a, "valueOf")?))
+}
+
+fn boolean_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let b = truthy(&a.arg(0));
+    match &a.new_target {
+        None => Ok(Value::Bool(b)),
+        Some(nt) => {
+            let def = vm.realm.boolean_proto.clone();
+            let proto = vm.proto_from_ctor(Some(nt), &def)?;
+            Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Boolean(b)))))
+        }
+    }
+}
+
+fn this_bool(vm: &mut Vm, a: &CallArgs) -> Result<bool, Value> {
+    match &a.this {
+        Value::Bool(b) => Ok(*b),
+        Value::Object(o) => match &o.borrow().kind {
+            Kind::Boolean(b) => Ok(*b),
+            _ => Err(vm.type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")),
+        },
+        _ => Err(vm.type_error("Boolean.prototype.valueOf requires that 'this' be a Boolean")),
+    }
+}
+
+fn bool_to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::str(if this_bool(vm, a)? { "true" } else { "false" }))
+}
+
+fn bool_value_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(this_bool(vm, a)?))
+}
+
+// ----------------------------------------------------------------- Math
+
