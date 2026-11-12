@@ -592,3 +592,41 @@ fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     }
 }
 
+fn trim(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "trim")?;
+    Ok(Value::String(JsStr::from_slice(trim_js(s.units()))))
+}
+
+fn trim_start(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "trimStart")?;
+    let u = s.units();
+    let start = u.iter().position(|&c| !is_js_space(c)).unwrap_or(u.len());
+    Ok(Value::String(JsStr::from_slice(&u[start..])))
+}
+
+fn trim_end(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "trimEnd")?;
+    let u = s.units();
+    let end = u.iter().rposition(|&c| !is_js_space(c)).map_or(0, |e| e + 1);
+    Ok(Value::String(JsStr::from_slice(&u[..end])))
+}
+
+/// match/matchAll/search: delegam para o RegExp (criando um se preciso).
+fn regexp_delegate(vm: &mut Vm, a: &CallArgs, sym: Sym, what: &str, flags: &str) -> Result<Value, Value> {
+    if a.this.is_nullish() {
+        return Err(vm.type_error(format!("String.prototype.{what} called on null or undefined")));
+    }
+    let r = a.arg(0);
+    if !r.is_nullish() {
+        let m = vm.get(&r, &PropKey::Sym(sym.clone()))?;
+        if !m.is_nullish() {
+            return vm.call(&m, r, vec![a.this.clone()]);
+        }
+    }
+    let s = vm.to_string(&a.this)?;
+    let src = if r.is_undefined() { JsStr::empty() } else { vm.to_string(&r)? };
+    let rx = crate::builtins::regexp::create(vm, src, JsStr::new(flags), None)?;
+    let m = vm.get(&rx, &PropKey::Sym(sym))?;
+    vm.call(&m, rx, vec![Value::String(s)])
+}
+
