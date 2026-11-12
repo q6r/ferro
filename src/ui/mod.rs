@@ -1905,3 +1905,65 @@ impl App {
 
     // ------------------------------------------------------------- quadro
 
+    /// Pinta a interface inteira no canvas (wp × hp pixels).
+    fn render_frame(&mut self, wp: u32, hp: u32) {
+        let s = self.scale;
+        let t = self.theme();
+        let geo = self.geo();
+        let mut canvas = std::mem::take(&mut self.canvas);
+        canvas.resize(wp as usize, hp as usize);
+        canvas.clear(t.frame);
+        let mut hits = Vec::new();
+        let scrollbar;
+        {
+            let mut p = Painter {
+                canvas: &mut canvas,
+                fonts: &self.fonts,
+                icons: &self.icons,
+                scale: s,
+                clip: None,
+            };
+            scrollbar = self.draw_content(&mut p, t, &geo, &mut hits);
+            if self.fullscreen.is_none() {
+                self.draw_chrome(&mut p, t, &geo, &mut hits);
+            }
+            self.draw_status(&mut p, t, &geo);
+            self.draw_find_bar(&mut p, t, &geo, &mut hits);
+            self.draw_toast(&mut p, t, &geo);
+            self.draw_select(&mut p, t, &geo, &mut hits);
+            self.draw_menu(&mut p, t, &mut hits);
+            self.draw_palette(&mut p, t, &mut hits);
+        }
+        self.canvas = canvas;
+        self.hits = hits;
+        self.scrollbar = scrollbar;
+    }
+
+    fn capture_now(&mut self, el: &ActiveEventLoop) {
+        let Some(c) = &self.capture else { return };
+        let (w, h, out) = (c.width as u32, c.height as u32, c.out.clone());
+        let (find, select_all, scroll) = (c.find.clone(), c.select_all, c.scroll);
+        if let Some(y) = scroll {
+            self.scroll_to(y);
+        }
+        if let Some(q) = find {
+            self.open_find();
+            self.tools.find.insert(&q);
+            self.refresh_find(true);
+        }
+        if select_all {
+            if let Some(frame) = self.tabs[self.active].frame.as_ref() {
+                self.tools.sync(&frame.items);
+            }
+            self.tools.select_all();
+            let text = self.tools.selected_text(&self.fonts);
+            eprintln!("[ferro] seleção: {} caracteres; começo: {:?}", text.chars().count(), text.chars().take(120).collect::<String>());
+        }
+        self.render_frame(w, h);
+        match self.canvas.save_png(&out) {
+            Ok(()) => eprintln!("[ferro] captura salva em {}", out.display()),
+            Err(e) => eprintln!("[ferro] erro ao salvar captura: {e}"),
+        }
+        el.exit();
+    }
+
