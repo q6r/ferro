@@ -400,3 +400,57 @@ impl Vm {
         r
     }
 
+    /// `new ctor(...args)`.
+    pub fn construct(&mut self, ctor: &ObjRef, args: Vec<Value>, new_target: &ObjRef) -> Result<Value, Value> {
+        enum C {
+            Closure(Rc<Closure>),
+            Native(NativeFn, bool),
+            Bound(ObjRef, Vec<Value>),
+            Proxy,
+            Not,
+        }
+        let c = match &ctor.borrow().kind {
+            Kind::Function(Func::Closure(c)) => C::Closure(c.clone()),
+            Kind::Function(Func::Native(n)) => C::Native(n.f, n.ctor),
+            Kind::Function(Func::Bound { target, args, .. }) => C::Bound(target.clone(), args.clone()),
+            Kind::Proxy { target: Some(_), .. } => C::Proxy,
+            _ => C::Not,
+        };
+        match c {
+            C::Proxy => self.proxy_construct(ctor, args, new_target),
+            C::Closure(c) if c.code.is_constructor() => {
+                if c.code.kind == crate::ast::FnKind::DerivedConstructor {
+                    return self.call_closure(&c, ctor, Value::Empty, args, Some(new_target));
+                }
+                let proto = self.proto_from_ctor(Some(new_target), &self.realm.object_proto.clone())?;
+                let obj = ObjRef::new(Object::new(Some(proto), Kind::Ordinary));
+                if let Some(fields) = &c.fields {
+                    self.call_obj(fields, Value::Object(obj.clone()), Vec::new())?;
+                }
+                let r = self.call_closure(&c, ctor, Value::Object(obj.clone()), args, Some(new_target))?;
+                Ok(match r {
+                    Value::Object(_) => r,
+                    _ => Value::Object(obj),
+                })
+            }
+            C::Native(f, true) => {
+                let mut ca = CallArgs {
+                    this: Value::Undefined,
+                    args,
+                    new_target: Some(new_target.clone()),
+                    callee: ctor.clone(),
+                };
+                f(self, &mut ca)
+            }
+            C::Bound(target, mut bargs) => {
+                bargs.extend(args);
+                let nt = if new_target.ptr_eq(ctor) { target.clone() } else { new_target.clone() };
+                self.construct(&target, bargs, &nt)
+            }
+            _ => {
+                let d = self.describe(&Value::Object(ctor.clone()));
+                Err(self.type_error(format!("{d} is not a constructor")))
+            }
+        }
+    }
+
