@@ -344,3 +344,84 @@ impl Media {
         self.players.get_mut(&el).unwrap()
     }
 
+    pub fn play(&mut self, el: NodeId) -> Vec<&'static str> {
+        let p = self.player(el);
+        let mut ev = Vec::new();
+        if p.ended {
+            p.ended = false;
+            p.base = 0.0;
+        }
+        if p.paused {
+            p.paused = false;
+            p.since = Instant::now();
+            ev.push("play");
+            if p.ready_state < 3 {
+                p.waiting = true;
+                ev.push("waiting");
+            } else {
+                ev.push("playing");
+            }
+        }
+        ev
+    }
+
+    pub fn pause(&mut self, el: NodeId) -> Vec<&'static str> {
+        let p = self.player(el);
+        if p.paused {
+            return Vec::new();
+        }
+        p.freeze();
+        p.paused = true;
+        let vol = if p.muted { 0.0 } else { p.volume as f32 };
+        p.pipeline.sync_clock(p.base, p.rate, false, vol);
+        vec!["timeupdate", "pause"]
+    }
+
+    pub fn seek(&mut self, el: NodeId, t: f64) -> Vec<&'static str> {
+        let t = t.max(0.0);
+        let p = self.player(el);
+        p.pipeline.seek(t);
+        p.base = t;
+        p.since = Instant::now();
+        p.seeking = true;
+        p.ended = false;
+        vec!["seeking"]
+    }
+
+    /// (codec, lista de amostras) da trilha de vídeo e da de áudio de uma fonte.
+    #[allow(clippy::type_complexity)]
+    fn tracks_of(&self, source: u32) -> (Option<(Codec, SharedSamples)>, Option<(Codec, SharedSamples)>) {
+        let (mut v, mut a) = (None, None);
+        let Some(ms) = self.sources.get(&source) else { return (None, None) };
+        for id in &ms.buffers {
+            let Some(sb) = self.buffers.get(id) else { continue };
+            for t in &sb.demux.tracks {
+                let Some(list) = sb.samples.get(&t.id) else { continue };
+                if t.is_video() {
+                    v.get_or_insert((t.codec.clone(), list.clone()));
+                } else if matches!(t.codec, Codec::Aac { .. }) {
+                    a.get_or_insert((t.codec.clone(), list.clone()));
+                }
+            }
+        }
+        (v, a)
+    }
+
+    /// Liga as trilhas aos decodificadores, acerta o relógio e pega o quadro atual.
+    fn advance_pipelines(&mut self) {
+        let ids: Vec<NodeId> = self.players.keys().copied().collect();
+        for el in ids {
+            let Some(source) = self.players[&el].source else { continue };
+            let (video, audio) = self.tracks_of(source);
+            let p = self.players.get_mut(&el).unwrap();
+            let t = p.current_time();
+            let playing = !p.paused && !p.waiting && !p.seeking && !p.ended;
+            let volume = if p.muted { 0.0 } else { p.volume as f32 };
+            p.pipeline.set_sources(video.as_ref().map(|(c, l)| (c, l)), audio.as_ref().map(|(c, l)| (c, l)));
+            p.pipeline.sync_clock(t, p.rate, playing, volume);
+            if p.pipeline.present() {
+                self.new_frames.insert(el);
+            }
+        }
+    }
+
