@@ -1086,3 +1086,43 @@ pub fn format_number_parts(o: &NumOpts, x: f64) -> Vec<(&'static str, String)> {
     parts
 }
 
+fn compact_suffix(d: &LocaleData, o: &NumOpts, mag: usize, v: f64) -> String {
+    let i = mag.clamp(1, 4) - 1;
+    if o.compact_display == "long" {
+        let (one, other) = d.compact_long[i];
+        if plural_cardinal(d.lang, v) == "one" { one.into() } else { other.into() }
+    } else {
+        d.compact_short[i].into()
+    }
+}
+
+fn unit_text(unit: &str, display: &str, v: f64) -> (String, bool) {
+    let long = display == "long";
+    let one = v.abs() == 1.0;
+    let (short, long_one, long_other, space): (&str, &str, &str, bool) = match unit {
+        "percent" => ("%", "percent", "percent", false),
+        "kilometer" => ("km", "kilometer", "kilometers", true),
+        "meter" => ("m", "meter", "meters", true),
+        "centimeter" => ("cm", "centimeter", "centimeters", true),
+        "kilogram" => ("kg", "kilogram", "kilograms", true),
+        "gram" => ("g", "gram", "grams", true),
+        "byte" => ("byte", "byte", "bytes", true),
+        "kilobyte" => ("kB", "kilobyte", "kilobytes", true),
+        "megabyte" => ("MB", "megabyte", "megabytes", true),
+        "gigabyte" => ("GB", "gigabyte", "gigabytes", true),
+        "second" => ("sec", "second", "seconds", true),
+        "minute" => ("min", "minute", "minutes", true),
+        "hour" => ("hr", "hour", "hours", true),
+        "day" => (if one { "day" } else { "days" }, "day", "days", true),
+        "kilometer-per-hour" => ("km/h", "kilometer per hour", "kilometers per hour", true),
+        "celsius" => ("°C", "degree Celsius", "degrees Celsius", false),
+        "liter" => ("L", "liter", "liters", true),
+        other => (other, other, other, true),
+    };
+    if long {
+        ((if one { long_one } else { long_other }).into(), true)
+    } else {
+        (short.into(), space)
+    }
+}
+
