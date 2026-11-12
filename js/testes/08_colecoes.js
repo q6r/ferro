@@ -1,0 +1,24 @@
+const m = new Map(); const kObj = {}; const kFn = () => {};
+m.set(kObj, "obj").set(kFn, "fn").set(NaN, "nan").set(0, "zero").set("0", "string zero");
+console.log(m.get(kObj), m.get(NaN), m.get(-0), m.get("0"), m.size, m.has({}));
+console.log([...m.entries()].length, [...m.keys()].map(k => typeof k), m);
+m.delete(kFn); m.forEach((v, k) => typeof k === "string" && console.log("forEach", k, v));
+const s = new Set("mississippi"); console.log(s, s.size, [...s].join(""));
+const inter = new Set([1, 2, 3].filter(x => new Set([2, 3, 4]).has(x))); console.log(inter);
+const wm = new WeakMap(); const chave = {}; wm.set(chave, 1); console.log(wm.has(chave), wm.get({}));
+const ws = new WeakSet([chave]); console.log(ws.has(chave));
+const grupos = Map.groupBy([1, 2, 3, 4, 5], x => x % 2 ? "ímpar" : "par"); console.log(grupos);
+const iter = new Map([["a", 1]])[Symbol.iterator](); console.log(iter.next(), iter.next(), Object.prototype.toString.call(iter));
+const sym1 = Symbol("d"), sym2 = Symbol("d"); console.log(sym1 === sym2, sym1.toString(), Symbol.keyFor(Symbol.for("reg")), Symbol.keyFor(sym1));
+const so = { [sym1]: 1, normal: 2 }; console.log(Object.getOwnPropertySymbols(so), JSON.stringify(so), so);
+console.log(Symbol.iterator in [], typeof Symbol.asyncIterator, Object(Symbol("boxed")) instanceof Symbol);
+const custom = { [Symbol.toPrimitive](hint) { return hint === "number" ? 42 : "texto"; } };
+console.log(+custom, `${custom}`, custom + "");
+const tagged = { get [Symbol.toStringTag]() { return "Especial"; } }; console.log(String(tagged), Object.prototype.toString.call(tagged));
+class Range { constructor(a, b) { this.a = a; this.b = b; } [Symbol.iterator]() { let c = this.a, b = this.b; return { next: () => c <= b ? { value: c++, done: false } : { value: undefined, done: true }, [Symbol.iterator]() { return this; } }; } }
+console.log([...new Range(1, 5)], Math.max(...new Range(3, 7)), Array.from(new Range(1, 3), x => x * 10));
+const [x1, , x3, ...xs] = new Range(1, 6); console.log(x1, x3, xs);
+const nestedMap = new Map([["config", { debug: true, níveis: [1, 2] }], ["lista", new Set(["a"])]]); console.log(nestedMap);
+const setOfObj = new Set([{ a: 1 }, [1, 2]]); console.log(setOfObj);
+const mm = new Map([[1, "a"]]); for (const [k, v] of mm) { mm.delete(k); mm.set(k + 1, v + "!"); if (k > 3) break; } console.log(mm);
+console.log(new Map([[NaN, 1]]).has(NaN), new Set([0]).has(-0), [...new Set([3, 1, 3, 2])]);
