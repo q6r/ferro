@@ -170,3 +170,61 @@ pub(crate) fn add_inline(vm: &mut Vm, text: &str) -> Url {
     url
 }
 
+/// O texto de um módulo chegou: compila e pede as dependências.
+pub(crate) fn arrived(vm: &mut Vm, url: Url, text: Option<String>) {
+    let Some(text) = text else {
+        set_state(vm, &url, State::Failed(format!("Failed to fetch module: {url}")));
+        return;
+    };
+    match ferro_js::module::module_function(vm, &text, url.as_str()) {
+        Ok((requests, func)) => {
+            let mut deps = Vec::new();
+            for r in &requests {
+                match resolve(vm, r, &url) {
+                    Some(u) => deps.push(u),
+                    None => {
+                        let msg = format!(
+                            "Failed to resolve module specifier \"{r}\". Relative references must start with either \"/\", \"./\", or \"../\"."
+                        );
+                        set_state(vm, &url, State::Failed(msg));
+                        return;
+                    }
+                }
+            }
+            for d in &deps {
+                request(vm, d);
+            }
+            set_state(vm, &url, State::Ready { func, deps });
+        }
+        Err(e) => set_state(vm, &url, State::Errored(e)),
+    }
+}
+
+fn set_state(vm: &Vm, url: &Url, st: State) {
+    write(vm, |h| {
+        if let Some(r) = h.modules.recs.get_mut(url) {
+            r.state = st;
+        }
+    });
+}
+
+/// O grafo a partir de `root` está pronto? None = ainda baixando;
+/// Some(Err) = alguma parte falhou.
+fn graph_ready(h: &Host, root: &Url) -> Option<Result<(), ()>> {
+    let mut seen = HashSet::new();
+    let mut stack = vec![root.clone()];
+    let mut failed = false;
+    while let Some(u) = stack.pop() {
+        if !seen.insert(u.clone()) {
+            continue;
+        }
+        match h.modules.recs.get(&u).map(|r| &r.state) {
+            None | Some(State::Fetching) => return None,
+            Some(State::Failed(_)) | Some(State::Errored(_)) => failed = true,
+            Some(State::Ready { deps, .. }) => stack.extend(deps.iter().cloned()),
+            Some(State::Evaluating) | Some(State::Evaluated(_)) => {}
+        }
+    }
+    Some(if failed { Err(()) } else { Ok(()) })
+}
+
