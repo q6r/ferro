@@ -188,3 +188,69 @@ fn tz_suffix(vm: &Vm, t: f64) -> String {
     format!("GMT{sign}{:02}{:02} ({})", m.abs() / 60, m.abs() % 60, z.long)
 }
 
+pub fn iso_string(t: f64) -> String {
+    let p = parts(t);
+    let year = if (0..=9999).contains(&p.year) {
+        format!("{:04}", p.year)
+    } else if p.year < 0 {
+        format!("-{:06}", -p.year)
+    } else {
+        format!("+{:06}", p.year)
+    };
+    format!(
+        "{year}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        p.month + 1,
+        p.day,
+        p.hour,
+        p.minute,
+        p.second,
+        p.ms
+    )
+}
+
+fn year_str(y: i64) -> String {
+    if y < 0 { format!("-{:06}", -y) } else { format!("{y:04}") }
+}
+
+fn date_string(t: f64) -> String {
+    let p = parts(t);
+    format!("{} {} {:02} {}", DAYS[p.weekday], MONTHS[p.month as usize], p.day, year_str(p.year))
+}
+
+fn clock_string(t: f64) -> String {
+    let p = parts(t);
+    format!("{:02}:{:02}:{:02}", p.hour, p.minute, p.second)
+}
+
+/// Date.prototype.toString (hora local).
+pub fn full_string(vm: &Vm, t: f64) -> String {
+    let local = t + offset_ms(vm, t);
+    format!("{} {} {}", date_string(local), clock_string(local), tz_suffix(vm, t))
+}
+
+fn now_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
+}
+
+/// Interpreta datas ISO 8601 e os formatos comuns ("Jan 2, 2024 10:00").
+/// Interpreta e devolve (tempo, é hora local — falta converter para UTC).
+pub fn parse_date_raw(s: &str) -> (f64, bool) {
+    let s = s.trim();
+    if let Some(r) = parse_iso(s) {
+        return r;
+    }
+    parse_loose(s).unwrap_or((f64::NAN, false))
+}
+
+pub fn parse_date(s: &str) -> f64 {
+    parse_date_raw(s).0
+}
+
+fn parse_date_vm(vm: &Vm, s: &str) -> f64 {
+    let (t, local) = parse_date_raw(s);
+    time_clip(if local { local_to_utc(vm, t) } else { t })
+}
+
