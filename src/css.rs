@@ -1130,3 +1130,60 @@ fn feature_matches(f: &str, ctx: &MediaContext) -> bool {
     }
 }
 
+fn strip_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut rest = src;
+    while let Some(start) = rest.find("/*") {
+        out.push_str(&rest[..start]);
+        match rest[start + 2..].find("*/") {
+            Some(end) => rest = &rest[start + 2 + end + 2..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Divide por `sep` ignorando o que estiver entre parênteses, colchetes ou aspas.
+pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in s.chars() {
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+        if c == '\\' {
+            cur.push(c);
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            cur.push(c);
+            continue;
+        }
+        match c {
+            '"' | '\'' => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            _ if c == sep && depth <= 0 => {
+                parts.push(std::mem::take(&mut cur));
+                continue;
+            }
+            _ => {}
+        }
+        cur.push(c);
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
