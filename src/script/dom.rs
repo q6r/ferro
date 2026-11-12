@@ -1918,3 +1918,51 @@ fn shadow_mode(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(s(if closed { "closed" } else { "open" }))
 }
 
+/// `slot.assignedNodes()`.
+fn assigned_nodes(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let list = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.slot_host(n).map(|host| doc.assigned_nodes(host, n)).unwrap_or_default()
+    });
+    let items: Vec<Value> = list.into_iter().map(|x| wrap(vm, x)).collect();
+    Ok(vm.array_value(items))
+}
+
+fn assigned_elements(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let list = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.slot_host(n)
+            .map(|host| doc.assigned_nodes(host, n).into_iter().filter(|&x| is_element(doc, x)).collect())
+            .unwrap_or_default()
+    });
+    Ok(list_plain(vm, list))
+}
+
+fn list_plain(vm: &mut Vm, ids: Vec<NodeId>) -> Value {
+    let items: Vec<Value> = ids.into_iter().map(|x| wrap(vm, x)).collect();
+    vm.array_value(items)
+}
+
+/// `template.content`: um fragmento com os filhos do template.
+fn template_content(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let frag = write(vm, |h| {
+        if let Some(&f) = h.templates.get(&n) {
+            return f;
+        }
+        let f = h.page.doc.create_fragment();
+        let kids = std::mem::take(&mut h.page.doc.nodes[n].children);
+        for k in kids {
+            h.page.doc.nodes[k].parent = None;
+            h.page.doc.append(f, k);
+        }
+        h.templates.insert(n, f);
+        f
+    });
+    Ok(wrap(vm, frag))
+}
+
+// --------------------------------------------------------------- Document
+
