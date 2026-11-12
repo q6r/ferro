@@ -254,3 +254,42 @@ fn restore(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn reset_state(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    write(vm, |h| h.canvases.get_mut(&n).map(Bitmap::reset_state));
+    Ok(Value::Undefined)
+}
+
+/// `cvClear(el, x, y, w, h)` em coordenadas do dispositivo.
+fn clear(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let (x, y, w, h) = (num(vm, a, 1)?, num(vm, a, 2)?, num(vm, a, 3)?, num(vm, a, 4)?);
+    with_bitmap(vm, n, |b| b.clear_rect(x, y, w, h));
+    Ok(Value::Undefined)
+}
+
+/// `cvSourceSize(fonte)`: [largura, altura] (0, 0 se ainda não carregou).
+fn source_size(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let img = source_image(vm, &a.arg(0))?;
+    let (w, h) = img.map_or((0, 0), |i| (i.width, i.height));
+    Ok(vm.array_value(vec![Value::Number(w as f64), Value::Number(h as f64)]))
+}
+
+/// `cvImage(el, fonte, sx, sy, sw, sh, dx, dy, dw, dh, matriz, alfa, op, suave)`.
+fn image(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let Some(img) = source_image(vm, &a.arg(1))? else { return Ok(Value::Bool(false)) };
+    let mut v = [0.0f32; 8];
+    for (i, x) in v.iter_mut().enumerate() {
+        *x = num(vm, a, 2 + i)?;
+    }
+    let m = matrix(vm, &a.arg(10))?;
+    let alpha = num(vm, a, 11)?;
+    let op = Op::parse(&text(vm, a, 12)?);
+    let smooth = ferro_js::vm::truthy(&a.arg(13));
+    with_bitmap(vm, n, |b| {
+        b.draw_image(&img, (v[0], v[1], v[2], v[3]), (v[4], v[5], v[6], v[7]), m, alpha.clamp(0.0, 1.0), op, smooth)
+    });
+    Ok(Value::Bool(true))
+}
+
