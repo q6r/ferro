@@ -1354,3 +1354,50 @@ pub fn compile(pattern: &[u16], flags: Flags) -> Result<Program, RegexError> {
 
 // ---------------------------------------------------------------- execução
 
+enum Bt {
+    Branch { pc: u32, pos: usize },
+    Restore { reg: u32, val: usize },
+    Greedy { pc: u32, min_pos: usize, cur: usize, back: bool },
+    Lazy { pc: u32, rep: u32, cur: usize, count: u32 },
+}
+
+fn is_line_term(c: u16) -> bool {
+    matches!(c, 0x0A | 0x0D | 0x2028 | 0x2029)
+}
+
+struct Matcher<'a> {
+    prog: &'a Program,
+    s: &'a [u16],
+    unicode: bool,
+    icase: bool,
+    steps: u64,
+    /// Pilhas de retrocesso reaproveitadas entre tentativas.
+    pool: Vec<Vec<Bt>>,
+}
+
+impl Matcher<'_> {
+    fn read_fwd(&self, pos: usize) -> Option<(u32, usize)> {
+        let c = *self.s.get(pos)? as u32;
+        if self.unicode && (0xD800..0xDC00).contains(&c)
+            && let Some(&lo) = self.s.get(pos + 1)
+            && (0xDC00..0xE000).contains(&(lo as u32))
+        {
+            return Some((0x10000 + ((c - 0xD800) << 10) + (lo as u32 - 0xDC00), pos + 2));
+        }
+        Some((c, pos + 1))
+    }
+
+    fn read_back(&self, pos: usize) -> Option<(u32, usize)> {
+        if pos == 0 {
+            return None;
+        }
+        let c = self.s[pos - 1] as u32;
+        if self.unicode && (0xDC00..0xE000).contains(&c) && pos >= 2 {
+            let hi = self.s[pos - 2] as u32;
+            if (0xD800..0xDC00).contains(&hi) {
+                return Some((0x10000 + ((hi - 0xD800) << 10) + (c - 0xDC00), pos - 2));
+            }
+        }
+        Some((c, pos - 1))
+    }
+
