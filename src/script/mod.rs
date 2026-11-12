@@ -1636,3 +1636,18 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
     page
 }
 
+/// Garante que o layout está em dia (para medidas pedidas por scripts).
+pub(crate) fn ensure_layout(h: &Rc<RefCell<Host>>) {
+    let stale = {
+        let hb = h.borrow();
+        hb.dirty || hb.layout.is_none()
+    };
+    if stale {
+        let _ = render_host(h);
+        // o desenho para a tela ainda precisa sair
+        h.borrow_mut().repaint = true;
+    }
+}
+
+#[cfg(test)]
+mod tests;
