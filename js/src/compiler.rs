@@ -3303,3 +3303,169 @@ impl Compiler {
         }
     }
 
+    fn assign(&mut self, op: AssignOp, target: &Pattern, value: &Expr) -> CResult<()> {
+        match op {
+            AssignOp::Assign => match target {
+                Pattern::Ident(n) => {
+                    self.expr_named(value, Some(n.clone()))?;
+                    self.emit(Op::Dup);
+                    self.store(n);
+                }
+                Pattern::Target(t) => match &**t {
+                    Expr::Member { obj, prop, .. } => {
+                        self.expr(obj)?;
+                        self.expr(value)?;
+                        let c = self.konst(prop);
+                        self.emit(Op::SetProp(c));
+                    }
+                    Expr::Index { obj, index, .. } => {
+                        self.expr(obj)?;
+                        self.expr(index)?;
+                        self.expr(value)?;
+                        self.emit(Op::SetIndex);
+                    }
+                    Expr::PrivateMember(obj, name) => {
+                        self.expr(obj)?;
+                        self.load_private(name)?;
+                        self.expr(value)?;
+                        self.emit(Op::SetPrivate);
+                    }
+                    Expr::SuperMember(name) => {
+                        self.this()?;
+                        self.expr(value)?;
+                        let c = self.konst(name);
+                        self.emit(Op::SetSuper(c));
+                    }
+                    Expr::SuperIndex(idx) => {
+                        self.this()?;
+                        self.expr(idx)?;
+                        self.expr(value)?;
+                        self.emit(Op::SetSuperIndex);
+                    }
+                    _ => return syntax("alvo de atribuição inválido", 0),
+                },
+                Pattern::Object { .. } | Pattern::Array { .. } => {
+                    self.expr(value)?;
+                    self.emit(Op::Dup);
+                    self.pattern(target, Bind::Store)?;
+                }
+                Pattern::Default(..) => return syntax("atribuição inválida", 0),
+            },
+            AssignOp::Op(bop) => {
+                let bop = Self::bin_op(bop);
+                match target {
+                    Pattern::Ident(n) => {
+                        self.load(n);
+                        self.expr(value)?;
+                        self.emit(bop);
+                        self.emit(Op::Dup);
+                        self.store(n);
+                    }
+                    Pattern::Target(t) => match &**t {
+                        Expr::Member { obj, prop, .. } => {
+                            let c = self.konst(prop);
+                            self.expr(obj)?;
+                            self.emit(Op::Dup);
+                            self.emit(Op::GetProp(c));
+                            self.expr(value)?;
+                            self.emit(bop);
+                            self.emit(Op::SetProp(c));
+                        }
+                        Expr::Index { obj, index, .. } => {
+                            self.expr(obj)?;
+                            self.expr(index)?;
+                            self.emit(Op::ToPropertyKey);
+                            self.emit(Op::Dup2);
+                            self.emit(Op::GetIndex);
+                            self.expr(value)?;
+                            self.emit(bop);
+                            self.emit(Op::SetIndex);
+                        }
+                        Expr::PrivateMember(obj, name) => {
+                            self.expr(obj)?;
+                            self.load_private(name)?;
+                            self.emit(Op::Dup2);
+                            self.emit(Op::GetPrivate);
+                            self.expr(value)?;
+                            self.emit(bop);
+                            self.emit(Op::SetPrivate);
+                        }
+                        Expr::SuperMember(name) => {
+                            let c = self.konst(name);
+                            self.this()?;
+                            self.emit(Op::Dup);
+                            self.emit(Op::GetSuper(c));
+                            self.expr(value)?;
+                            self.emit(bop);
+                            self.emit(Op::SetSuper(c));
+                        }
+                        _ => return syntax("alvo de atribuição inválido", 0),
+                    },
+                    _ => return syntax("alvo de atribuição inválido", 0),
+                }
+            }
+            AssignOp::Logical(lop) => {
+                let jump = |c: &mut Compiler| {
+                    c.emit(match lop {
+                        LogOp::And => Op::JumpIfFalseKeep(0),
+                        LogOp::Or => Op::JumpIfTrueKeep(0),
+                        LogOp::Nullish => Op::JumpIfNotNullishKeep(0),
+                    })
+                };
+                match target {
+                    Pattern::Ident(n) => {
+                        self.load(n);
+                        let j = jump(self);
+                        self.expr_named(value, Some(n.clone()))?;
+                        self.emit(Op::Dup);
+                        self.store(n);
+                        self.patch(j);
+                    }
+                    Pattern::Target(t) => {
+                        // [obj] ou [obj chave] ficam na pilha; no atalho, descartamos
+                        let (extra, set) = match &**t {
+                            Expr::Member { obj, prop, .. } => {
+                                let c = self.konst(prop);
+                                self.expr(obj)?;
+                                self.emit(Op::Dup);
+                                self.emit(Op::GetProp(c));
+                                (1, Op::SetProp(c))
+                            }
+                            Expr::Index { obj, index, .. } => {
+                                self.expr(obj)?;
+                                self.expr(index)?;
+                                self.emit(Op::ToPropertyKey);
+                                self.emit(Op::Dup2);
+                                self.emit(Op::GetIndex);
+                                (2, Op::SetIndex)
+                            }
+                            Expr::PrivateMember(obj, name) => {
+                                self.expr(obj)?;
+                                self.load_private(name)?;
+                                self.emit(Op::Dup2);
+                                self.emit(Op::GetPrivate);
+                                (2, Op::SetPrivate)
+                            }
+                            _ => return syntax("alvo de atribuição inválido", 0),
+                        };
+                        let j = jump(self);
+                        self.expr(value)?;
+                        self.emit(set);
+                        let end = self.emit(Op::Jump(0));
+                        self.patch(j);
+                        // [alvo... valor] → [valor]
+                        for _ in 0..extra {
+                            self.emit(Op::Swap);
+                            self.emit(Op::Pop);
+                        }
+                        self.patch(end);
+                    }
+                    _ => return syntax("alvo de atribuição inválido", 0),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------- classes
+
