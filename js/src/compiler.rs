@@ -750,3 +750,36 @@ impl Usage {
     }
 }
 
+/// Nomes declarados por um padrão.
+pub(crate) fn bound_names(p: &Pattern, out: &mut Vec<Name>) {
+    match p {
+        Pattern::Ident(n) => out.push(n.clone()),
+        Pattern::Object { props, rest } => {
+            for (_, v) in props {
+                bound_names(v, out);
+            }
+            if let Some(r) = rest {
+                bound_names(r, out);
+            }
+        }
+        Pattern::Array { elems, rest } => {
+            for p in elems.iter().flatten() {
+                bound_names(p, out);
+            }
+            if let Some(r) = rest {
+                bound_names(r, out);
+            }
+        }
+        Pattern::Default(p, _) => bound_names(p, out),
+        Pattern::Target(_) => {}
+    }
+}
+
+/// Nomes declarados com `var` (subindo de blocos, sem entrar em funções).
+/// `annex_b`: funções declaradas em blocos também viram `var` (modo não estrito).
+pub(crate) fn var_names(ss: &[Stmt], out: &mut Vec<Name>, annex_b: bool, nested: bool) {
+    for s in ss {
+        var_names_stmt(s, out, annex_b, nested);
+    }
+}
+
