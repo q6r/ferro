@@ -77,3 +77,36 @@ fn parse_color(s: &str) -> Option<Rgba> {
     crate::style::parse_color(s.trim(), Color::BLACK).map(rgba)
 }
 
+/// A imagem atual de uma fonte de `drawImage`/`createPattern`: `<img>`,
+/// `<canvas>`, `<video>` ou um ImageBitmap (objeto com `_source`).
+fn source_image(vm: &mut Vm, v: &Value) -> Result<Option<Arc<ImageData>>, Value> {
+    let v = match node_of(v) {
+        Some(_) => v.clone(),
+        None => {
+            let s = get(vm, v, "_source")?;
+            if let Value::Number(id) = s {
+                return Ok(read(vm, |h| h.bitmaps.get(&(id as u32)).cloned()));
+            }
+            s
+        }
+    };
+    let Some(n) = node_of(&v) else { return Ok(None) };
+    Ok(read(vm, |h| image_of_node(h, n)))
+}
+
+pub(crate) fn image_of_node(h: &Host, n: NodeId) -> Option<Arc<ImageData>> {
+    let el = h.page.doc.element(n)?;
+    match el.tag.as_str() {
+        "canvas" => h.canvases.get(&n).map(|b| Arc::new(b.snapshot())),
+        "video" => h.media.players.get(&n).and_then(|p| p.pipeline.shown.as_ref().map(|(_, i)| i.clone())),
+        _ => {
+            if let Some(i) = h.images.nodes.get(&n) {
+                return Some(i.clone());
+            }
+            let src = el.attr("currentSrc").or(el.attr("src"))?;
+            let url = h.page.base.join(src.trim()).ok()?;
+            h.image_cache.get(&url).cloned().flatten()
+        }
+    }
+}
+
