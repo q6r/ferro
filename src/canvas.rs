@@ -686,3 +686,83 @@ impl Bitmap {
         }
     }
 
+    fn paint_coverage(&mut self, cov: &[f32], bx: i32, by: i32, bw: usize, bh: usize, paint: &Paint) {
+        let solid = match &paint.style {
+            Style::Solid(c) => Some(*c),
+            _ => None,
+        };
+        for row in 0..bh {
+            let y = by as usize + row;
+            for col in 0..bw {
+                let c = cov[row * bw + col].min(1.0);
+                if c <= 0.0 && paint.op == Op::SourceOver {
+                    continue;
+                }
+                let x = bx as usize + col;
+                let mut src = match solid {
+                    Some(s) => s,
+                    None => paint.color_at(x as f32 + 0.5, y as f32 + 0.5),
+                };
+                src[3] *= paint.alpha;
+                self.blend(x, y, src, c, paint.op);
+            }
+        }
+    }
+
+    pub fn fill_path(&mut self, path: &[Cmd], evenodd: bool, paint: &Paint) {
+        let polys = flatten(path);
+        let full = matches!(paint.op, Op::Copy | Op::SourceIn | Op::DestinationIn | Op::SourceOut | Op::DestinationAtop);
+        let bounds = if full { Some((0, 0, self.w, self.h)) } else { self.bounds(&polys, 1.0) };
+        let Some((bx, by, bw, bh)) = bounds else { return };
+        let cov = coverage(&polys, evenodd, bx, by, bw, bh);
+        self.paint_coverage(&cov, bx, by, bw, bh, paint);
+    }
+
+    pub fn stroke_path(&mut self, path: &[Cmd], st: &StrokeStyle, paint: &Paint) {
+        if st.width <= 0.0 || !st.width.is_finite() {
+            return;
+        }
+        let polys = stroke_polys(flatten(path), st);
+        let Some((bx, by, bw, bh)) = self.bounds(&polys, 1.0) else { return };
+        let cov = coverage(&polys, false, bx, by, bw, bh);
+        self.paint_coverage(&cov, bx, by, bw, bh, paint);
+    }
+
+    /// Recorta (intersecção com o recorte atual).
+    pub fn clip_path(&mut self, path: &[Cmd], evenodd: bool) {
+        let polys = flatten(path);
+        let mut mask = vec![0u8; self.w * self.h];
+        if let Some((bx, by, bw, bh)) = self.bounds(&polys, 1.0) {
+            let cov = coverage(&polys, evenodd, bx, by, bw, bh);
+            for row in 0..bh {
+                for col in 0..bw {
+                    let i = (by as usize + row) * self.w + bx as usize + col;
+                    mask[i] = (cov[row * bw + col].min(1.0) * 255.0).round() as u8;
+                }
+            }
+        }
+        if let Some(old) = &self.clip {
+            for (m, o) in mask.iter_mut().zip(old) {
+                *m = ((*m as u32 * *o as u32) / 255) as u8;
+            }
+        }
+        self.clip = Some(mask);
+    }
+
+    /// `clearRect` sem transformação: zera os pixels (respeitando o recorte).
+    pub fn clear_rect(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let x0 = x.max(0.0).round() as usize;
+        let y0 = y.max(0.0).round() as usize;
+        let x1 = ((x + w).round().max(0.0) as usize).min(self.w);
+        let y1 = ((y + h).round().max(0.0) as usize).min(self.h);
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let keep = self.clip.as_ref().map_or(0.0, |c| 1.0 - c[py * self.w + px] as f32 / 255.0);
+                let i = (py * self.w + px) * 4;
+                for k in 0..4 {
+                    self.px[i + k] = (self.px[i + k] as f32 * keep).round() as u8;
+                }
+            }
+        }
+    }
+
