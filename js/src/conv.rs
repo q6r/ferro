@@ -179,3 +179,52 @@ fn is_decimal_literal(b: &[u8]) -> bool {
     i == b.len()
 }
 
+/// `parseFloat`: o maior prefixo que forma um número decimal.
+pub fn parse_float(units: &[u16]) -> f64 {
+    let t = trim_js(units);
+    let s: String = t.iter().take_while(|&&c| c < 0x80).map(|&c| c as u8 as char).collect();
+    let b = s.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    if s[i..].starts_with("Infinity") {
+        return if b.first() == Some(&b'-') { f64::NEG_INFINITY } else { f64::INFINITY };
+    }
+    let mut end = 0;
+    let mut digits = false;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+        digits = true;
+        end = i;
+    }
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        if digits {
+            end = i;
+        }
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+            digits = true;
+            end = i;
+        }
+    }
+    if !digits {
+        return f64::NAN;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        let start = j;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+        }
+        if j > start {
+            end = j;
+        }
+    }
+    s[..end].trim_end_matches('.').parse::<f64>().unwrap_or(f64::NAN)
+}
+
