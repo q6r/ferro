@@ -1668,3 +1668,51 @@ methods(CANVAS, {
   transferControlToOffscreen() { throw new DOMException('transferControlToOffscreen ainda não é suportado.', 'NotSupportedError'); },
 });
 
+class OffscreenCanvas {
+  constructor(w, h) { this._el = document.createElement('canvas'); this._el.width = w; this._el.height = h; }
+  get width() { return this._el.width; }
+  set width(v) { this._el.width = v; }
+  get height() { return this._el.height; }
+  set height(v) { this._el.height = v; }
+  getContext(type) {
+    if (String(type) !== '2d') return null;
+    const c = this._el.getContext('2d');
+    c._canvas = this;
+    return c;
+  }
+  convertToBlob() { return new Promise((res) => this._el.toBlob(res)); }
+  transferToImageBitmap() { const r = N.bitmapNew(this._el); return r ? new ImageBitmap(r[0], r[1], r[2]) : null; }
+}
+hidden(G, 'OffscreenCanvas', OffscreenCanvas);
+hidden(G, 'OffscreenCanvasRenderingContext2D', CanvasRenderingContext2D);
+
+const MEDIA = HTMLMediaElement.prototype;
+reflectAll(MEDIA, [['src', 'src', 'url'], ['autoplay', 'autoplay', 'bool'], ['loop', 'loop', 'bool'],
+  ['controls', 'controls', 'bool'], ['defaultMuted', 'muted', 'bool'], 'preload', ['crossOrigin', 'crossorigin']]);
+reflectAll(HTMLVideoElement.prototype, [['poster', 'poster', 'url'], ['playsInline', 'playsinline', 'bool'],
+  ['width', 'width', 'int', 0], ['height', 'height', 'int', 0]]);
+// ---- mídia: Media Source Extensions + elementos <video>/<audio> (relógio em Rust)
+class TimeRanges {
+  constructor(flat) { this._r = flat || []; }
+  get length() { return this._r.length / 2; }
+  start(i) {
+    if (!(i >= 0 && i < this.length)) throw new DOMException(`Failed to execute 'start' on 'TimeRanges': The index provided (${i}) is greater than or equal to the maximum bound (${this.length}).`, 'IndexSizeError');
+    return this._r[2 * i];
+  }
+  end(i) {
+    if (!(i >= 0 && i < this.length)) throw new DOMException(`Failed to execute 'end' on 'TimeRanges': The index provided (${i}) is greater than or equal to the maximum bound (${this.length}).`, 'IndexSizeError');
+    return this._r[2 * i + 1];
+  }
+}
+hidden(G, 'TimeRanges', TimeRanges);
+class MediaError {
+  constructor(code, message) { this.code = code; this.message = message || ''; }
+}
+for (const [k, v] of [['MEDIA_ERR_ABORTED', 1], ['MEDIA_ERR_NETWORK', 2], ['MEDIA_ERR_DECODE', 3], ['MEDIA_ERR_SRC_NOT_SUPPORTED', 4]]) {
+  MediaError[k] = v; MediaError.prototype[k] = v;
+}
+hidden(G, 'MediaError', MediaError);
+
+const MS = new WeakMap();
+const SB = new WeakMap();
+const later = (f) => setTimeout(f, 0);
