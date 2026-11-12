@@ -694,3 +694,55 @@ fn insert_before(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(a.arg(0))
 }
 
+fn remove_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let c = arg_node(vm, a, 0)?;
+    if read(vm, |h| h.page.doc.node(c).parent) != Some(p) {
+        return Err(dom_error(vm, "NotFoundError", "The node to be removed is not a child of this node."));
+    }
+    removing(vm, c);
+    write(vm, |h| h.page.doc.detach(c));
+    Ok(a.arg(0))
+}
+
+fn replace_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let new = arg_node(vm, a, 0)?;
+    let old = arg_node(vm, a, 1)?;
+    if read(vm, |h| h.page.doc.node(old).parent) != Some(p) {
+        return Err(dom_error(vm, "NotFoundError", "The node to be replaced is not a child of this node."));
+    }
+    if new != old {
+        let next = read(vm, |h| sibling(&h.page.doc, old, 1, false));
+        removing(vm, old);
+        write(vm, |h| h.page.doc.detach(old));
+        let next = next.filter(|&x| x != new);
+        insert(vm, p, new, next)?;
+    }
+    Ok(a.arg(1))
+}
+
+fn clone_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let deep = ferro_js::vm::truthy(&a.arg(0));
+    let c = write(vm, |h| {
+        let c = h.page.doc.clone_node(n, deep);
+        // scripts copiados não rodam de novo
+        let mut all = vec![c];
+        all.extend(h.page.doc.descendants(c));
+        let orig = {
+            let mut o = vec![n];
+            o.extend(h.page.doc.descendants(n));
+            o
+        };
+        for (x, y) in orig.iter().zip(all.iter()) {
+            if h.started.contains(x) {
+                h.started.insert(*y);
+            }
+        }
+        c
+    });
+    try_upgrade(vm, &[c]);
+    Ok(wrap(vm, c))
+}
+
