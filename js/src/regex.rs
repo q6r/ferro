@@ -782,3 +782,58 @@ impl Parser {
         v
     }
 
+    fn atom_escape(&mut self) -> Result<Node, RegexError> {
+        let Some(c) = self.peek() else { return err("\\ at end of pattern") };
+        self.i += 1;
+        let ch = char::from_u32(c).unwrap_or('\0');
+        if let Some(set) = self.class_escape_set(ch) {
+            return Ok(Node::Class(set));
+        }
+        if (ch == 'p' || ch == 'P') && self.u {
+            let (p, neg) = self.property()?;
+            let mut set = ClassSet::default();
+            set.props.push((p, neg));
+            return Ok(Node::Class(set));
+        }
+        if ch == 'k' && (self.u || self.has_named) {
+            if !self.eat('<') {
+                return err("Invalid named reference");
+            }
+            let name = self.group_name()?;
+            return Ok(Node::NamedRef(name));
+        }
+        if ('1'..='9').contains(&ch) {
+            // referência \N, ou octal/identidade legada
+            let start = self.i - 1;
+            let mut n: u32 = c - 0x30;
+            while let Some(d) = self.peek().filter(|d| (0x30..=0x39).contains(d)) {
+                n = n.saturating_mul(10).saturating_add(d - 0x30);
+                self.i += 1;
+            }
+            if n <= self.total_groups {
+                return Ok(Node::BackRef(n));
+            }
+            if self.u {
+                return err("Invalid escape");
+            }
+            self.i = start + 1;
+            if ch >= '8' {
+                return Ok(Node::Char(c));
+            }
+            return Ok(Node::Char(self.legacy_octal(c)));
+        }
+        if ch == '0' && self.peek().is_some_and(|d| (0x30..=0x39).contains(&d)) {
+            if self.u {
+                return err("Invalid decimal escape");
+            }
+            return Ok(Node::Char(self.legacy_octal(c)));
+        }
+        if let Some(v) = self.char_escape(ch, false)? {
+            return Ok(Node::Char(v));
+        }
+        if self.u && !is_syntax(c) && ch != '/' && ch != '-' {
+            return err("Invalid escape");
+        }
+        Ok(Node::Char(c))
+    }
+
