@@ -542,3 +542,53 @@ fn split(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(out))
 }
 
+fn substring(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "substring")?;
+    let len = s.len();
+    let start = rel_clamp(vm, &a.arg(0), len, 0)?;
+    let end = rel_clamp(vm, &a.arg(1), len, len)?;
+    let (lo, hi) = if start < end { (start, end) } else { (end, start) };
+    Ok(Value::String(s.slice(lo, hi)))
+}
+
+fn substr(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "substr")?;
+    let len = s.len();
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let count = if a.arg(1).is_undefined() {
+        len - start
+    } else {
+        vm.to_integer(&a.arg(1))?.clamp(0.0, (len - start) as f64) as usize
+    };
+    Ok(Value::String(s.slice(start, start + count)))
+}
+
+fn to_lower(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "toLowerCase")?;
+    if s.units().iter().all(|&c| c < 0x80) {
+        let v: Vec<u16> = s.units().iter().map(|&c| if (0x41..=0x5A).contains(&c) { c + 32 } else { c }).collect();
+        return Ok(Value::String(JsStr::from_units(v)));
+    }
+    Ok(Value::String(JsStr::new(&s.to_rust().to_lowercase())))
+}
+
+fn to_upper(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "toUpperCase")?;
+    if s.units().iter().all(|&c| c < 0x80) {
+        let v: Vec<u16> = s.units().iter().map(|&c| if (0x61..=0x7A).contains(&c) { c - 32 } else { c }).collect();
+        return Ok(Value::String(JsStr::from_units(v)));
+    }
+    Ok(Value::String(JsStr::new(&s.to_rust().to_uppercase())))
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    match &a.this {
+        Value::String(s) => Ok(Value::String(s.clone())),
+        Value::Object(o) => match &o.borrow().kind {
+            Kind::String(s) => Ok(Value::String(s.clone())),
+            _ => Err(vm.type_error("String.prototype.toString requires that 'this' be a String")),
+        },
+        _ => Err(vm.type_error("String.prototype.toString requires that 'this' be a String")),
+    }
+}
+
