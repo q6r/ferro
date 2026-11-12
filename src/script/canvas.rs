@@ -370,3 +370,77 @@ fn measure(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(vm.array_value(vals.iter().map(|v| Value::Number(*v as f64)).collect()))
 }
 
+/// `cvText(el, texto, x, y, fonte, alinhamento, linha-base, estilo, matriz, alfa, op, largura máxima)`.
+fn draw_text(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let t = text(vm, a, 1)?;
+    let (x, y) = (num(vm, a, 2)?, num(vm, a, 3)?);
+    let font = text(vm, a, 4)?;
+    let align = text(vm, a, 5)?;
+    let baseline = text(vm, a, 6)?;
+    let m = matrix(vm, &a.arg(8))?;
+    let alpha = num(vm, a, 9)?;
+    let op = text(vm, a, 10)?;
+    let max_w = vm.to_number(&a.arg(11))? as f32;
+    let Some(p) = paint(vm, &a.arg(7), m, alpha, &op)? else { return Ok(Value::Undefined) };
+    let fonts = read(vm, |h| h.fonts.clone());
+    let (id, mut size) = parse_font(&fonts, &font);
+    let mut w = fonts.measure(id, size, &t);
+    if max_w.is_finite() && max_w > 0.0 && w > max_w {
+        size *= max_w / w;
+        w = max_w;
+    }
+    let lm = fonts.line_metrics(id, size);
+    let dx = match align.as_str() {
+        "center" => -w / 2.0,
+        "right" | "end" => -w,
+        _ => 0.0,
+    };
+    let dy = match baseline.as_str() {
+        "top" => lm.ascent,
+        "hanging" => lm.ascent * 0.8,
+        "middle" => (lm.ascent - lm.descent) / 2.0,
+        "bottom" | "ideographic" => -lm.descent,
+        _ => 0.0,
+    };
+    let (ox, oy) = m.apply(x + dx, y + dy);
+    let scale = m.scale().max(0.01);
+    let dsize = size * scale;
+    // rasteriza os glifos numa máscara (rotação não é suportada: só posição e escala)
+    let total = fonts.measure(id, dsize, &t).ceil() as usize + 4;
+    let lmd = fonts.line_metrics(id, dsize);
+    let (top, bottom) = (lmd.ascent.ceil() as i32 + 2, lmd.descent.ceil() as i32 + 2);
+    let mh = (top + bottom).max(1) as usize;
+    let mut mask = vec![0u8; total * mh];
+    let mut pen = 0.0f32;
+    for ch in t.chars() {
+        if !ch.is_whitespace()
+            && let Some(g) = fonts.glyph(id, ch, dsize)
+        {
+            let gm = g.metrics;
+            let gx = pen.round() as i32 + gm.xmin + 2;
+            let gy = top - gm.height as i32 - gm.ymin;
+            for row in 0..gm.height {
+                let py = gy + row as i32;
+                if py < 0 || py >= mh as i32 {
+                    continue;
+                }
+                for col in 0..gm.width {
+                    let px = gx + col as i32;
+                    if px < 0 || px >= total as i32 {
+                        continue;
+                    }
+                    let c = g.coverage[row * gm.width + col];
+                    let i = py as usize * total + px as usize;
+                    mask[i] = mask[i].max(c);
+                }
+            }
+        }
+        pen += fonts.advance(id, ch, dsize);
+    }
+    let x0 = ox.round() as i32 - 2;
+    let y0 = oy.round() as i32 - top;
+    with_bitmap(vm, n, |b| b.draw_mask(x0, y0, total, mh, &mask, &p));
+    Ok(Value::Undefined)
+}
+
