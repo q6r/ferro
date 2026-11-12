@@ -579,3 +579,69 @@ impl Parser {
         Ok(name)
     }
 
+    fn atom(&mut self) -> Result<Node, RegexError> {
+        let c = self.peek().ok_or(RegexError("Unexpected end".into()))?;
+        match char::from_u32(c) {
+            Some('.') => {
+                self.i += 1;
+                Ok(Node::Any)
+            }
+            Some('(') => {
+                self.i += 1;
+                if self.eat('?') {
+                    if self.eat(':') {
+                        let d = self.disjunction()?;
+                        if !self.eat(')') {
+                            return err("Unterminated group");
+                        }
+                        return Ok(Node::Group(Box::new(d), None));
+                    }
+                    if self.eat('<') {
+                        let name = self.group_name()?;
+                        if self.names.iter().any(|(n, _)| *n == name) {
+                            return err("Duplicate capture group name");
+                        }
+                        self.ngroups += 1;
+                        let idx = self.ngroups;
+                        self.names.push((name, idx));
+                        let d = self.disjunction()?;
+                        if !self.eat(')') {
+                            return err("Unterminated group");
+                        }
+                        return Ok(Node::Group(Box::new(d), Some(idx)));
+                    }
+                    return err("Invalid group");
+                }
+                self.ngroups += 1;
+                let idx = self.ngroups;
+                let d = self.disjunction()?;
+                if !self.eat(')') {
+                    return err("Unterminated group");
+                }
+                Ok(Node::Group(Box::new(d), Some(idx)))
+            }
+            Some(')') => err("Unmatched ')'"),
+            Some('[') => {
+                self.i += 1;
+                Ok(Node::Class(self.class()?))
+            }
+            Some('*' | '+' | '?') => err("Nothing to repeat"),
+            Some('{') => {
+                if self.u || self.brace_quantifier().is_some() {
+                    return err(if self.u { "Lone quantifier brackets" } else { "Nothing to repeat" });
+                }
+                self.i += 1;
+                Ok(Node::Char(c))
+            }
+            Some('}' | ']') if self.u => err("Lone quantifier brackets"),
+            Some('\\') => {
+                self.i += 1;
+                self.atom_escape()
+            }
+            _ => {
+                self.i += 1;
+                Ok(Node::Char(c))
+            }
+        }
+    }
+
