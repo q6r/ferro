@@ -78,3 +78,105 @@ impl Drop for VideoPipe {
 }
 
 impl VideoPipe {
+    fn start(codec: &Codec, samples: SharedSamples, clock: SharedClock, node: usize, sink: Option<FrameSink>) -> Option<VideoPipe> {
+        let mut dec = VideoDecoder::new(codec)?;
+        let (tx, rx) = mpsc::channel::<Cmd>();
+        let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
+        let shown: Shown = Arc::new(Mutex::new(None));
+        let seq = Arc::new(AtomicU64::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        // apresentação: escolhe o quadro do momento pelo relógio
+        {
+            let (q, shown, seq, stop, clock) = (queue.clone(), shown.clone(), seq.clone(), stop.clone(), clock.clone());
+            std::thread::Builder::new()
+                .name("ferro-video-tela".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(4));
+                        let t = clock.lock().unwrap().now();
+                        let pick = {
+                            let mut g = q.lock().unwrap();
+                            let mut pick = None;
+                            while g.front().is_some_and(|f| f.pts <= t + 0.008) {
+                                pick = g.pop_front();
+                            }
+                            // nada no tempo ainda (logo depois de uma busca): mostra o primeiro
+                            if pick.is_none() && shown.lock().unwrap().is_none() {
+                                pick = g.pop_front();
+                            }
+                            pick
+                        };
+                        if let Some(f) = pick {
+                            let img = f.to_image();
+                            *shown.lock().unwrap() = Some((f.pts, img.clone()));
+                            seq.fetch_add(1, Ordering::Relaxed);
+                            if let Some(sink) = &sink {
+                                sink(node, img);
+                            }
+                        }
+                    }
+                })
+                .ok()?;
+        }
+
+        // decodificação: puxa as amostras até AHEAD segundos à frente
+        {
+            let (q, stop, shown) = (queue.clone(), stop.clone(), shown.clone());
+            std::thread::Builder::new()
+                .name("ferro-video".into())
+                .spawn(move || {
+                    let log = log_on();
+                    let t0 = clock.lock().unwrap().now();
+                    let mut next = key_before(&samples.lock().unwrap(), t0);
+                    while !stop.load(Ordering::Relaxed) {
+                        while let Ok(Cmd::Seek(t)) = rx.try_recv() {
+                            dec.reset();
+                            q.lock().unwrap().clear();
+                            *shown.lock().unwrap() = None;
+                            next = key_before(&samples.lock().unwrap(), t);
+                        }
+                        let t = clock.lock().unwrap().now();
+                        // fila cheia (pausado ou à frente): espera
+                        if q.lock().unwrap().len() > 150 {
+                            std::thread::sleep(Duration::from_millis(10));
+                            continue;
+                        }
+                        let batch: Vec<Sample> = {
+                            let list = samples.lock().unwrap();
+                            let start = list.partition_point(|s| s.dts < next);
+                            list[start..].iter().take_while(|s| s.dts <= t + AHEAD).take(8).cloned().collect()
+                        };
+                        if batch.is_empty() {
+                            std::thread::sleep(Duration::from_millis(8));
+                            continue;
+                        }
+                        for s in batch {
+                            next = s.dts + 1e-6;
+                            match dec.decode(&s) {
+                                Ok(frames) => {
+                                    let mut g = q.lock().unwrap();
+                                    for f in frames {
+                                        // quadro já atrasado não entra (pulo para alcançar o relógio)
+                                        if f.pts + 0.05 < t && !g.is_empty() {
+                                            continue;
+                                        }
+                                        let pos = g.partition_point(|x| x.pts <= f.pts);
+                                        g.insert(pos, f);
+                                    }
+                                }
+                                Err(e) => {
+                                    if log {
+                                        eprintln!("[mídia] {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })
+                .ok()?;
+        }
+        Some(VideoPipe { tx, shown, seq, stop })
+    }
+}
+
