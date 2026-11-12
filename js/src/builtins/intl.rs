@@ -582,3 +582,52 @@ pub fn install(r: &Realm) {
     r.global_value("Intl", Value::Object(intl));
 }
 
+fn intl_obj(vm: &mut Vm, nt: &Option<ObjRef>, callee: &ObjRef, data: IntlObj) -> Result<Value, Value> {
+    let def = match vm.get_obj(callee, &PropKey::str("prototype"))? {
+        Value::Object(p) => p,
+        _ => vm.realm.object_proto.clone(),
+    };
+    let proto = vm.proto_from_ctor(nt.as_ref(), &def)?;
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Intl(Box::new(data))))))
+}
+
+fn with_intl<R>(vm: &mut Vm, v: &Value, f: impl FnOnce(&IntlObj) -> Option<R>) -> Result<R, Value> {
+    if let Value::Object(o) = v
+        && let Kind::Intl(x) = &o.borrow().kind
+        && let Some(r) = f(x)
+    {
+        return Ok(r);
+    }
+    Err(vm.type_error("Method called on incompatible receiver"))
+}
+
+fn opt_str(vm: &mut Vm, opts: &Value, name: &str, allowed: &[&str]) -> Result<Option<String>, Value> {
+    if !matches!(opts, Value::Object(_)) {
+        return Ok(None);
+    }
+    let v = vm.get_str(opts, name)?;
+    if v.is_undefined() {
+        return Ok(None);
+    }
+    let s = vm.to_rust_string(&v)?;
+    if !allowed.is_empty() && !allowed.contains(&s.as_str()) {
+        return Err(vm.range_error(format!("Value {s} out of range for Intl options property {name}")));
+    }
+    Ok(Some(s))
+}
+
+fn opt_num(vm: &mut Vm, opts: &Value, name: &str, min: f64, max: f64) -> Result<Option<usize>, Value> {
+    if !matches!(opts, Value::Object(_)) {
+        return Ok(None);
+    }
+    let v = vm.get_str(opts, name)?;
+    if v.is_undefined() {
+        return Ok(None);
+    }
+    let n = vm.to_number(&v)?;
+    if n.is_nan() || n < min || n > max {
+        return Err(vm.range_error(format!("{name} value is out of range.")));
+    }
+    Ok(Some(n.floor() as usize))
+}
+
