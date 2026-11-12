@@ -1040,3 +1040,63 @@ accessor(HTMLIFrameElement.prototype, 'contentWindow', function () {
   }
   return w;
 });
+accessor(HTMLIFrameElement.prototype, 'contentDocument', () => null);
+// dentro de um quadro: parent/top falam com a página-mãe por mensagens
+const PARENT_ORIGIN = N.frameParentOrigin();
+if (PARENT_ORIGIN !== null) {
+  const P = {
+    postMessage(data, origin) {
+      const target = origin && typeof origin === 'object' ? (origin.targetOrigin ?? '*') : String(origin ?? '*');
+      N.parentPost(packMessage(data), target);
+    },
+    get parent() { return P; }, get top() { return P; }, get window() { return P; }, get self() { return P; },
+    get opener() { return null; }, get location() { return { href: PARENT_ORIGIN + '/', origin: PARENT_ORIGIN }; },
+    get document() { return null; }, get frames() { return P; }, closed: false, length: 0, focus() {}, blur() {},
+  };
+  hidden(G, 'parent', P);
+  hidden(G, 'top', P);
+  hidden(G, 'frameElement', null);
+}
+reflectAll(HTMLSourceElement.prototype, [['src', 'src', 'url'], 'srcset', 'sizes', 'media', 'type']);
+reflectAll(HTMLTrackElement.prototype, [['src', 'src', 'url'], 'kind', 'srclang', 'label', ['default', 'default', 'bool']]);
+reflectAll(HTMLEmbedElement.prototype, [['src', 'src', 'url'], 'type', 'width', 'height']);
+reflectAll(HTMLObjectElement.prototype, [['data', 'data', 'url'], 'type', 'name', 'width', 'height']);
+reflectAll(HTMLOListElement.prototype, [['start', 'start', 'int', 1], ['reversed', 'reversed', 'bool'], 'type']);
+reflectAll(HTMLLIElement.prototype, [['value', 'value', 'int', 0]]);
+reflectAll(HTMLTimeElement.prototype, [['dateTime', 'datetime']]);
+reflectAll(HTMLDataElement.prototype, ['value']);
+reflectAll(HTMLQuoteElement.prototype, [['cite', 'cite', 'url']]);
+reflectAll(HTMLTableCellElement.prototype, [['colSpan', 'colspan', 'int', 1], ['rowSpan', 'rowspan', 'int', 1], 'headers', 'scope', 'abbr']);
+reflectAll(HTMLProgressElement.prototype, [['max', 'max', 'int', 1], ['value', 'value', 'int', 0]]);
+reflectAll(HTMLMeterElement.prototype, ['value', 'min', 'max', 'low', 'high', 'optimum']);
+reflectAll(HTMLDialogElement.prototype, [['open', 'open', 'bool'], 'returnValue']);
+methods(HTMLDialogElement.prototype, {
+  show() { this.setAttribute('open', ''); },
+  showModal() { this.setAttribute('open', ''); },
+  close(v) {
+    if (!this.hasAttribute('open')) return;
+    if (v !== undefined) this.setAttribute('returnvalue', String(v));
+    this.removeAttribute('open');
+    this.dispatchEvent(new Event('close'));
+  },
+});
+accessor(HTMLTableElement.prototype, 'rows', function () { return [...this.querySelectorAll('tr')].filter((r) => r.closest('table') === this); });
+accessor(HTMLTableElement.prototype, 'tBodies', function () { return [...this.children].filter((c) => c.localName === 'tbody'); });
+accessor(HTMLTableElement.prototype, 'tHead', function () { return [...this.children].find((c) => c.localName === 'thead') || null; });
+accessor(HTMLTableElement.prototype, 'tFoot', function () { return [...this.children].find((c) => c.localName === 'tfoot') || null; });
+accessor(HTMLTableElement.prototype, 'caption', function () { return [...this.children].find((c) => c.localName === 'caption') || null; });
+accessor(HTMLTableSectionElement.prototype, 'rows', function () { return [...this.children].filter((c) => c.localName === 'tr'); });
+accessor(HTMLTableRowElement.prototype, 'cells', function () { return [...this.children].filter((c) => c.localName === 'td' || c.localName === 'th'); });
+accessor(HTMLTableRowElement.prototype, 'rowIndex', function () { const t = this.closest('table'); return t ? t.rows.indexOf(this) : -1; });
+accessor(HTMLTableCellElement.prototype, 'cellIndex', function () { const r = this.parentElement; return r ? [...r.children].indexOf(this) : -1; });
+methods(HTMLTableElement.prototype, {
+  insertRow(i = -1) {
+    let body = this.tBodies[0];
+    if (!body) { body = document.createElement('tbody'); this.appendChild(body); }
+    return HTMLTableSectionElement.prototype.insertRow.call(body, i);
+  },
+  deleteRow(i) { const r = this.rows[i < 0 ? this.rows.length + i : i]; if (r) r.remove(); },
+  createTHead() { let h = this.tHead; if (!h) { h = document.createElement('thead'); this.prepend(h); } return h; },
+  createTBody() { const b = document.createElement('tbody'); this.appendChild(b); return b; },
+  createCaption() { let c = this.caption; if (!c) { c = document.createElement('caption'); this.prepend(c); } return c; },
+});
