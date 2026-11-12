@@ -227,3 +227,50 @@ impl Parser {
         Ok(spec)
     }
 
+    fn parse_import(&mut self) -> PResult<ImportDecl> {
+        self.expect_kw("import")?;
+        let mut bindings = Vec::new();
+        // import "x";
+        if matches!(self.tok.tok, Tok::Str(_)) {
+            let specifier = self.string_literal()?;
+            self.skip_import_attributes()?;
+            self.semicolon()?;
+            return Ok(ImportDecl { specifier, bindings });
+        }
+        let mut need_more = true;
+        if let Tok::Ident(_) = &self.tok.tok
+            && !self.is("{")
+            && !self.is("*")
+        {
+            let local = self.binding_ident()?;
+            bindings.push((ImportName::Default, local));
+            need_more = self.eat(",")?;
+        }
+        if need_more {
+            if self.eat("*")? {
+                self.expect_kw("as")?;
+                let local = self.binding_ident()?;
+                bindings.push((ImportName::Namespace, local));
+            } else if self.eat("{")? {
+                while !self.eat("}")? {
+                    let imported = self.module_export_name()?;
+                    let local = if self.eat_kw("as")? {
+                        self.binding_ident()?
+                    } else {
+                        Name::from(imported.as_str())
+                    };
+                    let name = if imported == "default" { ImportName::Default } else { ImportName::Named(imported) };
+                    bindings.push((name, local));
+                    if !self.is("}") {
+                        self.expect(",")?;
+                    }
+                }
+            } else {
+                return self.unexpected();
+            }
+        }
+        let specifier = self.from_clause()?;
+        self.semicolon()?;
+        Ok(ImportDecl { specifier, bindings })
+    }
+
