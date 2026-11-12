@@ -395,3 +395,45 @@ static IT: LocaleData = LocaleData {
     ],
 };
 
+/// Idioma suportado mais próximo da etiqueta (ex.: "pt-BR" → pt).
+pub fn data_for(tag: &str) -> &'static LocaleData {
+    let lang = tag.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    match lang.as_str() {
+        "pt" => &PT,
+        "es" => &ES,
+        "fr" => &FR,
+        "de" => &DE,
+        "it" => &IT,
+        "en" => {
+            let region = tag.split(['-', '_']).nth(1).unwrap_or("US").to_ascii_uppercase();
+            if matches!(region.as_str(), "US" | "CA" | "PH" | "") { &EN } else { &EN_GB }
+        }
+        _ => &EN,
+    }
+}
+
+/// Canonicaliza uma etiqueta ("pt-br" → "pt-BR").
+fn canonical_tag(t: &str) -> Option<String> {
+    let parts: Vec<&str> = t.split(['-', '_']).collect();
+    if parts.is_empty() || parts[0].len() < 2 || parts[0].len() > 8 || !parts[0].chars().all(|c| c.is_ascii_alphabetic()) {
+        return None;
+    }
+    let mut out = parts[0].to_ascii_lowercase();
+    for p in &parts[1..] {
+        if p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return None;
+        }
+        out.push('-');
+        if p.len() == 2 && p.chars().all(|c| c.is_ascii_alphabetic()) {
+            out.push_str(&p.to_ascii_uppercase());
+        } else if p.len() == 4 && p.chars().all(|c| c.is_ascii_alphabetic()) {
+            let mut c = p.chars();
+            out.extend(c.next().map(|x| x.to_ascii_uppercase()));
+            out.push_str(&c.as_str().to_ascii_lowercase());
+        } else {
+            out.push_str(&p.to_ascii_lowercase());
+        }
+    }
+    Some(out)
+}
+
