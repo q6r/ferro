@@ -255,3 +255,78 @@ function invoke(t, ev, s, phase) {
     }
   }
 }
+function eventPath(t, s) {
+  const path = [t];
+  if (t instanceof Node) {
+    // eventos compostos atravessam a sombra (raiz → hospedeiro)
+    const up = (n) => n.parentNode || (n instanceof ShadowRoot && s.composed ? n.host : null);
+    let n = up(t);
+    while (n) { path.push(n); n = up(n); }
+    if (path[path.length - 1] === document && s.type !== 'load') path.push(G);
+  }
+  return path;
+}
+function dispatch(t, ev) {
+  const s = EV.get(ev);
+  s.dispatching = true; s.target = t; s.stop = s.stopNow = false;
+  const path = eventPath(t, s);
+  s.path = path;
+  const prevEvent = G.event;
+  G.event = ev;
+  try {
+    s.phase = 1;
+    for (let i = path.length - 1; i > 0 && !s.stop; i--) invoke(path[i], ev, s, 1);
+    if (!s.stop) { s.phase = 2; invoke(path[0], ev, s, 2); }
+    if (s.bubbles) {
+      s.phase = 3;
+      for (let i = 1; i < path.length && !s.stop; i++) invoke(path[i], ev, s, 3);
+    }
+  } finally {
+    s.dispatching = false; s.phase = 0; s.currentTarget = null;
+    G.event = prevEvent;
+  }
+  return !s.canceled;
+}
+function fireTrusted(t, ev) {
+  EV.get(ev).trusted = true;
+  return dispatch(t, ev);
+}
+
+// propriedades onclick, onload... (o valor fica guardado à parte)
+const HANDLER_NAMES = ('abort auxclick beforeinput blur cancel canplay canplaythrough change click close contextmenu ' +
+  'copy cut dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange ended error focus ' +
+  'focusin focusout input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart mousedown ' +
+  'mouseenter mouseleave mousemove mouseout mouseover mouseup paste pause play playing pointercancel pointerdown ' +
+  'pointerenter pointerleave pointermove pointerout pointerover pointerup progress ratechange reset resize ' +
+  'scroll scrollend seeked seeking select selectionchange selectstart stalled submit suspend timeupdate toggle ' +
+  'volumechange waiting wheel animationstart animationend animationiteration transitionstart transitionend ' +
+  'transitionrun transitioncancel').split(' ');
+const WINDOW_HANDLERS = ['afterprint', 'beforeprint', 'beforeunload', 'hashchange', 'languagechange', 'message',
+  'messageerror', 'offline', 'online', 'pagehide', 'pageshow', 'popstate', 'rejectionhandled', 'storage',
+  'unhandledrejection', 'unload'];
+function defineHandlers(P, names) {
+  for (const type of names) {
+    accessor(P, 'on' + type, function () {
+      const t = this ?? G;
+      const h = HANDLERS.get(t);
+      return (h && h.get(type)) || null;
+    }, function (v) {
+      const t = this ?? G;
+      let h = HANDLERS.get(t);
+      if (!h) HANDLERS.set(t, h = new Map());
+      h.set(type, typeof v === 'function' ? v : null);
+    });
+  }
+}
+defineHandlers(HTMLElement.prototype, HANDLER_NAMES);
+defineHandlers(SVGElement.prototype, HANDLER_NAMES);
+defineHandlers(Document.prototype, HANDLER_NAMES.concat(['readystatechange', 'visibilitychange']));
+defineHandlers(Window.prototype, HANDLER_NAMES.concat(WINDOW_HANDLERS));
+
+// ------------------------------------------------------- coleções do DOM
+const AP = Array.prototype;
+for (const P of [NodeList.prototype, HTMLCollection.prototype, NamedNodeMap.prototype]) {
+  hidden(P, 'item', function item(i) { const v = this[Number(i) >>> 0]; return v === undefined ? null : v; });
+  hidden(P, Symbol.iterator, AP.values);
+}
+methods(NodeList.prototype, { forEach: AP.forEach, entries: AP.entries, keys: AP.keys, values: AP.values });
