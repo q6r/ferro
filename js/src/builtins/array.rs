@@ -675,3 +675,70 @@ fn push(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Number(n as f64))
 }
 
+fn reduce_generic(vm: &mut Vm, a: &CallArgs, right: bool) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let f = callback(vm, a, if right { "reduceRight" } else { "reduce" })?;
+    let len = vm.length_of(&o)?;
+    let order: Vec<usize> = if right { (0..len).rev().collect() } else { (0..len).collect() };
+    let mut it = order.into_iter();
+    let mut acc = if a.args.len() >= 2 {
+        a.arg(1)
+    } else {
+        loop {
+            match it.next() {
+                Some(i) => {
+                    if has_i(vm, &o, i) {
+                        break get_i(vm, &o, i)?;
+                    }
+                }
+                None => return Err(vm.type_error("Reduce of empty array with no initial value")),
+            }
+        }
+    };
+    for i in it {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            acc = vm.call(&f, Value::Undefined, vec![acc, v, Value::Number(i as f64), Value::Object(o.clone())])?;
+        }
+    }
+    Ok(acc)
+}
+
+fn reduce(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    reduce_generic(vm, a, false)
+}
+
+fn reduce_right(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    reduce_generic(vm, a, true)
+}
+
+fn reverse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    if is_plain_array(&o) {
+        if let Kind::Array(v) = &mut o.borrow_mut().kind {
+            v.reverse();
+        }
+        return Ok(Value::Object(o));
+    }
+    let len = vm.length_of(&o)?;
+    let mut lo = 0;
+    while lo < len / 2 {
+        let hi = len - 1 - lo;
+        let (hl, hh) = (has_i(vm, &o, lo), has_i(vm, &o, hi));
+        let vl = get_i(vm, &o, lo)?;
+        let vh = get_i(vm, &o, hi)?;
+        if hh {
+            set_i(vm, &o, lo, vh)?;
+        } else {
+            del_i(vm, &o, lo)?;
+        }
+        if hl {
+            set_i(vm, &o, hi, vl)?;
+        } else {
+            del_i(vm, &o, hi)?;
+        }
+        lo += 1;
+    }
+    Ok(Value::Object(o))
+}
+
