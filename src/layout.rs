@@ -2496,3 +2496,120 @@ impl<'a> Ctx<'a> {
         ((cur_y - row_gap - y).max(0.0), first_baseline)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn flex_column(
+        &mut self,
+        b: &'a LayoutBox,
+        kids: &[&'a LayoutBox],
+        x: f32,
+        y: f32,
+        w: f32,
+        definite_h: Option<f32>,
+        inh: &Inherited,
+    ) -> (f32, Option<f32>) {
+        let s = &b.style;
+        let gap = s.row_gap.resolve_or_zero(w);
+        let mut cur = y;
+        let mut placed: Vec<(Mark, BlockResult, &'a LayoutBox)> = Vec::new();
+        let mut first_baseline = None;
+        for (k, &c) in kids.iter().enumerate() {
+            let it = self.flex_item(c, w);
+            let cs = &c.style;
+            let align = cs.align_self.unwrap_or(s.align_items);
+            let avail = (w - it.margin[LEFT] - it.margin[RIGHT] - it.extra).max(0.0);
+            let anon = matches!(c.kind, BoxKind::Anonymous);
+            let content_w = match cs.width.resolve(w) {
+                Some(v) if !anon => {
+                    if cs.border_box {
+                        (v - it.extra).max(0.0)
+                    } else {
+                        v
+                    }
+                }
+                _ if align == Align::Stretch => avail,
+                _ => {
+                    let (mn, mx) = self.intrinsic(c);
+                    (mx - it.extra).min(avail).max(mn - it.extra).max(0.0)
+                }
+            };
+            let content_w = content_w.clamp(it.min.min(content_w), it.max.max(0.0));
+            let outer_w = content_w + it.extra + it.margin[LEFT] + it.margin[RIGHT];
+            let free = (w - outer_w).max(0.0);
+            let dx = match (it.auto_l, it.auto_r, align) {
+                (true, true, _) => free / 2.0,
+                (true, false, _) => free,
+                (false, true, _) => 0.0,
+                (_, _, Align::Center) => free / 2.0,
+                (_, _, Align::End) => free,
+                _ => 0.0,
+            };
+            let bm = BoxModel {
+                margin: it.margin,
+                border: it.border,
+                padding: it.padding,
+                content_w,
+            };
+            if k > 0 {
+                cur += gap;
+            }
+            let m = self.mark();
+            let mut r = self.layout_block(c, &bm, x + dx, cur + it.margin[TOP], inh, Opts::bfc());
+            // flex-basis maior que o conteúdo estica o item; menor não encolhe
+            // (o tamanho mínimo automático é o próprio conteúdo)
+            if let FlexBasis::Len(Len::Px(v)) = cs.flex_basis {
+                let vert = it.border[TOP] + it.border[BOTTOM] + it.padding[TOP] + it.padding[BOTTOM];
+                let want = if cs.border_box { v } else { v + vert };
+                if want > r.height {
+                    self.stretch(r.deco, want);
+                    r.height = want;
+                }
+            }
+            cur += it.margin[TOP] + r.height + it.margin[BOTTOM];
+            if first_baseline.is_none() {
+                first_baseline = r.first_baseline;
+            }
+            placed.push((m, r, c));
+        }
+        let mut content_h = cur - y;
+        if let Some(h) = definite_h
+            && h > content_h
+        {
+            let free = h - content_h;
+            let total: f32 = placed.iter().map(|p| p.2.style.flex_grow).sum();
+            if total > 0.0 {
+                // cresce os itens e empurra os seguintes
+                let mut acc = 0.0;
+                for k in 0..placed.len() {
+                    if acc != 0.0 {
+                        let (before, after) = placed.split_at(k + 1);
+                        let next = after.first().map(|p| &p.0);
+                        self.shift_between(&before[k].0, next, 0.0, acc);
+                    }
+                    let g = placed[k].2.style.flex_grow;
+                    if g > 0.0 {
+                        let extra = free * g / total.max(1.0);
+                        let new_h = placed[k].1.height + extra;
+                        self.stretch(placed[k].1.deco, new_h);
+                        acc += extra;
+                    }
+                }
+            } else {
+                let n = placed.len() as f32;
+                let offset = match s.justify_content {
+                    Justify::End => free,
+                    Justify::Center => free / 2.0,
+                    Justify::SpaceAround => free / n / 2.0,
+                    Justify::SpaceEvenly => free / (n + 1.0),
+                    _ => 0.0,
+                };
+                if let Some(first) = placed.first() {
+                    self.shift_between(&first.0, None, 0.0, offset);
+                }
+            }
+            content_h = h;
+        }
+        (content_h, first_baseline)
+    }
+
+    // ---------------------------------------------------------------- grid
+
