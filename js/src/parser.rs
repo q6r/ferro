@@ -525,3 +525,128 @@ impl Parser {
         })
     }
 
+    fn parse_statement(&mut self) -> PResult<Stmt> {
+        let line = self.line();
+        match self.tok.tok.clone() {
+            Tok::Punct("{") => Ok(Stmt::Block(self.parse_block()?)),
+            Tok::Punct(";") => {
+                self.advance()?;
+                Ok(Stmt::Empty)
+            }
+            Tok::Ident(kw) if !self.tok.escaped => match &*kw {
+                "var" | "const" => {
+                    self.advance()?;
+                    let kind = if &*kw == "var" { VarKind::Var } else { VarKind::Const };
+                    let decls = self.parse_var_decls(kind, false)?;
+                    self.semicolon()?;
+                    Ok(Stmt::Var(kind, decls, line))
+                }
+                "let" if self.starts_let_decl()? => {
+                    self.advance()?;
+                    let decls = self.parse_var_decls(VarKind::Let, false)?;
+                    self.semicolon()?;
+                    Ok(Stmt::Var(VarKind::Let, decls, line))
+                }
+                "function" => {
+                    let f = self.parse_function(false, false)?;
+                    Ok(Stmt::Function(f))
+                }
+                "async" if !self.peek()?.nl_before && matches!(self.peek()?.tok, Tok::Ident(ref n) if &**n == "function") => {
+                    self.advance()?;
+                    let f = self.parse_function(true, false)?;
+                    Ok(Stmt::Function(f))
+                }
+                "class" => Ok(Stmt::Class(self.parse_class()?)),
+                "if" => {
+                    self.advance()?;
+                    self.expect("(")?;
+                    let test = self.parse_expression(false)?;
+                    self.expect(")")?;
+                    let cons = self.parse_statement()?;
+                    let alt = if self.eat_kw("else")? { Some(Box::new(self.parse_statement()?)) } else { None };
+                    Ok(Stmt::If(test, Box::new(cons), alt))
+                }
+                "for" => self.parse_for(),
+                "while" => {
+                    self.advance()?;
+                    self.expect("(")?;
+                    let test = self.parse_expression(false)?;
+                    self.expect(")")?;
+                    let body = self.parse_statement()?;
+                    Ok(Stmt::While(test, Box::new(body)))
+                }
+                "do" => {
+                    self.advance()?;
+                    let body = self.parse_statement()?;
+                    self.expect_kw("while")?;
+                    self.expect("(")?;
+                    let test = self.parse_expression(false)?;
+                    self.expect(")")?;
+                    self.eat(";")?;
+                    Ok(Stmt::DoWhile(Box::new(body), test))
+                }
+                "return" => {
+                    self.advance()?;
+                    let arg = if self.is(";") || self.is("}") || self.tok.tok == Tok::Eof || self.tok.nl_before {
+                        None
+                    } else {
+                        Some(self.parse_expression(false)?)
+                    };
+                    self.semicolon()?;
+                    Ok(Stmt::Return(arg, line))
+                }
+                "break" | "continue" => {
+                    self.advance()?;
+                    let label = match &self.tok.tok {
+                        Tok::Ident(n) if !self.tok.nl_before && !RESERVED.contains(&&**n) => {
+                            let n = n.clone();
+                            self.advance()?;
+                            Some(n)
+                        }
+                        _ => None,
+                    };
+                    self.semicolon()?;
+                    Ok(if &*kw == "break" { Stmt::Break(label, line) } else { Stmt::Continue(label, line) })
+                }
+                "throw" => {
+                    self.advance()?;
+                    if self.tok.nl_before {
+                        return self.err("quebra de linha depois de throw");
+                    }
+                    let e = self.parse_expression(false)?;
+                    self.semicolon()?;
+                    Ok(Stmt::Throw(e, line))
+                }
+                "try" => self.parse_try(),
+                "switch" => self.parse_switch(),
+                "debugger" => {
+                    self.advance()?;
+                    self.semicolon()?;
+                    Ok(Stmt::Debugger)
+                }
+                "import" if !matches!(self.peek()?.tok, Tok::Punct("(") | Tok::Punct(".")) => {
+                    self.err("módulos (import/export) ainda não são suportados")
+                }
+                "export" => self.err("módulos (import/export) ainda não são suportados"),
+                "with" => self.err("'with' não é suportado"),
+                _ => {
+                    // rótulo?
+                    if !RESERVED.contains(&&*kw) && matches!(self.peek()?.tok, Tok::Punct(":")) {
+                        self.advance()?;
+                        self.advance()?;
+                        let body = self.parse_statement()?;
+                        return Ok(Stmt::Labeled(kw, Box::new(body)));
+                    }
+                    let e = self.parse_expression(false)?;
+                    self.semicolon()?;
+                    Ok(Stmt::Expr(e, line))
+                }
+            },
+            _ => {
+                let e = self.parse_expression(false)?;
+                self.semicolon()?;
+                Ok(Stmt::Expr(e, line))
+            }
+        }
+    }
+
