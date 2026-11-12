@@ -335,3 +335,44 @@ impl Vm {
         Err(self.type_error("Cannot convert object to primitive value"))
     }
 
+    pub fn to_string(&mut self, v: &Value) -> Result<JsStr, Value> {
+        Ok(match v {
+            Value::Undefined | Value::Empty => JsStr::new("undefined"),
+            Value::Null => JsStr::new("null"),
+            Value::Bool(b) => JsStr::new(if *b { "true" } else { "false" }),
+            Value::Number(n) => JsStr::new(&number_to_string(*n)),
+            Value::String(s) => s.clone(),
+            Value::Symbol(_) => return Err(self.type_error("Cannot convert a Symbol value to a string")),
+            Value::BigInt(b) => JsStr::new(&b.to_string_radix(10)),
+            Value::Object(_) => {
+                let p = self.to_primitive(v, Hint::String)?;
+                return self.to_string(&p);
+            }
+        })
+    }
+
+    /// ToNumeric: Number ou BigInt.
+    pub fn to_numeric(&mut self, v: &Value) -> Result<Value, Value> {
+        match v {
+            Value::Number(_) | Value::BigInt(_) => Ok(v.clone()),
+            _ => {
+                let p = self.to_primitive(v, Hint::Number)?;
+                if let Value::BigInt(_) = p {
+                    return Ok(p);
+                }
+                Ok(Value::Number(self.to_number(&p)?))
+            }
+        }
+    }
+
+    /// Operação aritmética/bit a bit com as regras de Number e BigInt.
+    pub fn arith(&mut self, k: Arith, a: &Value, b: &Value) -> Result<Value, Value> {
+        let x = self.to_numeric(a)?;
+        let y = self.to_numeric(b)?;
+        match (&x, &y) {
+            (Value::Number(x), Value::Number(y)) => Ok(Value::Number(num_op(k, *x, *y))),
+            (Value::BigInt(x), Value::BigInt(y)) => self.big_op(k, x, y),
+            _ => Err(self.type_error("Cannot mix BigInt and other types, use explicit conversions")),
+        }
+    }
+
