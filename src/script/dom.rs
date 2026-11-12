@@ -1663,3 +1663,37 @@ fn scroll_by(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `scrollIntoView()`: rola os ancestrais roláveis e a janela até o elemento.
+fn scroll_into_view(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let Some(r) = rect_of(vm, n) else { return Ok(Value::Undefined) };
+    let ancestors: Vec<NodeId> = read(vm, |h| {
+        let mut out = Vec::new();
+        let mut x = h.page.doc.node(n).parent;
+        while let Some(p) = x {
+            out.push(p);
+            x = h.page.doc.node(p).parent;
+        }
+        out
+    });
+    for p in ancestors {
+        if let Some(sc) = scroller_of(vm, p)
+            && (r.y < sc.rect.y || r.y + r.h > sc.rect.y + sc.rect.h)
+        {
+            set_scroll(vm, p, None, Some(sc.y + (r.y - sc.rect.y)))?;
+        }
+    }
+    let r = rect_of(vm, n).unwrap_or(r);
+    let (_, vh, sy) = viewport_size(vm);
+    if r.y < sy || r.y + r.h > sy + vh {
+        write(vm, |h| h.page_scroll_request = Some((r.y - 8.0).max(0.0)));
+    }
+    Ok(Value::Undefined)
+}
+
+fn noop(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Undefined)
+}
+
+// --------------------------------------------------------- HTMLElement
+
