@@ -513,3 +513,74 @@ fn storage_set(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn storage_remove(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let k = arg_string(vm, a, 1)?;
+    if with_store(vm, a, |m| m.remove(&k)).is_some() {
+        local_changed(a);
+    }
+    Ok(Value::Undefined)
+}
+
+fn storage_clear(vm: &mut Vm, a: &mut CallArgs) -> R {
+    with_store(vm, a, |m| m.clear());
+    local_changed(a);
+    Ok(Value::Undefined)
+}
+
+fn storage_keys(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let keys: Vec<String> = with_store(vm, a, |m| m.keys().cloned().collect());
+    let items = keys.iter().map(|k| s(k)).collect();
+    Ok(vm.array_value(items))
+}
+
+// ------------------------------------------------------------------ janela
+
+fn inner_width(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(read(vm, |h| h.width) as f64))
+}
+
+fn inner_height(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(read(vm, |h| h.height) as f64))
+}
+
+fn scroll_y(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(read(vm, |h| h.scroll_y) as f64))
+}
+
+fn zero(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(0.0))
+}
+
+fn one(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(1.0))
+}
+
+fn noop(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Undefined)
+}
+
+fn request_animation_frame(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let cb = a.arg(0);
+    if !cb.is_callable() {
+        return Err(vm.type_error("Failed to execute 'requestAnimationFrame' on 'Window': The callback provided as parameter 1 is not a function."));
+    }
+    let id = write(vm, |h| {
+        h.raf_seq += 1;
+        h.raf.push((h.raf_seq, cb));
+        h.raf_seq
+    });
+    Ok(Value::Number(id as f64))
+}
+
+fn cancel_animation_frame(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let id = vm.to_number(&a.arg(0))? as u32;
+    write(vm, |h| h.raf.retain(|(i, _)| *i != id));
+    Ok(Value::Undefined)
+}
+
+fn match_media(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let q = arg_string(vm, a, 0)?;
+    let (width, height) = read(vm, |h| (h.width, h.height));
+    Ok(Value::Bool(crate::css::media_matches(&q, &crate::css::MediaContext { width, height })))
+}
+
