@@ -618,3 +618,75 @@ fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::str(&parts.join(",")))
 }
 
+fn reduce_generic(vm: &mut Vm, a: &CallArgs, right: bool) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let cb = callback(vm, a)?;
+    let order: Vec<usize> = if right { (0..len).rev().collect() } else { (0..len).collect() };
+    let mut it = order.into_iter();
+    let mut acc = if a.args.len() >= 2 {
+        a.arg(1)
+    } else {
+        match it.next() {
+            Some(i) => elem(&o, i),
+            None => return Err(vm.type_error("Reduce of empty array with no initial value")),
+        }
+    };
+    for i in it {
+        acc = vm.call(&cb, Value::Undefined, vec![acc, elem(&o, i), Value::Number(i as f64), a.this.clone()])?;
+    }
+    Ok(acc)
+}
+
+fn reduce(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    reduce_generic(vm, a, false)
+}
+
+fn reduce_right(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    reduce_generic(vm, a, true)
+}
+
+fn values_of(o: &ObjRef, len: usize) -> Vec<Value> {
+    (0..len).map(|i| elem(o, i)).collect()
+}
+
+fn reverse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let vals = values_of(&o, len);
+    for (i, v) in vals.into_iter().rev().enumerate() {
+        vm.typed_set(&o, i, &v)?;
+    }
+    Ok(a.this.clone())
+}
+
+fn set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let offset = vm.to_integer(&a.arg(1))?;
+    if offset < 0.0 {
+        return Err(vm.range_error("offset is out of bounds"));
+    }
+    let offset = offset as usize;
+    let src = a.arg(0);
+    let vals = match &src {
+        Value::Object(s) if matches!(s.borrow().kind, Kind::TypedArray(_)) => {
+            let n = vm.length_of(s)?;
+            values_of(s, n)
+        }
+        _ => {
+            let s = vm.to_object(&src)?;
+            let n = vm.length_of(&s)?;
+            let mut v = Vec::with_capacity(n);
+            for i in 0..n {
+                v.push(vm.get_obj(&s, &crate::ops::index_key(i))?);
+            }
+            v
+        }
+    };
+    if offset + vals.len() > len {
+        return Err(vm.range_error("offset is out of bounds"));
+    }
+    for (i, v) in vals.iter().enumerate() {
+        vm.typed_set(&o, offset + i, v)?;
+    }
+    Ok(Value::Undefined)
+}
+
