@@ -101,3 +101,44 @@ fn download_name(res: &net::Response) -> String {
     if clean.is_empty() { "download".into() } else { clean }
 }
 
+/// A resposta deve virar download (e não página)?
+fn is_download(res: &net::Response) -> bool {
+    let cd = res.headers.iter().find(|(k, _)| k == "content-disposition").map(|(_, v)| v.to_ascii_lowercase());
+    if cd.is_some_and(|v| v.trim_start().starts_with("attachment")) {
+        return true;
+    }
+    let ct = res.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    let ct = ct.split(';').next().unwrap_or("").trim().to_string();
+    if ct.is_empty() {
+        // sem tipo: texto vira página, binário vira download
+        return res.body.iter().take(512).any(|&b| b == 0);
+    }
+    !(ct.starts_with("text/")
+        || ct.starts_with("image/")
+        || ct.contains("html")
+        || ct.contains("xml")
+        || ct.contains("json")
+        || ct.contains("javascript"))
+}
+
+/// Salva um download na pasta Downloads do usuário (sem sobrescrever nada).
+pub fn save_download(d: &Download) -> Result<std::path::PathBuf, String> {
+    let dir = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(|h| std::path::PathBuf::from(h).join("Downloads"))
+        .ok_or("pasta de downloads não encontrada")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let (stem, ext) = match d.name.rsplit_once('.') {
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{e}")),
+        _ => (d.name.clone(), String::new()),
+    };
+    let mut path = dir.join(&d.name);
+    let mut n = 1;
+    while path.exists() {
+        path = dir.join(format!("{stem} ({n}){ext}"));
+        n += 1;
+    }
+    std::fs::write(&path, &d.bytes).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
