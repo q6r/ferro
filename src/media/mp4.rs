@@ -386,3 +386,117 @@ impl Demuxer {
         Ok(())
     }
 
+    /// Amostras de um `moof` seguido do seu `mdat` (ambos com cabeçalho).
+    fn read_fragment(&self, moof: &[u8], mdat: &[u8]) -> Result<Vec<Sample>, String> {
+        let mut out = Vec::new();
+        let moof_body = &moof[8..];
+        // o mdat vem logo depois do moof no fluxo: posições relativas ao início do moof
+        let stream: Vec<u8> = [moof, mdat].concat();
+        for (ty, traf) in boxes(moof_body) {
+            if &ty != b"traf" {
+                continue;
+            }
+            let tfhd = child(traf, b"tfhd").ok_or("traf sem tfhd")?;
+            let flags = be32(tfhd, 0) & 0xff_ffff;
+            let id = be32(tfhd, 4);
+            let Some(track) = self.track(id) else { continue };
+            let mut p = 8;
+            let mut base = 0u64; // relativo ao início do moof
+            if flags & 0x1 != 0 {
+                // base-data-offset absoluto: raro em MSE; trata como relativo ao moof
+                base = 0;
+                p += 8;
+            }
+            if flags & 0x2 != 0 {
+                p += 4;
+            }
+            let mut def_dur = track.default_duration;
+            let mut def_size = track.default_size;
+            let mut def_flags = track.default_flags;
+            if flags & 0x8 != 0 {
+                def_dur = be32(tfhd, p);
+                p += 4;
+            }
+            if flags & 0x10 != 0 {
+                def_size = be32(tfhd, p);
+                p += 4;
+            }
+            if flags & 0x20 != 0 {
+                def_flags = be32(tfhd, p);
+            }
+            let mut decode_time = match child(traf, b"tfdt") {
+                Some(t) if t.first() == Some(&1) => be64(t, 4),
+                Some(t) => be32(t, 4) as u64,
+                None => 0,
+            };
+            let ts = track.timescale as f64;
+            for (rty, trun) in boxes(traf) {
+                if &rty != b"trun" {
+                    continue;
+                }
+                let version = trun.first().copied().unwrap_or(0);
+                let tf = be32(trun, 0) & 0xff_ffff;
+                let count = be32(trun, 4) as usize;
+                let mut q = 8;
+                let mut offset = base;
+                if tf & 0x1 != 0 {
+                    offset = (base as i64 + be32(trun, q) as i32 as i64) as u64;
+                    q += 4;
+                }
+                let mut first_flags = None;
+                if tf & 0x4 != 0 {
+                    first_flags = Some(be32(trun, q));
+                    q += 4;
+                }
+                for k in 0..count.min(100_000) {
+                    let dur = if tf & 0x100 != 0 {
+                        q += 4;
+                        be32(trun, q - 4)
+                    } else {
+                        def_dur
+                    };
+                    let size = if tf & 0x200 != 0 {
+                        q += 4;
+                        be32(trun, q - 4)
+                    } else {
+                        def_size
+                    };
+                    let sflags = if tf & 0x400 != 0 {
+                        q += 4;
+                        be32(trun, q - 4)
+                    } else if k == 0 {
+                        first_flags.unwrap_or(def_flags)
+                    } else {
+                        def_flags
+                    };
+                    let cto: i64 = if tf & 0x800 != 0 {
+                        q += 4;
+                        let raw = be32(trun, q - 4);
+                        if version == 1 { raw as i32 as i64 } else { raw as i64 }
+                    } else {
+                        0
+                    };
+                    let start = offset as usize;
+                    let end = start + size as usize;
+                    let Some(data) = stream.get(start..end) else {
+                        return Err("amostra fora do mdat".into());
+                    };
+                    // sample_is_non_sync_sample = bit 16
+                    let key = if track.is_video() { sflags & 0x0001_0000 == 0 } else { true };
+                    out.push(Sample {
+                        track: id,
+                        dts: decode_time as f64 / ts,
+                        pts: (decode_time as i64 + cto) as f64 / ts,
+                        duration: dur as f64 / ts,
+                        key,
+                        data: Arc::from(data),
+                    });
+                    decode_time += dur as u64;
+                    offset += size as u64;
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
