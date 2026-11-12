@@ -429,3 +429,63 @@ pub struct Code {
     pub gobj_cache: RefCell<Vec<(u32, u32, u32)>>,
 }
 
+impl Code {
+    pub fn is_constructor(&self) -> bool {
+        matches!(self.kind, FnKind::Normal | FnKind::ClassConstructor | FnKind::DerivedConstructor)
+            && !self.is_async
+            && !self.is_generator
+            && !self.is_script
+    }
+
+    pub fn is_arrow(&self) -> bool {
+        self.kind == FnKind::Arrow
+    }
+
+    pub fn is_class_constructor(&self) -> bool {
+        matches!(self.kind, FnKind::ClassConstructor | FnKind::DerivedConstructor)
+    }
+
+    /// Linha do código-fonte de um pc.
+    pub fn line_at(&self, pc: usize) -> u32 {
+        let pc = pc as u32;
+        match self.lines.binary_search_by(|(p, _)| p.cmp(&pc)) {
+            Ok(i) => self.lines[i].1,
+            Err(0) => self.line,
+            Err(i) => self.lines[i - 1].1,
+        }
+    }
+
+    pub fn const_str(&self, i: u32) -> JsStr {
+        match &self.consts[i as usize] {
+            Value::String(s) => s.clone(),
+            _ => JsStr::empty(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------- análise
+
+/// Nomes usados por funções internas (essas variáveis precisam ir para o heap).
+#[derive(Default)]
+struct Usage {
+    inner: FxHashSet<Name>,
+    uses_arguments: bool,
+}
+
+impl Usage {
+    /// Nomes comuns: as capturas de verdade vêm do `Resolver`.
+    fn name(&mut self, _n: &Name, _d: u32) {}
+
+    /// `this`, `new.target`: só atravessam arrow functions.
+    fn special(&mut self, n: &str, d: u32, a: bool) {
+        if a && d > 0 {
+            self.inner.insert(n.into());
+        }
+    }
+
+    fn stmts(&mut self, ss: &[Stmt], d: u32, a: bool) {
+        for s in ss {
+            self.stmt(s, d, a);
+        }
+    }
+
