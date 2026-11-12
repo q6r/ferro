@@ -2580,3 +2580,78 @@ impl Compiler {
         }
     }
 
+    /// Guarda o texto do alvo de uma chamada ("obj.metodo") para erros.
+    fn call_name(&mut self, at: usize, callee: &Expr) {
+        fn text(e: &Expr, depth: u32) -> Option<String> {
+            if depth > 6 {
+                return None;
+            }
+            Some(match e {
+                Expr::Ident(n, _) => n.to_string(),
+                Expr::This => "this".into(),
+                Expr::Member { obj, prop, optional } => {
+                    format!("{}{}{prop}", text(obj, depth + 1)?, if *optional { "?." } else { "." })
+                }
+                Expr::Index { obj, .. } => format!("{}[...]", text(obj, depth + 1)?),
+                Expr::PrivateMember(obj, n) => format!("{}.#{n}", text(obj, depth + 1)?),
+                Expr::SuperMember(n) => format!("super.{n}"),
+                Expr::Call { callee, .. } => format!("{}(...)", text(callee, depth + 1)?),
+                Expr::OptionalChain(inner) => text(inner, depth)?,
+                Expr::Object(props) if props.is_empty() => "{}".into(),
+                Expr::Array(items) if items.is_empty() => "[]".into(),
+                Expr::Unary(UnOp::Void, x) if matches!(**x, Expr::Num(_)) => "(void 0)".into(),
+                Expr::Num(n) => crate::conv::number_to_string(*n),
+                Expr::Str(s) => format!("\"{}\"", String::from_utf16_lossy(s)),
+                Expr::Null => "null".into(),
+                Expr::Bool(b) => b.to_string(),
+                _ if depth > 0 => "(intermediate value)".into(),
+                _ => return None,
+            })
+        }
+        if let Some(t) = text(callee, 0) {
+            let c = self.konst(&t);
+            self.f().call_names.push((at as u32, c));
+        }
+    }
+
+    fn opt_site(&mut self, extra: u32) {
+        let p = self.emit(Op::JumpIfNullish(0));
+        if let Some(l) = self.f().opt.last_mut() {
+            l.push((p, extra));
+        }
+    }
+
+    fn args(&mut self, args: &[ArrayElem]) -> CResult<Option<u32>> {
+        if args.iter().any(|a| matches!(a, ArrayElem::Spread(_))) {
+            self.array_lit(args)?;
+            Ok(None)
+        } else {
+            for a in args {
+                if let ArrayElem::Expr(e) = a {
+                    self.expr(e)?;
+                }
+            }
+            Ok(Some(args.len() as u32))
+        }
+    }
+
+    fn array_lit(&mut self, elems: &[ArrayElem]) -> CResult<()> {
+        self.emit(Op::NewArray);
+        for el in elems {
+            match el {
+                ArrayElem::Expr(e) => {
+                    self.expr(e)?;
+                    self.emit(Op::ArrayPush);
+                }
+                ArrayElem::Spread(e) => {
+                    self.expr(e)?;
+                    self.emit(Op::ArraySpread);
+                }
+                ArrayElem::Hole => {
+                    self.emit(Op::ArrayHole);
+                }
+            }
+        }
+        Ok(())
+    }
+
