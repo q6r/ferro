@@ -1657,3 +1657,132 @@ impl Parser {
         }))
     }
 
+    fn parse_class(&mut self) -> PResult<Rc<ClassDef>> {
+        let start = self.tok.start;
+        let line = self.line();
+        self.expect_kw("class")?;
+        let name = match &self.tok.tok {
+            Tok::Ident(n) if &**n != "extends" => Some(self.binding_ident()?),
+            _ => None,
+        };
+        let superclass = if self.eat_kw("extends")? { Some(self.parse_lhs()?) } else { None };
+        let saved_strict = self.strict;
+        let saved_ctx = self.ctx;
+        self.strict = true;
+        self.ctx.in_class = true;
+        self.expect("{")?;
+        let mut constructor = None;
+        let mut members = Vec::new();
+        while !self.eat("}")? {
+            if self.eat(";")? {
+                continue;
+            }
+            let mstart = self.tok.start;
+            let mline = self.line();
+            let mut is_static = false;
+            if self.is_kw("static") {
+                let next = self.peek()?;
+                if !matches!(next.tok, Tok::Punct("(") | Tok::Punct("=") | Tok::Punct(";") | Tok::Punct("}")) {
+                    self.advance()?;
+                    is_static = true;
+                    if self.is("{") {
+                        // bloco estático
+                        let saved = self.ctx;
+                        self.ctx.in_function = true;
+                        self.ctx.in_async = false;
+                        let body = self.parse_block()?;
+                        self.ctx = saved;
+                        members.push(ClassMember {
+                            key: PropKeyExpr::Name("".into()),
+                            is_static: true,
+                            kind: MemberKind::StaticBlock(body),
+                            func: None,
+                        });
+                        continue;
+                    }
+                }
+            }
+            let mut is_async = false;
+            let mut is_gen = false;
+            let mut accessor: Option<MemberKind> = None;
+            if let Tok::Ident(n) = self.tok.tok.clone()
+                && matches!(&*n, "get" | "set" | "async")
+            {
+                let next = self.peek()?;
+                let is_prefix = !matches!(next.tok, Tok::Punct("(") | Tok::Punct("=") | Tok::Punct(";") | Tok::Punct("}"))
+                    && !(next.nl_before && &*n == "async");
+                if is_prefix {
+                    match &*n {
+                        "get" => accessor = Some(MemberKind::Getter),
+                        "set" => accessor = Some(MemberKind::Setter),
+                        _ => is_async = true,
+                    }
+                    self.advance()?;
+                }
+            }
+            if self.eat("*")? {
+                is_gen = true;
+            }
+            let key = self.parse_prop_key()?;
+            let is_ctor = !is_static && matches!(&key, PropKeyExpr::Name(n) if &**n == "constructor");
+            if self.is("(") {
+                let fkind = match (&accessor, is_ctor) {
+                    (_, true) if superclass.is_some() => FnKind::DerivedConstructor,
+                    (_, true) => FnKind::ClassConstructor,
+                    (Some(MemberKind::Getter), _) => FnKind::Getter,
+                    (Some(MemberKind::Setter), _) => FnKind::Setter,
+                    _ => FnKind::Method,
+                };
+                let fname = match &key {
+                    PropKeyExpr::Name(n) => Some(n.clone()),
+                    PropKeyExpr::Private(n) => Some(format!("#{n}").into()),
+                    _ => None,
+                };
+                let fname = if is_ctor { name.clone() } else { fname };
+                let f = self.parse_function_rest(fname, fkind, is_async, is_gen, mstart, mline)?;
+                if is_ctor {
+                    constructor = Some(f);
+                } else {
+                    members.push(ClassMember {
+                        key,
+                        is_static,
+                        kind: accessor.unwrap_or(MemberKind::Method),
+                        func: Some(f),
+                    });
+                }
+            } else {
+                // campo
+                let init = if self.eat("=")? {
+                    let saved = self.ctx;
+                    self.ctx.in_function = true;
+                    self.ctx.in_async = false;
+                    self.ctx.in_generator = false;
+                    let e = self.parse_assign(false)?;
+                    self.ctx = saved;
+                    Some(e)
+                } else {
+                    None
+                };
+                self.semicolon()?;
+                members.push(ClassMember {
+                    key,
+                    is_static,
+                    kind: MemberKind::Field(init),
+                    func: None,
+                });
+            }
+        }
+        self.strict = saved_strict;
+        self.ctx = saved_ctx;
+        let source = self.lx.source_slice(start, self.prev_end);
+        Ok(Rc::new(ClassDef {
+            name,
+            superclass,
+            constructor,
+            members,
+            source: source.into(),
+            line,
+        }))
+    }
+}
+
