@@ -939,3 +939,75 @@ impl Parser {
 
 // --------------------------------------------------------------- bytecode
 
+#[derive(Clone, Copy, Debug)]
+enum Single {
+    Char(u32),
+    Any,
+    Class(u32),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Inst {
+    Single { m: Single, back: bool },
+    Repeat { m: Single, min: u32, max: u32, greedy: bool, back: bool },
+    Split(u32, u32),
+    Jmp(u32),
+    Save(u32),
+    Clear(u32, u32),
+    Start,
+    End,
+    WordB(bool),
+    BackRef { group: u32, back: bool },
+    Look { negate: bool, end: u32 },
+    SetReg(u32),
+    EmptyCheck(u32),
+    /// Falha se a iteração foi vazia e o mínimo já foi atingido.
+    EmptyCheckMin { pos: u32, count: u32, min: u32 },
+    CountInit(u32),
+    CountInc(u32),
+    CountLt { r: u32, n: u32, target: u32 },
+    CountGe { r: u32, n: u32, target: u32 },
+    Succeed,
+    Match,
+}
+
+pub struct Program {
+    insts: Vec<Inst>,
+    classes: Vec<ClassSet>,
+    /// Grupos de captura (sem contar o 0).
+    pub ngroups: u32,
+    nregs: u32,
+    pub names: Vec<(String, u32)>,
+    pub flags: Flags,
+    /// Unidades com que o casamento pode começar (acelera a busca).
+    first: Option<FirstSet>,
+    /// Começa com `^` sem a flag m: só a posição 0 pode casar.
+    anchored: bool,
+}
+
+/// Conjunto de unidades UTF-16 iniciais possíveis.
+enum FirstSet {
+    One(u16),
+    Ranges(Vec<(u16, u16)>),
+}
+
+impl FirstSet {
+    fn find(&self, s: &[u16], from: usize) -> Option<usize> {
+        match self {
+            FirstSet::One(c) => s[from..].iter().position(|x| x == c).map(|k| from + k),
+            FirstSet::Ranges(r) => s[from..]
+                .iter()
+                .position(|&x| r.iter().any(|&(a, b)| x >= a && x <= b))
+                .map(|k| from + k),
+        }
+    }
+}
+
+struct Compiler {
+    insts: Vec<Inst>,
+    classes: Vec<ClassSet>,
+    nregs: u32,
+    flags: Flags,
+    names: HashMap<String, u32>,
+}
+
