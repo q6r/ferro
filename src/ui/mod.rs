@@ -1617,3 +1617,82 @@ impl App {
         self.request_redraw();
     }
 
+    /// Abre o menu de contexto onde está o mouse.
+    fn open_menu(&mut self) {
+        let (x, y) = self.mouse;
+        self.select = None;
+        let mut items: Vec<(&'static str, Option<MenuAction>)> = Vec::new();
+        if self.page_point(x, y).is_some() {
+            if let Some(href) = self.link_at(x, y) {
+                let abs = self
+                    .tab()
+                    .frame
+                    .as_ref()
+                    .and_then(|f| f.base.join(href.trim()).ok())
+                    .map(|u| u.to_string())
+                    .unwrap_or(href);
+                items.push(("Abrir link em nova aba", Some(MenuAction::OpenLinkTab(abs.clone()))));
+                items.push(("Copiar endereço do link", Some(MenuAction::CopyLink(abs))));
+                items.push(("", None));
+            }
+            if self.tools.ordered().is_some() {
+                items.push(("Copiar", Some(MenuAction::CopySelection)));
+            }
+            items.push(("Selecionar tudo", Some(MenuAction::SelectAll)));
+            items.push(("Buscar na página…", Some(MenuAction::Find)));
+            items.push(("", None));
+        }
+        let tab = self.tab();
+        if tab.index > 0 {
+            items.push(("Voltar", Some(MenuAction::Back)));
+        }
+        if tab.index + 1 < tab.history.len() {
+            items.push(("Avançar", Some(MenuAction::Forward)));
+        }
+        items.push(("Recarregar", Some(MenuAction::Reload)));
+        items.push((if self.fullscreen.is_some() { "Sair da tela cheia" } else { "Tela cheia" }, Some(MenuAction::Fullscreen)));
+        self.menu = Some(((x, y), items));
+        self.request_redraw();
+    }
+
+    fn run_menu(&mut self, i: usize) {
+        let Some((_, items)) = self.menu.take() else { return };
+        let Some((_, Some(action))) = items.get(i).cloned() else { return };
+        match action {
+            MenuAction::OpenLinkTab(u) => self.open_link(&u, true),
+            MenuAction::CopyLink(u) => {
+                if let Some(cb) = self.clipboard() {
+                    let _ = cb.set_text(u);
+                }
+            }
+            MenuAction::CopySelection => {
+                self.copy_selection();
+            }
+            MenuAction::SelectAll => {
+                if let Some(frame) = self.tabs[self.active].frame.as_ref() {
+                    self.tools.sync(&frame.items);
+                }
+                self.tools.select_all();
+            }
+            MenuAction::Back => self.go(-1),
+            MenuAction::Forward => self.go(1),
+            MenuAction::Reload => self.reload(),
+            MenuAction::Find => self.open_find(),
+            MenuAction::Fullscreen => self.toggle_fullscreen(FullscreenBy::User),
+        }
+        self.request_redraw();
+    }
+
+    /// Escolhe a opção `i` da lista aberta.
+    fn choose_option(&mut self, i: usize) {
+        if let Some((nav, popup, _, _)) = self.select.take()
+            && !popup.disabled.get(i).copied().unwrap_or(false)
+        {
+            let tab = self.tab();
+            if tab.nav == nav {
+                tab.engine.select_choose(nav, popup.node, i);
+            }
+        }
+        self.request_redraw();
+    }
+
