@@ -564,3 +564,105 @@ impl Session {
         self.host.borrow().parser.is_some()
     }
 
+    /// Roda os scripts do HTML, em ordem, até o tempo `budget` passar ou o
+    /// próximo ainda não ter chegado. `true` quando todos rodaram (e o
+    /// DOMContentLoaded já disparou).
+    pub fn step_scripts(&mut self, budget: Duration) -> bool {
+        let t = Instant::now();
+        loop {
+            if self.host.borrow().parser.is_none() {
+                return true;
+            }
+            // o próximo script do parser que ainda não rodou (document.write
+            // pode ter acrescentado outros)
+            let next = {
+                let hb = self.host.borrow();
+                let doc = &hb.page.doc;
+                doc.descendants(Document::ROOT)
+                    .into_iter()
+                    .find(|&n| doc.tag(n) == Some("script") && !hb.started.contains(&n))
+            };
+            let Some(n) = next else {
+                // os clássicos acabaram: agora os módulos do HTML, na ordem
+                let pending = {
+                    let mut hb = self.host.borrow_mut();
+                    let p = hb.parser.as_mut().unwrap();
+                    if p.modules_started { Vec::new() } else {
+                        p.modules_started = true;
+                        p.modules.clone()
+                    }
+                };
+                for (m, src, text) in pending {
+                    module::start_script(&mut self.js.vm, m, src, &text);
+                }
+                module::drive(&mut self.js.vm);
+                let waiting = {
+                    let hb = self.host.borrow();
+                    hb.parser.as_ref().unwrap().modules.iter().any(|(m, _, _)| !module::script_done(&hb, *m))
+                };
+                if waiting {
+                    return false;
+                }
+                self.scripts_finished();
+                return true;
+            };
+            let (classic, src, inline) = {
+                let hb = self.host.borrow();
+                let doc = &hb.page.doc;
+                let src = doc
+                    .element(n)
+                    .and_then(|e| e.attr("src"))
+                    .and_then(|s| hb.page.base.join(s.trim()).ok());
+                (is_classic_script(doc, n), src, doc.text_content(n))
+            };
+            if !classic {
+                self.host.borrow_mut().started.insert(n);
+                continue;
+            }
+            let (text, name) = match src {
+                Some(u) => {
+                    let text = {
+                        let mut hb = self.host.borrow_mut();
+                        let hb = &mut *hb;
+                        let parser = hb.parser.as_mut().unwrap();
+                        match parser.texts.remove(&u) {
+                            Some(t) => Some(t),
+                            None => {
+                                if parser.requested.insert(u.clone()) {
+                                    request_parser_script(hb, u.clone());
+                                }
+                                None
+                            }
+                        }
+                    };
+                    // ainda não chegou: volta ao laço de eventos e espera
+                    let Some(text) = text else { return false };
+                    self.host.borrow_mut().started.insert(n);
+                    let Some(text) = text else {
+                        let el = wrap(&mut self.js.vm, n);
+                        self.hook("fire", vec![el, Value::str("error")]);
+                        continue;
+                    };
+                    (text, u.to_string())
+                }
+                None => {
+                    let mut hb = self.host.borrow_mut();
+                    hb.started.insert(n);
+                    let count = hb.parser.as_ref().map_or(0, |p| p.count);
+                    (inline, format!("{}#script{count}", hb.page.url))
+                }
+            };
+            if let Some(p) = self.host.borrow_mut().parser.as_mut() {
+                p.count += 1;
+            }
+            self.exec_script(n, &text, &name);
+            if self.host.borrow().page.doc.element(n).and_then(|e| e.attr("src")).is_some() {
+                let el = wrap(&mut self.js.vm, n);
+                self.hook("fire", vec![el, Value::str("load")]);
+            }
+            if t.elapsed() >= budget {
+                return false;
+            }
+        }
+    }
+
