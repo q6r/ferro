@@ -260,3 +260,41 @@ pub struct Host {
     no_resources: bool,
 }
 
+/// Pega o estado do hospedeiro guardado na VM.
+pub(crate) fn host(vm: &Vm) -> Rc<RefCell<Host>> {
+    vm.host
+        .clone()
+        .and_then(|h| h.downcast::<RefCell<Host>>().ok())
+        .expect("VM sem hospedeiro")
+}
+
+/// O NodeId de um valor JS que embrulha um nó.
+pub(crate) fn node_of(v: &Value) -> Option<NodeId> {
+    match v {
+        Value::Object(o) => match o.borrow().kind {
+            Kind::Host { class: NODE, id } => Some(id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// O objeto JS de um nó (sempre o mesmo para o mesmo nó).
+pub(crate) fn wrap(vm: &mut Vm, n: NodeId) -> Value {
+    let h = host(vm);
+    let mut hb = h.borrow_mut();
+    if let Some(o) = hb.wrappers.get(&n) {
+        return Value::Object(o.clone());
+    }
+    let (iface, custom) = dom::interface_of(&hb, n);
+    let proto = match custom {
+        Some(p) => p,
+        None => hb.protos.get(iface).or_else(|| hb.protos.get("HTMLElement")).cloned().expect("protótipos do DOM"),
+    };
+    let mut obj = ferro_js::value::Object::new(Some(proto), Kind::Host { class: NODE, id: n });
+    obj.tag = iface;
+    let o = ObjRef::new(obj);
+    hb.wrappers.insert(n, o.clone());
+    Value::Object(o)
+}
+
