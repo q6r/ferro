@@ -437,3 +437,83 @@ fn canonical_tag(t: &str) -> Option<String> {
     Some(out)
 }
 
+/// Lista de locais pedidos (string, array ou undefined).
+fn requested(vm: &mut Vm, v: &Value) -> Result<Vec<String>, Value> {
+    let list: Vec<Value> = match v {
+        Value::Undefined => return Ok(Vec::new()),
+        Value::String(_) => vec![v.clone()],
+        Value::Object(o) if matches!(&o.borrow().kind, Kind::Intl(x) if matches!(**x, IntlObj::Locale(_))) => vec![v.clone()],
+        _ => {
+            let o = Value::Object(vm.to_object(v)?);
+            super::function::list_from_array_like(vm, &o)?
+        }
+    };
+    let mut out = Vec::new();
+    for x in list {
+        let s = vm.to_rust_string(&x)?;
+        match canonical_tag(&s) {
+            Some(c) => out.push(c),
+            None => return Err(vm.range_error(format!("Incorrect locale information provided: {s}"))),
+        }
+    }
+    Ok(out)
+}
+
+/// O local efetivo: o primeiro pedido (todos são aceitos, os dados caem no inglês).
+fn resolve_locale(vm: &mut Vm, v: &Value) -> Result<String, Value> {
+    let req = requested(vm, v)?;
+    Ok(req.into_iter().next().unwrap_or_else(|| vm.locale.clone()))
+}
+
+// ------------------------------------------------------------ objetos
+
+#[derive(Clone)]
+pub struct NumOpts {
+    pub locale: String,
+    style: String,
+    currency: Option<String>,
+    currency_display: String,
+    unit: Option<String>,
+    unit_display: String,
+    min_int: usize,
+    min_frac: usize,
+    max_frac: usize,
+    max_sig: Option<usize>,
+    min_sig: Option<usize>,
+    grouping: bool,
+    notation: String,
+    compact_display: String,
+    sign_display: String,
+}
+
+#[derive(Clone, Default)]
+pub struct DateOpts {
+    pub locale: String,
+    time_zone: Option<String>,
+    weekday: Option<String>,
+    era: Option<String>,
+    year: Option<String>,
+    month: Option<String>,
+    day: Option<String>,
+    hour: Option<String>,
+    minute: Option<String>,
+    second: Option<String>,
+    frac: Option<usize>,
+    tz_name: Option<String>,
+    hour12: Option<bool>,
+    date_style: Option<String>,
+    time_style: Option<String>,
+}
+
+pub enum IntlObj {
+    NumberFormat(NumOpts),
+    DateTimeFormat(DateOpts),
+    PluralRules { locale: String, ordinal: bool },
+    RelativeTime { locale: String, numeric_auto: bool, style: String },
+    ListFormat { locale: String, kind: String, style: String },
+    Collator { locale: String, numeric: bool, sensitivity: String },
+    Segmenter { locale: String, granularity: String },
+    Locale(String),
+    DisplayNames { locale: String, kind: String },
+}
+
