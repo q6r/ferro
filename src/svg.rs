@@ -788,3 +788,34 @@ impl Svg {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numeros_svg() {
+        assert_eq!(numbers("1.5-2e1,4 .5.5"), vec![1.5, -20.0, 4.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn caminho_relativo_e_arco() {
+        let segs = parse_path("m10 10 h5 v5 z M0 0 a5 5 0 0 1 10 0");
+        assert!(matches!(segs[0], Seg::Move((10.0, 10.0))));
+        assert!(matches!(segs[2], Seg::Line((15.0, 15.0))));
+        assert!(segs.iter().filter(|s| matches!(s, Seg::Cubic(..))).count() >= 2);
+    }
+
+    #[test]
+    fn quadrado_preenchido_e_traco() {
+        let svg = parse(
+            r#"<svg viewBox="0 0 10 10"><rect x="0" y="0" width="5" height="10" fill="red"/>
+               <path d="M7 0 V10" stroke="blue" stroke-width="2" fill="none"/></svg>"#,
+        )
+        .unwrap();
+        let img = svg.render(10, 10, None);
+        let px = |x: usize, y: usize| &img.rgba[(y * 10 + x) * 4..(y * 10 + x) * 4 + 4];
+        assert_eq!(px(2, 5), &[255, 0, 0, 255]);
+        assert_eq!(px(7, 5)[2], 255);
+        assert_eq!(px(9, 5)[3], 0);
+    }
+}
