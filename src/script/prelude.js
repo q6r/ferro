@@ -3354,3 +3354,73 @@ function attributeChanged(el, name, old, value) {
   }
 }
 
+// ------------------------------------------------- outros
+hidden(G, 'DOMParser', class DOMParser {
+  parseFromString(text, type) { return N.parseDocument(String(text)); }
+});
+const IMPLEMENTATION = {
+  createHTMLDocument(title) { return N.createDocument(title === undefined ? null : String(title)); },
+  createDocument() { return N.createDocument(null); },
+  createDocumentType(name, pub, sys) { return { name, publicId: pub, systemId: sys, nodeType: 10 }; },
+  hasFeature() { return true; },
+};
+accessor(Document.prototype, 'implementation', () => IMPLEMENTATION);
+hidden(G, 'XMLSerializer', class XMLSerializer {
+  serializeToString(n) { return n.outerHTML ?? n.textContent ?? ''; }
+});
+// web components com o polyfill (ShadyDOM) montam a sombra no DOM normal:
+// é o caminho mais compatível, então o Ferro pede para ele ser usado
+hidden(G, 'ShadyDOM', { force: true });
+hidden(G, 'HTMLAllCollection', HTMLCollection);
+hidden(G, 'SVGAnimatedString', function SVGAnimatedString() {});
+
+// ------------------------------------------------------------ teclado
+const TEXT_INPUTS = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number']);
+function editable(el) {
+  if (!el || el.disabled || el.readOnly) return false;
+  if (el.localName === 'textarea') return true;
+  if (el.localName === 'input') return TEXT_INPUTS.has(el.type);
+  return !!el.isContentEditable;
+}
+function caretOf(el) {
+  const s = SEL.get(el);
+  const len = el.value.length;
+  return s ? [Math.min(s[0], len), Math.min(s[1], len)] : [len, len];
+}
+/// Edita o campo focado como o navegador faria, com beforeinput/input.
+function editText(el, inputType, data) {
+  if (!editable(el)) return;
+  const init = { inputType, data: data ?? null, bubbles: true, cancelable: true, composed: true };
+  if (!fireTrusted(el, new InputEvent('beforeinput', init))) return;
+  if (el.localName === 'input' || el.localName === 'textarea') {
+    let v = el.value;
+    let [a, b] = caretOf(el);
+    if (inputType === 'insertText' || inputType === 'insertLineBreak') {
+      const max = el.maxLength;
+      let ins = data;
+      if (max >= 0) ins = ins.slice(0, Math.max(0, max - (v.length - (b - a))));
+      v = v.slice(0, a) + ins + v.slice(b);
+      a = b = a + ins.length;
+    } else if (inputType === 'deleteContentBackward') {
+      if (a === b && a > 0) a--;
+      v = v.slice(0, a) + v.slice(b);
+      b = a;
+    } else if (inputType === 'deleteContentForward') {
+      if (a === b) b = Math.min(v.length, b + 1);
+      v = v.slice(0, a) + v.slice(b);
+      b = a;
+    }
+    el.value = v;
+    SEL.set(el, [a, b]);
+  } else {
+    // contenteditable: só no fim do texto
+    if (inputType === 'insertText' || inputType === 'insertLineBreak') {
+      el.append(inputType === 'insertLineBreak' ? document.createElement('br') : data);
+    } else if (inputType === 'deleteContentBackward') {
+      const last = el.lastChild;
+      if (last && last.nodeType === 3 && last.data.length > 1) last.data = last.data.slice(0, -1);
+      else if (last) last.remove();
+    }
+  }
+  fireTrusted(el, new InputEvent('input', { inputType, data: data ?? null, bubbles: true, composed: true }));
+}
