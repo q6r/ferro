@@ -485,3 +485,72 @@ fn read_ident(chars: &[char], i: &mut usize) -> Option<String> {
 
 // ------------------------------------------------------------------ matching
 
+pub fn matches(doc: &Document, node: NodeId, sel: &Selector) -> bool {
+    match_from(doc, node, sel, sel.compounds.len() - 1)
+}
+
+fn match_from(doc: &Document, node: NodeId, sel: &Selector, idx: usize) -> bool {
+    if !match_compound(doc, node, &sel.compounds[idx]) {
+        return false;
+    }
+    if idx == 0 {
+        return true;
+    }
+    match sel.combinators[idx - 1] {
+        Combinator::Child => doc
+            .parent_element(node)
+            .is_some_and(|p| match_from(doc, p, sel, idx - 1)),
+        Combinator::Descendant => {
+            let mut cur = doc.parent_element(node);
+            while let Some(p) = cur {
+                if match_from(doc, p, sel, idx - 1) {
+                    return true;
+                }
+                cur = doc.parent_element(p);
+            }
+            false
+        }
+        Combinator::NextSibling => {
+            prev_elements(doc, node).next().is_some_and(|p| match_from(doc, p, sel, idx - 1))
+        }
+        Combinator::SubsequentSibling => prev_elements(doc, node).any(|p| match_from(doc, p, sel, idx - 1)),
+    }
+}
+
+/// Irmãos elementos antes do nó, do mais próximo para o mais distante.
+fn prev_elements(doc: &Document, node: NodeId) -> impl Iterator<Item = NodeId> + '_ {
+    let sibs: &[NodeId] = match doc.node(node).parent {
+        Some(p) => &doc.node(p).children,
+        None => &[],
+    };
+    let at = sibs.iter().position(|&s| s == node).unwrap_or(0);
+    sibs[..at].iter().rev().copied().filter(|&c| doc.element(c).is_some())
+}
+
+/// Posição do nó entre os irmãos elementos (a partir de 1) e quantos são;
+/// com `tag`, conta só os dessa tag.
+fn element_position(doc: &Document, node: NodeId, tag: Option<&str>) -> (i32, i32) {
+    let Some(p) = doc.node(node).parent else { return (1, 1) };
+    let (mut pos, mut count) = (0, 0);
+    for &c in &doc.node(p).children {
+        let Some(e) = doc.element(c) else { continue };
+        if tag.is_some_and(|t| e.tag != t) {
+            continue;
+        }
+        count += 1;
+        if c == node {
+            pos = count;
+        }
+    }
+    (pos.max(1), count.max(1))
+}
+
+fn nth_matches(a: i32, b: i32, pos: i32) -> bool {
+    // existe n >= 0 com a*n + b == pos?
+    if a == 0 {
+        return pos == b;
+    }
+    let diff = pos - b;
+    diff % a == 0 && diff / a >= 0
+}
+
