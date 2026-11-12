@@ -159,3 +159,112 @@ impl Resolver {
         }
     }
 
+    fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Expr(e, _) | Stmt::Throw(e, _) => self.expr(e),
+            Stmt::Var(_, decls, _) => self.decls(decls),
+            Stmt::Function(f) => self.function(f, false),
+            Stmt::Class(c) => self.class(c),
+            Stmt::Return(e, _) => {
+                if let Some(e) = e {
+                    self.expr(e);
+                }
+            }
+            Stmt::If(t, c, a) => {
+                self.expr(t);
+                self.stmt(c);
+                if let Some(a) = a {
+                    self.stmt(a);
+                }
+            }
+            Stmt::Block(b) => self.block(b, slice_key(b)),
+            Stmt::For { init, test, update, body } => {
+                let scoped = matches!(init, Some(ForInit::Var(VarKind::Let | VarKind::Const, _)));
+                if let (true, Some(ForInit::Var(_, decls))) = (scoped, init) {
+                    let mut names = Vec::new();
+                    for d in decls {
+                        bound_names(&d.target, &mut names);
+                    }
+                    self.push(key_of(init), names);
+                }
+                match init {
+                    Some(ForInit::Var(_, decls)) => self.decls(decls),
+                    Some(ForInit::Expr(e)) => self.expr(e),
+                    None => {}
+                }
+                if let Some(t) = test {
+                    self.expr(t);
+                }
+                if let Some(u) = update {
+                    self.expr(u);
+                }
+                self.stmt(body);
+                if scoped {
+                    self.pop();
+                }
+            }
+            Stmt::ForIn { left, right, body } | Stmt::ForOf { left, right, body, .. } => {
+                self.expr(right);
+                match left {
+                    ForHead::Var(VarKind::Let | VarKind::Const, p) => {
+                        let mut names = Vec::new();
+                        bound_names(p, &mut names);
+                        self.push(key_of(left), names);
+                        self.pattern(p);
+                        self.stmt(body);
+                        self.pop();
+                    }
+                    ForHead::Var(_, p) | ForHead::Pattern(p) => {
+                        self.pattern(p);
+                        self.stmt(body);
+                    }
+                }
+            }
+            Stmt::While(t, b) | Stmt::DoWhile(b, t) => {
+                self.expr(t);
+                self.stmt(b);
+            }
+            Stmt::Try {
+                block,
+                param,
+                handler,
+                finalizer,
+            } => {
+                self.block(block, slice_key(block));
+                if let Some(h) = handler {
+                    let mut names = Vec::new();
+                    if let Some(p) = param {
+                        bound_names(p, &mut names);
+                    }
+                    let key = param.as_ref().map(key_of).unwrap_or(0);
+                    self.push(key, names);
+                    if let Some(p) = param {
+                        self.pattern(p);
+                    }
+                    self.block(h, slice_key(h));
+                    self.pop();
+                }
+                if let Some(f) = finalizer {
+                    self.block(f, slice_key(f));
+                }
+            }
+            Stmt::Switch(disc, cases) => {
+                self.expr(disc);
+                let mut lex = Vec::new();
+                for c in cases.iter() {
+                    lexical_decls(&c.body, true, &mut lex);
+                }
+                self.push(cases.as_ptr() as usize, lex.into_iter().map(|(n, _)| n).collect());
+                for c in cases {
+                    if let Some(t) = &c.test {
+                        self.expr(t);
+                    }
+                    self.stmts(&c.body);
+                }
+                self.pop();
+            }
+            Stmt::Labeled(_, b) => self.stmt(b),
+            Stmt::Break(..) | Stmt::Continue(..) | Stmt::Empty | Stmt::Debugger => {}
+        }
+    }
+
