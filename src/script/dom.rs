@@ -2256,3 +2256,78 @@ fn links(vm: &mut Vm, _a: &mut CallArgs) -> R {
 
 // ------------------------------------------------------------ construtores
 
+fn illegal(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Err(vm.type_error("Illegal constructor"))
+}
+
+fn event_target_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let def = read(vm, |h| h.protos.get("EventTarget").cloned()).expect("EventTarget");
+    let proto = vm.proto_from_ctor(a.new_target.as_ref(), &def)?;
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Ordinary))))
+}
+
+fn text_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = if a.arg(0).is_undefined() { String::new() } else { arg_string(vm, a, 0)? };
+    let n = write(vm, |h| h.page.doc.create(NodeData::Text(text)));
+    Ok(wrap(vm, n))
+}
+
+fn comment_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = if a.arg(0).is_undefined() { String::new() } else { arg_string(vm, a, 0)? };
+    let n = write(vm, |h| h.page.doc.create(NodeData::Comment(text)));
+    Ok(wrap(vm, n))
+}
+
+fn fragment_ctor(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = write(vm, |h| h.page.doc.create_fragment());
+    Ok(wrap(vm, n))
+}
+
+fn image_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = write(vm, |h| h.page.doc.create_element("img"));
+    for (i, name) in ["width", "height"].iter().enumerate() {
+        if !a.arg(i).is_undefined() {
+            let v = vm.to_rust_string(&a.arg(i))?;
+            write(vm, |h| h.page.doc.set_attr(n, name, &v));
+        }
+    }
+    Ok(wrap(vm, n))
+}
+
+fn option_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = write(vm, |h| h.page.doc.create_element("option"));
+    if !a.arg(0).is_undefined() {
+        let t = arg_string(vm, a, 0)?;
+        write(vm, |h| h.page.doc.set_text_content(n, &t));
+    }
+    if !a.arg(1).is_undefined() {
+        let v = arg_string(vm, a, 1)?;
+        write(vm, |h| h.page.doc.set_attr(n, "value", &v));
+    }
+    if ferro_js::vm::truthy(&a.arg(3)) {
+        write(vm, |h| h.page.doc.set_attr(n, "selected", ""));
+    }
+    Ok(wrap(vm, n))
+}
+
+/// `HTMLElement` só pode ser construído por elementos personalizados
+/// (`class X extends HTMLElement`, depois de `customElements.define`).
+fn html_element_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(nt) = a.new_target.clone() else { return Err(vm.type_error("Illegal constructor")) };
+    // elemento esperando a atualização (upgrade)?
+    if let Some(n) = read(vm, |h| h.hooks.get("__upgrading").and_then(node_of)) {
+        write(vm, |h| h.hooks.remove("__upgrading"));
+        let el = wrap(vm, n);
+        let proto = vm.get_obj(&nt, &ferro_js::value::PropKey::str("prototype"))?;
+        if let (Value::Object(o), Value::Object(p)) = (&el, proto) {
+            o.borrow_mut().proto = Some(p);
+        }
+        return Ok(el);
+    }
+    let tag = read(vm, |h| h.custom.iter().find(|(_, c)| c.ptr_eq(&nt)).map(|(t, _)| t.clone()));
+    let Some(tag) = tag else { return Err(vm.type_error("Illegal constructor")) };
+    let n = write(vm, |h| h.page.doc.create_element(&tag));
+    let el = wrap(vm, n);
+    Ok(el)
+}
+
