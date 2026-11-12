@@ -100,3 +100,74 @@ pub enum BgSize {
     Size(Len, Len),
 }
 
+/// Partes da propriedade `content` (::before/::after).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContentPart {
+    Text(String),
+    Attr(String),
+    OpenQuote,
+    CloseQuote,
+}
+
+/// Medida ainda não resolvida contra o bloco contêiner.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Len {
+    Auto,
+    Px(f32),
+    Percent(f32),
+}
+
+impl Len {
+    pub fn resolve(self, base: f32) -> Option<f32> {
+        match self {
+            Len::Auto => None,
+            Len::Px(v) => Some(v),
+            Len::Percent(p) => Some(p / 100.0 * base),
+        }
+    }
+
+    pub fn resolve_or_zero(self, base: f32) -> f32 {
+        self.resolve(base).unwrap_or(0.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FontFamily {
+    Serif,
+    Sans,
+    Mono,
+    /// system-ui: a fonte da interface do sistema (Segoe UI no Windows).
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LineHeight {
+    Normal,
+    Number(f32),
+    Px(f32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WhiteSpace {
+    Normal,
+    Pre,
+    NoWrap,
+    PreWrap,
+    PreLine,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TextTransform {
+    None,
+    Upper,
+    Lower,
+    Capitalize,
+}
+
