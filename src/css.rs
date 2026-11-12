@@ -1241,3 +1241,33 @@ mod tests {
         assert!(matches(&doc, lis[0], &sel(".c1 :is(li, span)")));
     }
 
+    #[test]
+    fn pseudo_elementos_e_font_face() {
+        let s = &parse_selector_list(".a > p::before").unwrap()[0];
+        assert_eq!(s.pseudo_element, Some(PseudoElement::Before));
+        assert_eq!(s.specificity(), (0, 1, 2));
+        let sheet = parse_stylesheet(
+            "@font-face { font-family: 'Fira Sans'; src: url(a.woff) format('woff'), url(a.woff2) format('woff2'); font-weight: 700 }",
+            &CTX,
+        );
+        assert_eq!(sheet.font_faces[0].family, "fira sans");
+        assert_eq!(sheet.font_faces[0].sources[0], "a.woff2");
+        assert_eq!(sheet.font_faces[0].weight, (700, 700));
+    }
+
+    #[test]
+    fn supports() {
+        assert!(supports_matches("(display: flex)"));
+        assert!(!supports_matches("(display: grid)"));
+        assert!(supports_matches("not (display: grid)"));
+        assert!(supports_matches("(display: grid) or (display: flex)"));
+        assert!(!supports_matches("(display: flex) and (width: clamp(1px, 2vw, 3px))"));
+        assert!(supports_matches("selector(:is(a, b))"));
+    }
+
+    #[test]
+    fn escapes_em_classes() {
+        let s = &parse_selector_list(r".md\:flex").unwrap()[0];
+        assert_eq!(s.compounds[0].classes[0], "md:flex");
+    }
+}
