@@ -199,3 +199,47 @@ impl Session {
         self.paint_frames(false);
     }
 
+    /// Redesenha as imagens dos quadros que mudaram (ou todas, com `all`).
+    pub(crate) fn paint_frames(&mut self, all: bool) {
+        let mut frames = std::mem::take(&mut self.host.borrow_mut().frames);
+        let mut images = Vec::new();
+        for (&n, c) in frames.iter_mut() {
+            // a caixa do <iframe> pode ter mudado
+            let size = frame_box(&self.host.borrow(), n).map(|r| (r.w.max(1.0), r.h.max(1.0)));
+            if let Some(sz) = size
+                && ((sz.0 - c.size.0).abs() > 0.5 || (sz.1 - c.size.1).abs() > 0.5)
+            {
+                c.size = sz;
+                c.session.resize(sz.0, sz.1);
+                c.stale = true;
+            }
+            if !(c.stale || all) {
+                continue;
+            }
+            c.stale = false;
+            let page = c.session.render();
+            c.height = page.height;
+            c.scroll = c.scroll.clamp(0.0, (page.height - c.size.1).max(0.0));
+            let (w, h) = (c.size.0.ceil() as usize, c.size.1.ceil() as usize);
+            if w == 0 || h == 0 || w * h > 4096 * 4096 {
+                continue;
+            }
+            let mut canvas = Canvas::new(w, h, page.background);
+            canvas.videos = c.session.video_frames();
+            let t = Transform { scale: 1.0, dx: 0.0, dy: -c.scroll };
+            canvas.paint_list(&page.items, &c.session.host.borrow().fonts.clone(), t, None);
+            let mut rgba = Vec::with_capacity(w * h * 4);
+            for p in &canvas.pixels {
+                rgba.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8, 255]);
+            }
+            images.push((n, Arc::new(ImageData { width: w as u32, height: h as u32, rgba })));
+        }
+        let mut hb = self.host.borrow_mut();
+        let added = std::mem::replace(&mut hb.frames, frames);
+        hb.frames.extend(added);
+        for (n, img) in images {
+            hb.frame_images.insert(n, img);
+            hb.frames_changed.insert(n);
+        }
+    }
+
