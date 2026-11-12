@@ -2655,3 +2655,73 @@ impl Compiler {
         Ok(())
     }
 
+    /// Empilha [função this] para uma chamada.
+    fn callee(&mut self, callee: &Expr, optional: bool) -> CResult<()> {
+        match callee {
+            Expr::Member { obj, prop, optional: o2 } => {
+                self.expr(obj)?;
+                if *o2 {
+                    self.opt_site(0);
+                }
+                self.emit(Op::Dup);
+                let c = self.konst(prop);
+                self.emit(Op::GetProp(c));
+                if optional {
+                    self.opt_site(1);
+                }
+                self.emit(Op::Swap);
+            }
+            Expr::Index { obj, index, optional: o2 } => {
+                self.expr(obj)?;
+                if *o2 {
+                    self.opt_site(0);
+                }
+                self.emit(Op::Dup);
+                self.expr(index)?;
+                self.emit(Op::GetIndex);
+                if optional {
+                    self.opt_site(1);
+                }
+                self.emit(Op::Swap);
+            }
+            Expr::PrivateMember(obj, name) => {
+                self.expr(obj)?;
+                self.emit(Op::Dup);
+                self.load_private(name)?;
+                self.emit(Op::GetPrivate);
+                if optional {
+                    self.opt_site(1);
+                }
+                self.emit(Op::Swap);
+            }
+            Expr::SuperMember(name) => {
+                self.this()?;
+                self.emit(Op::Dup);
+                let c = self.konst(name);
+                self.emit(Op::GetSuper(c));
+                if optional {
+                    self.opt_site(1);
+                }
+                self.emit(Op::Swap);
+            }
+            Expr::SuperIndex(idx) => {
+                self.this()?;
+                self.emit(Op::Dup);
+                self.expr(idx)?;
+                self.emit(Op::GetSuperIndex);
+                if optional {
+                    self.opt_site(1);
+                }
+                self.emit(Op::Swap);
+            }
+            _ => {
+                self.expr(callee)?;
+                if optional {
+                    self.opt_site(0);
+                }
+                self.emit(Op::Undef);
+            }
+        }
+        Ok(())
+    }
+
