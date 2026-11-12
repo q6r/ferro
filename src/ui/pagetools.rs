@@ -283,3 +283,80 @@ impl App {
         hits.push((close, Hit::FindClose));
     }
 
+    /// Lista aberta de um `<select>`, logo abaixo (ou acima) dele.
+    pub(super) fn draw_select(&self, p: &mut Painter, t: &Theme, g: &Geo, hits: &mut Hits) {
+        let Some((_, popup, hl, first)) = &self.select else { return };
+        const ROW: f32 = 28.0;
+        const ROWS: usize = 10;
+        let c = g.content;
+        let z = self.zoom;
+        let scroll = self.effective_scroll(self.active);
+        let sx = c.x + popup.rect.x * z;
+        let sy = c.y + (popup.rect.y - scroll) * z;
+        let sh = popup.rect.h * z;
+        let widest = popup.labels.iter().map(|l| p.measure(l, 14.0, Weight::Regular)).fold(0.0, f32::max);
+        let w = (popup.rect.w * z).max(widest + 36.0).min(c.w - 8.0);
+        let n = popup.labels.len().min(ROWS);
+        let h = n as f32 * ROW + 8.0;
+        // abre para baixo; sem espaço, para cima
+        let y = if sy + sh + h <= c.y + c.h { sy + sh + 2.0 } else { (sy - h - 2.0).max(c.y) };
+        let x = sx.clamp(c.x, c.x + c.w - w);
+        let r = rect(x, y, w, h);
+        p.shadow(r, 10.0, 34);
+        p.rrect(r, 10.0, t.popup);
+        p.stroke(r, 10.0, 1.0, t.border);
+        hits.push((r, Hit::SelectList));
+        for k in 0..n {
+            let i = *first + k;
+            let Some(label) = popup.labels.get(i) else { break };
+            let row = rect(x + 4.0, y + 4.0 + k as f32 * ROW, w - 8.0, ROW);
+            let disabled = popup.disabled.get(i).copied().unwrap_or(false);
+            let hover = self.hover == Some(Hit::SelectOption(i));
+            if i == *hl || hover {
+                p.rrect(row, 7.0, if hover && i != *hl { t.row_selected() } else { t.accent });
+            }
+            let color = if i == *hl && !hover { t.on_accent } else if disabled { t.muted } else { t.text };
+            let text = p.ellipsize(label, 14.0, Weight::Regular, row.w - 20.0);
+            p.text(row.x + 10.0, Painter::baseline(row.y + ROW / 2.0, 14.0), &text, 14.0, color, Weight::Regular);
+            if i as i32 == popup.selected {
+                p.rect(rect(row.x + 2.0, row.y + 8.0, 3.0, ROW - 16.0), if i == *hl { t.on_accent } else { t.accent });
+            }
+            if !disabled {
+                hits.push((row, Hit::SelectOption(i)));
+            }
+        }
+    }
+
+    /// Menu de contexto (botão direito).
+    pub(super) fn draw_menu(&self, p: &mut Painter, t: &Theme, hits: &mut Hits) {
+        let Some(((mx, my), items)) = &self.menu else { return };
+        const ROW: f32 = 30.0;
+        const SEP: f32 = 9.0;
+        let (ww, wh) = self.logical_size();
+        let widest = items.iter().map(|(l, _)| p.measure(l, 13.5, Weight::Regular)).fold(0.0, f32::max);
+        let w = (widest + 44.0).max(190.0);
+        let h: f32 = items.iter().map(|(_, a)| if a.is_some() { ROW } else { SEP }).sum::<f32>() + 10.0;
+        let x = mx.min(ww - w - 6.0).max(6.0);
+        let y = if my + h > wh - 6.0 { (my - h).max(6.0) } else { *my };
+        let r = rect(x, y, w, h);
+        p.shadow(r, 12.0, 36);
+        p.rrect(r, 12.0, t.popup);
+        p.stroke(r, 12.0, 1.0, t.border);
+        hits.push((r, Hit::Menu));
+        let mut cy = y + 5.0;
+        for (i, (label, action)) in items.iter().enumerate() {
+            if action.is_none() {
+                p.rect(rect(x + 12.0, cy + SEP / 2.0, w - 24.0, 1.0), t.border);
+                cy += SEP;
+                continue;
+            }
+            let row = rect(x + 5.0, cy, w - 10.0, ROW);
+            if self.hover == Some(Hit::MenuItem(i)) {
+                p.rrect(row, 8.0, t.row_selected());
+            }
+            p.text(row.x + 14.0, Painter::baseline(row.y + ROW / 2.0, 13.5), label, 13.5, t.text, Weight::Regular);
+            hits.push((row, Hit::MenuItem(i)));
+            cy += ROW;
+        }
+    }
+
