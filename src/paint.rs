@@ -562,3 +562,67 @@ impl Canvas {
     // ---------------------------------------------------- primitivas públicas
     // (coordenadas em pixels do dispositivo)
 
+    pub fn fill_rect(&mut self, r: Rect, color: Color, clip: Option<Rect>) {
+        let c = self.clip(clip);
+        self.fill_clip(r, color, c);
+    }
+
+    pub fn fill_round_rect(&mut self, r: Rect, radius: f32, color: Color, clip: Option<Rect>) {
+        let c = self.clip(clip);
+        self.round_rect_clip(r, radius, color, None, c);
+    }
+
+    /// Contorno de `width` pixels, por dentro do retângulo.
+    pub fn stroke_round_rect(&mut self, r: Rect, radius: f32, width: f32, color: Color, clip: Option<Rect>) {
+        let c = self.clip(clip);
+        self.round_rect_clip(r, radius, color, Some(width), c);
+    }
+
+    /// Retângulo arredondado com gradiente vertical de `top` para `bottom`.
+    pub fn fill_round_rect_gradient(&mut self, r: Rect, radius: f32, top: Color, bottom: Color) {
+        let c = self.full().intersect(Clip::from_rect(r));
+        if c.is_empty() {
+            return;
+        }
+        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        for y in c.y0..c.y1 {
+            let py = y as f32 + 0.5;
+            let color = lerp_color(top, bottom, ((py - r.y) / r.h).clamp(0.0, 1.0));
+            for x in c.x0..c.x1 {
+                let cov = (0.5 - rr_sdf(x as f32 + 0.5, py, r, radius)).clamp(0.0, 1.0);
+                if cov > 0.0 {
+                    self.blend(x, y, color, (cov * 255.0) as u32);
+                }
+            }
+        }
+    }
+
+    /// Pinta `color` por fora dos cantos arredondados de `r` (arredonda o que
+    /// já foi desenhado dentro do retângulo).
+    pub fn round_corners(&mut self, r: Rect, radius: f32, color: Color) {
+        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        let full = self.full();
+        let corners = [
+            (r.x, r.y),
+            (r.x + r.w - radius, r.y),
+            (r.x, r.y + r.h - radius),
+            (r.x + r.w - radius, r.y + r.h - radius),
+        ];
+        for (cx, cy) in corners {
+            let c = full.intersect(Clip::from_rect(Rect {
+                x: cx,
+                y: cy,
+                w: radius,
+                h: radius,
+            }));
+            for y in c.y0..c.y1 {
+                for x in c.x0..c.x1 {
+                    let inside = (0.5 - rr_sdf(x as f32 + 0.5, y as f32 + 0.5, r, radius)).clamp(0.0, 1.0);
+                    if inside < 1.0 {
+                        self.blend(x, y, color, ((1.0 - inside) * 255.0) as u32);
+                    }
+                }
+            }
+        }
+    }
+
