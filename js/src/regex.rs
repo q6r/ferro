@@ -1157,3 +1157,81 @@ impl Compiler {
         Ok(())
     }
 
+    fn split(&mut self, greedy: bool, body: u32, exit: u32) -> Inst {
+        if greedy { Inst::Split(body, exit) } else { Inst::Split(exit, body) }
+    }
+
+    fn repeat(&mut self, node: &Node, min: u32, max: u32, greedy: bool, back: bool) -> Result<(), RegexError> {
+        if max == 0 {
+            return Ok(());
+        }
+        // um caractere só, sem grupos: instrução própria
+        let simple = matches!(node, Node::Any | Node::Class(_)) || matches!(node, Node::Char(c) if *c <= 0xFFFF || self.flags.full_unicode());
+        if simple {
+            let m = self.single(node).unwrap();
+            self.emit(Inst::Repeat { m, min, max, greedy, back });
+            return Ok(());
+        }
+        let mut caps = None;
+        group_range(node, &mut caps);
+        let clear = |c: &mut Compiler| {
+            if let Some((a, b)) = caps {
+                c.emit(Inst::Clear(2 * a, 2 * b + 1));
+            }
+        };
+        if min == 0 && max == 1 {
+            let split = self.emit(Inst::Split(0, 0));
+            let body = self.here();
+            clear(self);
+            self.compile(node, back)?;
+            let exit = self.here();
+            self.insts[split as usize] = self.split(greedy, body, exit);
+            return Ok(());
+        }
+        if max == INF && min <= 1 {
+            if min == 1 {
+                clear(self);
+                self.compile(node, back)?;
+            }
+            let p = self.reg();
+            let top = self.emit(Inst::Split(0, 0));
+            let body = self.here();
+            self.emit(Inst::SetReg(p));
+            clear(self);
+            self.compile(node, back)?;
+            self.emit(Inst::EmptyCheck(p));
+            self.emit(Inst::Jmp(top));
+            let exit = self.here();
+            self.insts[top as usize] = self.split(greedy, body, exit);
+            return Ok(());
+        }
+        // caso geral com contador
+        let c = self.reg();
+        let p = self.reg();
+        self.emit(Inst::CountInit(c));
+        let top = self.here();
+        let forced = self.emit(Inst::CountLt { r: c, n: min, target: 0 });
+        let at_max = if max != INF { Some(self.emit(Inst::CountGe { r: c, n: max, target: 0 })) } else { None };
+        let split = self.emit(Inst::Split(0, 0));
+        let body = self.here();
+        self.emit(Inst::SetReg(p));
+        clear(self);
+        self.compile(node, back)?;
+        self.emit(Inst::EmptyCheckMin { pos: p, count: c, min });
+        self.emit(Inst::CountInc(c));
+        self.emit(Inst::Jmp(top));
+        let forced_body = self.here();
+        self.set_target(forced, forced_body);
+        clear(self);
+        self.compile(node, back)?;
+        self.emit(Inst::CountInc(c));
+        self.emit(Inst::Jmp(top));
+        let exit = self.here();
+        self.insts[split as usize] = self.split(greedy, body, exit);
+        if let Some(m) = at_max {
+            self.set_target(m, exit);
+        }
+        Ok(())
+    }
+}
+
