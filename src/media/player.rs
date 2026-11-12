@@ -326,3 +326,41 @@ fn open_output(shared: Arc<AudioShared>) -> Option<cpal::Stream> {
     Some(stream)
 }
 
+/// Decodificação e apresentação de um elemento de mídia.
+pub struct Pipeline {
+    video: Option<VideoPipe>,
+    audio: Option<AudioPipe>,
+    /// Trilhas em uso: (codec, lista). Um novo segmento de inicialização ou
+    /// outro SourceBuffer troca.
+    video_src: Option<(Codec, SharedSamples)>,
+    audio_src: Option<(Codec, SharedSamples)>,
+    /// Último quadro mostrado.
+    pub shown: Option<(f64, Arc<ImageData>)>,
+    pub frames_shown: u32,
+    clock: SharedClock,
+    /// Nó do elemento e o destino dos quadros (a interface).
+    pub node: usize,
+    pub sink: Option<FrameSink>,
+    last_seq: u64,
+}
+
+fn same_src(a: &Option<(Codec, SharedSamples)>, codec: &Codec, list: &SharedSamples) -> bool {
+    a.as_ref().is_some_and(|(c, l)| c == codec && Arc::ptr_eq(l, list))
+}
+
+impl Pipeline {
+    pub fn new() -> Pipeline {
+        Pipeline {
+            video: None,
+            audio: None,
+            video_src: None,
+            audio_src: None,
+            shown: None,
+            frames_shown: 0,
+            clock: Arc::new(Mutex::new(Clock { base: 0.0, since: Instant::now(), rate: 1.0, running: false })),
+            node: 0,
+            sink: None,
+            last_seq: 0,
+        }
+    }
+
