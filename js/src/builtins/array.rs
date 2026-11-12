@@ -312,3 +312,73 @@ pub fn values(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     make_iter(vm, a, IterKind::Values)
 }
 
+pub fn array_iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(it) = &a.this else {
+        return Err(vm.type_error("next method called on incompatible receiver"));
+    };
+    if let Some(r) = vm.array_iter_fast(it) {
+        return Ok(match r {
+            Some(v) => iter_result(vm, v, false),
+            None => iter_result(vm, Value::Undefined, true),
+        });
+    }
+    let (target, index, kind) = match &it.borrow().kind {
+        Kind::ArrayIter { target, index, kind } => (target.clone(), *index, *kind),
+        _ => return Err(vm.type_error("next method called on incompatible receiver")),
+    };
+    let Value::Object(t) = &target else {
+        return Ok(iter_result(vm, Value::Undefined, true));
+    };
+    let len = if index == usize::MAX { 0 } else { vm.length_of(t)? };
+    if index >= len {
+        if let Kind::ArrayIter { index, .. } = &mut it.borrow_mut().kind {
+            *index = usize::MAX;
+        }
+        return Ok(iter_result(vm, Value::Undefined, true));
+    }
+    if let Kind::ArrayIter { index, .. } = &mut it.borrow_mut().kind {
+        *index += 1;
+    }
+    let v = match kind {
+        IterKind::Keys => Value::Number(index as f64),
+        IterKind::Values => get_i(vm, t, index)?,
+        IterKind::Entries => {
+            let v = get_i(vm, t, index)?;
+            vm.array_value(vec![Value::Number(index as f64), v])
+        }
+    };
+    Ok(iter_result(vm, v, false))
+}
+
+fn every(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let f = callback(vm, a, "every")?;
+    let len = vm.length_of(&o)?;
+    for i in 0..len {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            let r = vm.call(&f, a.arg(1), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?;
+            if !truthy(&r) {
+                return Ok(Value::Bool(false));
+            }
+        }
+    }
+    Ok(Value::Bool(true))
+}
+
+fn some(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let f = callback(vm, a, "some")?;
+    let len = vm.length_of(&o)?;
+    for i in 0..len {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            let r = vm.call(&f, a.arg(1), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?;
+            if truthy(&r) {
+                return Ok(Value::Bool(true));
+            }
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
