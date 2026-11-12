@@ -108,3 +108,42 @@ fn desc_len(b: &[u8], i: &mut usize) -> usize {
     n
 }
 
+/// AudioSpecificConfig de dentro do `esds`.
+fn esds_config(esds: &[u8]) -> Option<Vec<u8>> {
+    // versão/flags (4), depois ES_Descriptor (tag 3)
+    let b = esds.get(4..)?;
+    let mut i = 0;
+    if *b.get(i)? != 3 {
+        return None;
+    }
+    i += 1;
+    let _ = desc_len(b, &mut i);
+    i += 2; // ES_ID
+    let flags = *b.get(i)?;
+    i += 1;
+    if flags & 0x80 != 0 {
+        i += 2;
+    }
+    if flags & 0x40 != 0 {
+        let n = *b.get(i)? as usize;
+        i += 1 + n;
+    }
+    if flags & 0x20 != 0 {
+        i += 2;
+    }
+    // DecoderConfigDescriptor (tag 4)
+    if *b.get(i)? != 4 {
+        return None;
+    }
+    i += 1;
+    let _ = desc_len(b, &mut i);
+    i += 13;
+    // DecoderSpecificInfo (tag 5)
+    if *b.get(i)? != 5 {
+        return None;
+    }
+    i += 1;
+    let n = desc_len(b, &mut i);
+    b.get(i..i + n).map(|s| s.to_vec())
+}
+
