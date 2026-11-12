@@ -590,3 +590,69 @@ impl ComputedStyle {
         }
     }
 
+    /// Estilo novo que herda as propriedades herdáveis de `parent`.
+    pub fn inherit_from(parent: &ComputedStyle) -> Self {
+        ComputedStyle {
+            color: parent.color,
+            font_size: parent.font_size,
+            font_weight: parent.font_weight,
+            italic: parent.italic,
+            font_family: parent.font_family,
+            line_height: parent.line_height,
+            text_align: parent.text_align,
+            white_space: parent.white_space,
+            text_transform: parent.text_transform,
+            list_style: parent.list_style,
+            cursor: parent.cursor,
+            pointer_events: parent.pointer_events,
+            visible: parent.visible,
+            custom: parent.custom.clone(),
+            border_spacing: parent.border_spacing,
+            border_collapse: parent.border_collapse,
+            font_names: parent.font_names.clone(),
+            text_shadow: parent.text_shadow,
+            ..ComputedStyle::initial()
+        }
+    }
+
+    /// Largura da borda efetiva (zero se o estilo for none/hidden).
+    pub fn border(&self, side: usize) -> f32 {
+        if self.border_style[side] { self.border_width[side] } else { 0.0 }
+    }
+
+    pub fn border_color(&self, side: usize) -> Color {
+        self.border_color[side].unwrap_or(self.color)
+    }
+
+    pub fn line_height_px(&self, normal: f32) -> f32 {
+        match self.line_height {
+            LineHeight::Normal => normal,
+            LineHeight::Number(n) => n * self.font_size,
+            LineHeight::Px(v) => v,
+        }
+    }
+
+    /// Fora do fluxo normal (position absolute ou fixed).
+    pub fn is_out_of_flow(&self) -> bool {
+        matches!(self.position, Position::Absolute | Position::Fixed)
+    }
+
+    pub fn is_positioned(&self) -> bool {
+        self.position != Position::Static
+    }
+
+    /// Elementos que o CSS esconde da tela mas deixa para leitores de tela
+    /// (padrão `.sr-only`/`.visually-hidden`). Sem `position` real ainda,
+    /// é melhor não desenhá-los.
+    pub fn visually_hidden(&self) -> bool {
+        if !matches!(self.position, Position::Absolute | Position::Fixed) {
+            return false;
+        }
+        let tiny = |l: Len| matches!(l, Len::Px(v) if v <= 1.0);
+        let offscreen = |l: Len| matches!(l, Len::Px(v) if v <= -500.0);
+        self.clipped || tiny(self.width) || tiny(self.height) || offscreen(self.left) || offscreen(self.top)
+    }
+}
+
+// --------------------------------------------------------------------- cores
+
