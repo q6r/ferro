@@ -953,3 +953,78 @@ impl Parser {
         Ok(left)
     }
 
+    /// Tenta ler uma arrow function; se não for, devolve None sem consumir nada.
+    fn try_arrow(&mut self, no_in: bool) -> PResult<Option<Expr>> {
+        let start = self.tok.start;
+        let line = self.line();
+        let is_async = self.is_kw("async") && {
+            let n = self.peek()?;
+            !n.nl_before && matches!(n.tok, Tok::Punct("(") | Tok::Ident(_))
+        };
+        // x => ...
+        if let Tok::Ident(_) = &self.tok.tok
+            && !is_async
+        {
+            let next = self.peek()?;
+            if next.tok == Tok::Punct("=>") && !next.nl_before {
+                let name = self.binding_ident()?;
+                self.advance()?;
+                let f = self.arrow_body(vec![Pattern::Ident(name)], None, false, start, line, no_in)?;
+                return Ok(Some(f));
+            }
+            return Ok(None);
+        }
+        if !self.is("(") && !is_async {
+            return Ok(None);
+        }
+        let saved = self.save();
+        if is_async {
+            self.advance()?;
+            // async x => ...
+            if let Tok::Ident(_) = &self.tok.tok {
+                let next = self.peek()?;
+                if next.tok == Tok::Punct("=>") && !next.nl_before {
+                    let name = self.binding_ident()?;
+                    self.advance()?;
+                    let f = self.arrow_body(vec![Pattern::Ident(name)], None, true, start, line, no_in)?;
+                    return Ok(Some(f));
+                }
+                self.restore(saved);
+                return Ok(None);
+            }
+        }
+        // ( params ) =>
+        let attempt = (|| -> PResult<Option<(Vec<Pattern>, Option<Pattern>)>> {
+            self.expect("(")?;
+            let mut params = Vec::new();
+            let mut rest = None;
+            while !self.is(")") {
+                if self.eat("...")? {
+                    rest = Some(self.parse_binding_target()?);
+                    break;
+                }
+                params.push(self.parse_binding_element()?);
+                if !self.is(")") {
+                    self.expect(",")?;
+                }
+            }
+            self.expect(")")?;
+            if self.is("=>") && !self.tok.nl_before {
+                Ok(Some((params, rest)))
+            } else {
+                Ok(None)
+            }
+        })();
+        match attempt {
+            Ok(Some((params, rest))) => {
+                self.advance()?;
+                let f = self.arrow_body(params, rest, is_async, start, line, no_in)?;
+                Ok(Some(f))
+            }
+            _ => {
+                self.restore(saved);
+                Ok(None)
+            }
+        }
+    }
+
