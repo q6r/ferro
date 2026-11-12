@@ -83,3 +83,62 @@ impl Default for Document {
 impl Document {
     pub const ROOT: NodeId = 0;
 
+    pub fn new() -> Self {
+        Document {
+            nodes: vec![Node {
+                parent: None,
+                children: Vec::new(),
+                data: NodeData::Document,
+            }],
+            shadow_roots: Default::default(),
+            shadow_hosts: Default::default(),
+        }
+    }
+
+    pub fn create(&mut self, data: NodeData) -> NodeId {
+        self.nodes.push(Node {
+            parent: None,
+            children: Vec::new(),
+            data,
+        });
+        self.nodes.len() - 1
+    }
+
+    pub fn append(&mut self, parent: NodeId, child: NodeId) {
+        self.nodes[child].parent = Some(parent);
+        self.nodes[parent].children.push(child);
+    }
+
+    pub fn node(&self, id: NodeId) -> &Node {
+        &self.nodes[id]
+    }
+
+    pub fn element(&self, id: NodeId) -> Option<&ElementData> {
+        match &self.nodes[id].data {
+            NodeData::Element(e) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn tag(&self, id: NodeId) -> Option<&str> {
+        self.element(id).map(|e| e.tag.as_str())
+    }
+
+    pub fn parent_element(&self, id: NodeId) -> Option<NodeId> {
+        let p = self.nodes[id].parent?;
+        self.element(p).map(|_| p)
+    }
+
+    /// Irmãos que são elementos, na ordem do documento (inclui o próprio nó).
+    pub fn element_siblings(&self, id: NodeId) -> Vec<NodeId> {
+        match self.nodes[id].parent {
+            Some(p) => self.nodes[p]
+                .children
+                .iter()
+                .copied()
+                .filter(|&c| self.element(c).is_some())
+                .collect(),
+            None => vec![id],
+        }
+    }
+
