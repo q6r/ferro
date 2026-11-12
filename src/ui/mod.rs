@@ -1290,3 +1290,136 @@ impl App {
         self.update_hover(x, y);
     }
 
+    fn on_click(&mut self, el: &ActiveEventLoop) {
+        let (x, y) = self.mouse;
+        if self.menu.is_some() {
+            match self.hit_at(x, y) {
+                Some(Hit::MenuItem(i)) => self.run_menu(i),
+                Some(Hit::Menu) => {}
+                _ => {
+                    self.menu = None;
+                    self.request_redraw();
+                }
+            }
+            return;
+        }
+        if self.select.is_some() {
+            match self.hit_at(x, y) {
+                Some(Hit::SelectOption(i)) => self.choose_option(i),
+                Some(Hit::SelectList) => {}
+                _ => {
+                    self.select = None;
+                    self.request_redraw();
+                }
+            }
+            return;
+        }
+        match self.hit_at(x, y) {
+            Some(Hit::Tab(i)) => self.activate(i),
+            Some(Hit::CloseTab(i)) => self.close_tab(i, el),
+            Some(Hit::NewTab) => self.new_tab(None, true),
+            Some(Hit::Back) => self.go(-1),
+            Some(Hit::Forward) => self.go(1),
+            Some(Hit::Reload) => {
+                if self.tab().loading {
+                    self.stop()
+                } else {
+                    self.reload()
+                }
+            }
+            Some(Hit::Settings | Hit::Customize) => self.open_internal(SETTINGS_URL),
+            Some(Hit::Home) => self.go_home(),
+            Some(Hit::Search | Hit::FakeBox) => self.open_palette(false),
+            Some(Hit::TogglePanel) => self.toggle_panel(),
+            Some(Hit::Capsule) => self.open_palette(true),
+            Some(Hit::PaletteInput) => {
+                let input_x = chrome::palette_text_x(self.logical_size().0);
+                let fonts = &self.fonts;
+                let scale = self.scale;
+                let font = fonts.pick(crate::style::FontFamily::System, 400, false);
+                let extend = self.mods.shift_key();
+                self.omni.click(
+                    x - input_x,
+                    |s| fonts.measure(font, chrome::PALETTE_FONT * scale, s) / scale,
+                    extend,
+                );
+                self.request_redraw();
+            }
+            Some(Hit::PaletteRow(i)) => {
+                self.suggestion = i;
+                self.run_suggestion(i);
+            }
+            Some(Hit::Scrim) => self.close_palette(),
+            Some(Hit::Shortcut(i)) => {
+                if let Ok(u) = Url::parse(pages::SHORTCUTS[i].url) {
+                    self.navigate(self.active, u);
+                }
+            }
+            Some(Hit::SettingsBack) => {
+                if self.tab().index > 0 {
+                    self.go(-1);
+                } else {
+                    self.go_home();
+                }
+            }
+            Some(Hit::Section(sec)) => {
+                let mut u = Url::parse(SETTINGS_URL).unwrap();
+                match sec {
+                    Section::About => u.set_fragment(Some("sobre")),
+                    Section::Layout => u.set_fragment(Some("layout")),
+                    Section::Appearance => {}
+                }
+                let tab = &mut self.tabs[self.active];
+                tab.history[tab.index].url = u;
+                self.request_redraw();
+            }
+            Some(Hit::Theme(i)) => {
+                self.theme = i;
+                save_config(self.theme, self.layout);
+                self.request_redraw();
+            }
+            Some(Hit::Layout(mode)) => self.set_layout(mode),
+            Some(Hit::Retry) => self.reload(),
+            Some(Hit::FindClose) => self.close_find(),
+            Some(Hit::FindBar | Hit::SelectList | Hit::Menu) => {}
+            Some(Hit::SelectOption(i)) => self.choose_option(i),
+            Some(Hit::MenuItem(i)) => self.run_menu(i),
+            Some(Hit::ScrollThumb) => {
+                if let Some((r, _)) = self.hits.iter().find(|(_, h)| *h == Hit::ScrollThumb) {
+                    self.drag_scroll = Some(y - r.y);
+                }
+            }
+            Some(Hit::ScrollTrack) => {
+                if let Some((_, th)) = self.scrollbar {
+                    self.drag_scroll = Some(th / 2.0);
+                    self.drag_scrollbar(y - th / 2.0);
+                }
+            }
+            None => {
+                if self.mods.control_key() {
+                    // Ctrl+clique: link em nova aba, sem passar pela página
+                    if let Some(href) = self.link_at(x, y) {
+                        self.open_link(&href, true);
+                    }
+                } else if let Some((px, py)) = self.page_point(x, y) {
+                    // a página decide (eventos JS); se for link, o motor pede a navegação
+                    self.sync_scroll();
+                    let tab = self.tab();
+                    tab.engine.click(tab.nav, px, py);
+                    // e começa uma seleção de texto (vale se o mouse arrastar)
+                    if let Some(frame) = self.tabs[self.active].frame.as_ref() {
+                        self.tools.sync(&frame.items);
+                    }
+                    let had = self.tools.sel.is_some();
+                    let caret = self.tools.caret_at(&self.fonts, px, py);
+                    self.tools.sel = caret.map(|c| (c, c));
+                    self.tools.selecting = true;
+                    self.tools.press = Some((x, y));
+                    if had {
+                        self.request_redraw();
+                    }
+                }
+            }
+        }
+    }
+
