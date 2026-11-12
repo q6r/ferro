@@ -1440,3 +1440,241 @@ impl Matcher<'_> {
         r
     }
 
+    fn run_with(&mut self, pc0: u32, pos0: usize, regs: &mut [usize], stack: &mut Vec<Bt>) -> Option<usize> {
+        let insts = &self.prog.insts;
+        let mut pc = pc0 as usize;
+        let mut pos = pos0;
+        loop {
+            self.steps += 1;
+            let ok: bool = match insts[pc] {
+                Inst::Single { m, back } => match self.step(m, pos, back) {
+                    Some(np) => {
+                        pos = np;
+                        pc += 1;
+                        true
+                    }
+                    None => false,
+                },
+                Inst::Repeat { m, min, max, greedy, back } => {
+                    let mut count = 0u32;
+                    let mut p = pos;
+                    let mut ok = true;
+                    while count < min {
+                        match self.step(m, p, back) {
+                            Some(np) => {
+                                p = np;
+                                count += 1;
+                            }
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        if greedy {
+                            let min_pos = p;
+                            while count < max {
+                                match self.step(m, p, back) {
+                                    Some(np) => {
+                                        p = np;
+                                        count += 1;
+                                    }
+                                    None => break,
+                                }
+                            }
+                            if p != min_pos {
+                                stack.push(Bt::Greedy {
+                                    pc: pc as u32 + 1,
+                                    min_pos,
+                                    cur: p,
+                                    back,
+                                });
+                            }
+                        } else if count < max {
+                            stack.push(Bt::Lazy {
+                                pc: pc as u32 + 1,
+                                rep: pc as u32,
+                                cur: p,
+                                count,
+                            });
+                        }
+                        pos = p;
+                        pc += 1;
+                    }
+                    ok
+                }
+                Inst::Split(a, b) => {
+                    stack.push(Bt::Branch { pc: b, pos });
+                    pc = a as usize;
+                    true
+                }
+                Inst::Jmp(t) => {
+                    pc = t as usize;
+                    true
+                }
+                Inst::Save(slot) => {
+                    self.set(regs, stack, slot, pos);
+                    pc += 1;
+                    true
+                }
+                Inst::Clear(a, b) => {
+                    for r in a..=b {
+                        self.set(regs, stack, r, NONE);
+                    }
+                    pc += 1;
+                    true
+                }
+                Inst::Start => {
+                    let ok = pos == 0 || (self.prog.flags.multiline && is_line_term(self.s[pos - 1]));
+                    pc += 1;
+                    ok
+                }
+                Inst::End => {
+                    let ok = pos == self.s.len() || (self.prog.flags.multiline && is_line_term(self.s[pos]));
+                    pc += 1;
+                    ok
+                }
+                Inst::WordB(neg) => {
+                    let a = pos > 0 && self.is_word(pos - 1);
+                    let b = self.is_word(pos);
+                    pc += 1;
+                    (a != b) != neg
+                }
+                Inst::BackRef { group, back } => {
+                    let (s, e) = (regs[2 * group as usize], regs[2 * group as usize + 1]);
+                    pc += 1;
+                    if s == NONE || e == NONE || e < s {
+                        true
+                    } else {
+                        let len = e - s;
+                        let start = if back {
+                            if pos < len {
+                                usize::MAX
+                            } else {
+                                pos - len
+                            }
+                        } else {
+                            pos
+                        };
+                        if start == usize::MAX || start + len > self.s.len() {
+                            false
+                        } else {
+                            let ok = (0..len).all(|k| {
+                                let (x, y) = (self.s[s + k] as u32, self.s[start + k] as u32);
+                                x == y || (self.icase && canon(x, self.unicode) == canon(y, self.unicode))
+                            });
+                            if ok {
+                                pos = if back { start } else { pos + len };
+                            }
+                            ok
+                        }
+                    }
+                }
+                Inst::Look { negate, end } => {
+                    let mut sub = regs.to_vec();
+                    let r = self.run(pc as u32 + 1, pos, &mut sub);
+                    match (r.is_some(), negate) {
+                        (true, false) => {
+                            for (k, v) in sub.iter().enumerate() {
+                                if regs[k] != *v {
+                                    stack.push(Bt::Restore { reg: k as u32, val: regs[k] });
+                                    regs[k] = *v;
+                                }
+                            }
+                            pc = end as usize;
+                            true
+                        }
+                        (false, true) => {
+                            pc = end as usize;
+                            true
+                        }
+                        _ => false,
+                    }
+                }
+                Inst::SetReg(r) => {
+                    self.set(regs, stack, r, pos);
+                    pc += 1;
+                    true
+                }
+                Inst::EmptyCheck(r) => {
+                    pc += 1;
+                    regs[r as usize] != pos
+                }
+                Inst::EmptyCheckMin { pos: r, count, min } => {
+                    pc += 1;
+                    !(regs[r as usize] == pos && regs[count as usize] as u32 >= min)
+                }
+                Inst::CountInit(r) => {
+                    self.set(regs, stack, r, 0);
+                    pc += 1;
+                    true
+                }
+                Inst::CountInc(r) => {
+                    let v = regs[r as usize].saturating_add(1);
+                    self.set(regs, stack, r, v);
+                    pc += 1;
+                    true
+                }
+                Inst::CountLt { r, n, target } => {
+                    if (regs[r as usize] as u64) < n as u64 {
+                        pc = target as usize;
+                    } else {
+                        pc += 1;
+                    }
+                    true
+                }
+                Inst::CountGe { r, n, target } => {
+                    if regs[r as usize] as u64 >= n as u64 {
+                        pc = target as usize;
+                    } else {
+                        pc += 1;
+                    }
+                    true
+                }
+                Inst::Succeed | Inst::Match => return Some(pos),
+            };
+            if ok {
+                continue;
+            }
+            // retrocede
+            loop {
+                match stack.pop() {
+                    None => return None,
+                    Some(Bt::Restore { reg, val }) => regs[reg as usize] = val,
+                    Some(Bt::Branch { pc: p, pos: q }) => {
+                        pc = p as usize;
+                        pos = q;
+                        break;
+                    }
+                    Some(Bt::Greedy { pc: p, min_pos, cur, back }) => {
+                        // devolve um caractere
+                        let prev = if back {
+                            self.read_fwd(cur).map(|(_, n)| n)
+                        } else {
+                            self.read_back(cur).map(|(_, n)| n)
+                        };
+                        let Some(prev) = prev else { continue };
+                        if prev != min_pos {
+                            stack.push(Bt::Greedy { pc: p, min_pos, cur: prev, back });
+                        }
+                        pc = p as usize;
+                        pos = prev;
+                        break;
+                    }
+                    Some(Bt::Lazy { pc: p, rep, cur, count }) => {
+                        let Inst::Repeat { m, max, back, .. } = insts[rep as usize] else { continue };
+                        let Some(np) = self.step(m, cur, back) else { continue };
+                        if count + 1 < max {
+                            stack.push(Bt::Lazy { pc: p, rep, cur: np, count: count + 1 });
+                        }
+                        pc = p as usize;
+                        pos = np;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
