@@ -454,3 +454,31 @@ impl Vm {
         }
     }
 
+    /// O protótipo de um objeto criado por `new` (respeita subclasses).
+    pub fn proto_from_ctor(&mut self, new_target: Option<&ObjRef>, default: &ObjRef) -> Result<ObjRef, Value> {
+        if let Some(nt) = new_target {
+            let p = self.get_obj(nt, &PropKey::str("prototype"))?;
+            if let Value::Object(p) = p {
+                return Ok(p);
+            }
+        }
+        Ok(default.clone())
+    }
+
+    /// Inicializa os campos de classe da função `func` em `obj`.
+    fn init_fields(&mut self, func: &Option<ObjRef>, obj: &Value) -> Result<(), Value> {
+        let fields = match func {
+            Some(f) => match &f.borrow().kind {
+                Kind::Function(Func::Closure(c)) => c.fields.clone(),
+                _ => None,
+            },
+            None => None,
+        };
+        if let Some(fields) = fields {
+            self.call_obj(&fields, obj.clone(), Vec::new())?;
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------- execução
+
