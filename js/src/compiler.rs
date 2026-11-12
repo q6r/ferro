@@ -894,3 +894,63 @@ pub(crate) enum Decl {
     Callee,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Loc {
+    Reg(u32),
+    Env(u32),
+    Global,
+}
+
+struct VarC {
+    name: Name,
+    loc: Loc,
+    decl: Decl,
+    /// Já inicializada neste ponto da compilação (dispensa checar TDZ).
+    ready: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ScopeKind {
+    Function,
+    Block,
+    Switch,
+    Script,
+}
+
+struct ScopeC {
+    /// Identidade do escopo (endereço do nó da AST), ligando à análise de capturas.
+    key: usize,
+    vars: Vec<VarC>,
+    /// Nome → posições em `vars` (escopos de código minificado têm milhares de nomes).
+    index: FxHashMap<Name, Vec<u32>>,
+    env_size: u32,
+    has_env: bool,
+    kind: ScopeKind,
+    reg_base: u32,
+}
+
+impl ScopeC {
+    fn add(&mut self, v: VarC) {
+        self.index.entry(v.name.clone()).or_default().push(self.vars.len() as u32);
+        self.vars.push(v);
+    }
+
+    /// A declaração mais recente com esse nome.
+    fn last(&self, name: &str) -> Option<usize> {
+        self.index.get(name).and_then(|l| l.last()).map(|&i| i as usize)
+    }
+
+    /// A primeira declaração com esse nome que satisfaz `f`.
+    fn first_where(&self, name: &str, f: impl Fn(&VarC) -> bool) -> Option<usize> {
+        self.index.get(name)?.iter().map(|&i| i as usize).find(|&i| f(&self.vars[i]))
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum LoopKind {
+    Plain,
+    ForIn,
+    ForOf,
+    ForAwait,
+}
+
