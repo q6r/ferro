@@ -2036,3 +2036,37 @@ pub fn same_value(a: &Value, b: &Value) -> bool {
     }
 }
 
+pub fn js_rem(x: f64, y: f64) -> f64 {
+    // inteiros (o caso comum): resto inteiro, sem fmod
+    if x.fract() == 0.0 && y.fract() == 0.0 && y != 0.0 && x.abs() < 9e15 && y.abs() < 9e15 {
+        let r = (x as i64) % (y as i64);
+        if r == 0 && x.is_sign_negative() {
+            return -0.0;
+        }
+        return r as f64;
+    }
+    if y == 0.0 || x.is_infinite() || x.is_nan() || y.is_nan() {
+        return f64::NAN;
+    }
+    if y.is_infinite() {
+        return x;
+    }
+    if x == 0.0 {
+        return x;
+    }
+    let r = x % y;
+    if r == 0.0 { 0.0f64.copysign(x) } else { r }
+}
+
+pub fn js_pow(x: f64, y: f64) -> f64 {
+    if y.is_nan() {
+        return f64::NAN;
+    }
+    if y == 0.0 {
+        return 1.0;
+    }
+    if (x == 1.0 || x == -1.0) && y.is_infinite() {
+        return f64::NAN;
+    }
+    x.powf(y)
+}
