@@ -2126,3 +2126,60 @@ impl Compiler {
         Ok(())
     }
 
+    /// Fecha o iterador de um for await esperando o return() (spec: AsyncIteratorClose).
+    fn async_iter_close(&mut self) {
+        let skip = self.emit(Op::AsyncIterClose(0));
+        self.emit(Op::Await);
+        self.emit(Op::AwaitResume);
+        self.emit(Op::Pop);
+        self.patch(skip);
+    }
+
+    fn switch(&mut self, disc: &Expr, cases: &[Case]) -> CResult<()> {
+        let labels = self.take_labels();
+        self.expr(disc)?;
+        let tmp = self.alloc_reg();
+        self.emit(Op::SetReg(tmp));
+        let all: Vec<Stmt> = cases.iter().flat_map(|c| c.body.iter().cloned()).collect();
+        self.enter_block(&all, ScopeKind::Switch, cases.as_ptr() as usize)?;
+        let env_depth = self.fr().env_depth;
+        self.f().ctl.push(Ctl::Block {
+            labels,
+            breaks: Vec::new(),
+            env_depth,
+            is_switch: true,
+        });
+        let mut jumps = Vec::new();
+        for c in cases {
+            if let Some(t) = &c.test {
+                self.emit(Op::GetReg(tmp));
+                self.expr(t)?;
+                self.emit(Op::StrictEq);
+                jumps.push(Some(self.emit(Op::JumpIfTrue(0))));
+            } else {
+                jumps.push(None);
+            }
+        }
+        let to_default = self.emit(Op::Jump(0));
+        let mut default_pos = None;
+        for (i, c) in cases.iter().enumerate() {
+            match jumps[i] {
+                Some(j) => self.patch(j),
+                None => default_pos = Some(self.here()),
+            }
+            self.stmts(&c.body)?;
+        }
+        match default_pos {
+            Some(p) => self.patch_to(to_default, p),
+            None => self.patch(to_default),
+        }
+        if let Some(Ctl::Block { breaks, .. }) = self.f().ctl.pop() {
+            for b in breaks {
+                self.patch(b);
+            }
+        }
+        self.pop_scope();
+        self.free_reg(tmp);
+        Ok(())
+    }
+
