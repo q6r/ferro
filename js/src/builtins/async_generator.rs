@@ -145,3 +145,61 @@ fn finish_front(vm: &mut Vm, g: &ObjRef, r: Result<Value, Value>, done: bool) {
     }
 }
 
+fn run(vm: &mut Vm, g: &ObjRef, mut frame: Box<Frame>) {
+    let mut frame_opt = Some(frame);
+    let mut resume: Option<(Value, u8)> = None;
+    loop {
+        let Some(f) = frame_opt.take() else { return };
+        frame = f;
+        if let Some((v, m)) = resume.take() {
+            frame.stack.push(v);
+            frame.stack.push(Value::Number(m as f64));
+        }
+        frame.suspended = false;
+        let r = vm.run_frame(&mut frame);
+        match r {
+            Ok(v) if frame.suspended && frame.suspend_await => {
+                match vm.promise_resolve_value(v) {
+                    Ok(p) => {
+                        if let Kind::AsyncGenerator(d) = &mut g.borrow_mut().kind {
+                            d.frame = Some(frame);
+                        }
+                        let on_ful = vm.realm.native("", 1, await_fulfilled);
+                        let on_rej = vm.realm.native("", 1, await_rejected);
+                        set_native_data(&on_ful, Value::Object(g.clone()));
+                        set_native_data(&on_rej, Value::Object(g.clone()));
+                        vm.perform_then(&p, Value::Object(on_ful), Value::Object(on_rej), None);
+                        return;
+                    }
+                    Err(e) => {
+                        resume = Some((e, RESUME_THROW));
+                        frame_opt = Some(frame);
+                        continue;
+                    }
+                }
+            }
+            Ok(v) if frame.suspended => {
+                if let Kind::AsyncGenerator(d) = &mut g.borrow_mut().kind {
+                    d.frame = Some(frame);
+                    d.state = GenState::Yield;
+                }
+                finish_front(vm, g, Ok(v), false);
+                resume_next(vm, g);
+                return;
+            }
+            Ok(v) => {
+                set_state(g, GenState::Done);
+                finish_front(vm, g, Ok(v), true);
+                resume_next(vm, g);
+                return;
+            }
+            Err(e) => {
+                set_state(g, GenState::Done);
+                finish_front(vm, g, Err(e), true);
+                resume_next(vm, g);
+                return;
+            }
+        }
+    }
+}
+
