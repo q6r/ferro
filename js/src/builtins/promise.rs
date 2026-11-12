@@ -302,3 +302,45 @@ impl Vm {
         self.report_unhandled();
     }
 
+    /// Exceção que escapou de um callback (timer, microtarefa).
+    pub fn report_uncaught(&mut self, e: &Value) {
+        let text = format!("Uncaught {}", super::console::inspect(self, e, 2));
+        (self.output)(Out::Error, &text);
+    }
+
+    fn report_unhandled(&mut self) {
+        let list = std::mem::take(&mut self.pending_rejections);
+        for p in list {
+            let reason = {
+                let b = p.borrow();
+                match &b.kind {
+                    Kind::Promise(d) if !d.handled => match &d.state {
+                        PState::Rejected(r) => Some(r.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            };
+            if let Some(r) = reason {
+                let text = format!("Uncaught (in promise) {}", super::console::inspect(self, &r, 2));
+                (self.output)(Out::Error, &text);
+            }
+        }
+    }
+
+    // ------------------------------------------------------ funções async
+
+    /// Começa uma função async: roda até o primeiro `await` e devolve a promessa.
+    pub fn async_call(&mut self, frame: Frame) -> Result<Value, Value> {
+        let promise = self.new_promise();
+        let co = ObjRef::new(Object::new(
+            None,
+            Kind::Async(Box::new(AsyncData {
+                frame: Some(Box::new(frame)),
+                promise: promise.clone(),
+            })),
+        ));
+        self.async_step(&co, None);
+        Ok(Value::Object(promise))
+    }
+
