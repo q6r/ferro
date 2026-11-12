@@ -723,6 +723,15 @@ pub fn parse_color(v: &str, current: Color) -> Option<Color> {
     if v == "currentcolor" {
         return Some(current);
     }
+    // light-dark(claro, escuro): segue a preferência de esquema de cores
+    if let Some(inner) = v.strip_prefix("light-dark(").and_then(|s| s.strip_suffix(')')) {
+        let parts = css::split_top_level(inner, ',');
+        if parts.len() == 2 {
+            let pick = if css::prefers_dark() { &parts[1] } else { &parts[0] };
+            return parse_color(pick, current);
+        }
+        return None;
+    }
     if let Some(hex) = v.strip_prefix('#') {
         let d: Vec<u8> = hex
             .chars()

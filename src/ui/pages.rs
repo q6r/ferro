@@ -230,6 +230,7 @@ pub fn settings(
     t: &Theme,
     current: usize,
     layout: LayoutMode,
+    dark_sites: bool,
     area: Rect,
     section: Section,
     hits: &mut Hits,
@@ -319,6 +320,27 @@ pub fn settings(
                 p.text(card.x, card.y + ch + 26.0, th.name, 15.0, t.text, Weight::Regular);
                 hits.push((rect(card.x, card.y, cw, ch + 34.0), Hit::Theme(i)));
             }
+            // sites no tema escuro (prefers-color-scheme)
+            let rows = THEMES.len().div_ceil(per_row) as f32;
+            let row = rect(x, top + rows * (ch + 50.0) + 18.0, inner_w.min(640.0), 64.0);
+            if hover == Some(Hit::DarkSites) {
+                p.rrect(row, 14.0, t.field_hover);
+            }
+            p.text(row.x + 16.0, row.y + 27.0, "Sites no tema escuro", 16.0, t.text, Weight::Semibold);
+            p.text(
+                row.x + 16.0,
+                row.y + 48.0,
+                "Com um tema escuro, pede aos sites a versão escura deles (se tiverem).",
+                13.0,
+                t.muted,
+                Weight::Regular,
+            );
+            let sw = rect(row.x + row.w - 62.0, row.y + 20.0, 44.0, 24.0);
+            p.rrect(sw, 12.0, if dark_sites { t.accent } else { t.field_hover });
+            p.stroke(sw, 12.0, 1.0, t.border);
+            let knob_x = if dark_sites { sw.x + sw.w - 22.0 } else { sw.x + 2.0 };
+            p.rrect(rect(knob_x, sw.y + 2.0, 20.0, 20.0), 10.0, if dark_sites { t.toolbar } else { t.muted });
+            hits.push((row, Hit::DarkSites));
         }
         Section::Layout => {
             by += 64.0;

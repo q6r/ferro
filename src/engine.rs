@@ -419,7 +419,7 @@ pub fn is_quirks(doc: &Document) -> bool {
 
 thread_local! {
     /// Folhas já analisadas (texto + tamanho da janela, por causa do @media).
-    static SHEETS: std::cell::RefCell<HashMap<(u64, usize, u32, u32), std::rc::Rc<css::Stylesheet>>> =
+    static SHEETS: std::cell::RefCell<HashMap<(u64, usize, u32, u32, bool), std::rc::Rc<css::Stylesheet>>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -429,7 +429,8 @@ fn cached_sheet(text: &str, media: &MediaContext) -> std::rc::Rc<css::Stylesheet
     use std::hash::Hasher;
     let mut h = ferro_js::fxhash::FxHasher::default();
     h.write(text.as_bytes());
-    let key = (h.finish(), text.len(), media.width.to_bits(), media.height.to_bits());
+    // as regras @media dependem do tamanho e do esquema de cores
+    let key = (h.finish(), text.len(), media.width.to_bits(), media.height.to_bits(), css::prefers_dark());
     SHEETS.with(|c| {
         if let Some(s) = c.borrow().get(&key) {
             return s.clone();

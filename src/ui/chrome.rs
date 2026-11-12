@@ -64,7 +64,7 @@ impl App {
                 None
             }
             Kind::Settings(sec) => {
-                pages::settings(p, t, self.theme, self.layout, area, sec, hits, self.hover);
+                pages::settings(p, t, self.theme, self.layout, self.dark_sites, area, sec, hits, self.hover);
                 None
             }
             Kind::Web => {

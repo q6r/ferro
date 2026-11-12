@@ -140,6 +140,10 @@ fn main() {
             .unwrap_or(70);
         std::process::exit(code);
     }
+    // FERRO_ESCURO=1: os sites veem prefers-color-scheme: dark (modo PNG)
+    if std::env::var_os("FERRO_ESCURO").is_some() {
+        ferro::css::set_prefers_dark(true);
+    }
     // FERRO_DADOS=pasta: cookies e localStorage gravados nessa pasta (modo PNG)
     if let Some(dir) = std::env::var_os("FERRO_DADOS") {
         ferro::dados::enable(PathBuf::from(dir));

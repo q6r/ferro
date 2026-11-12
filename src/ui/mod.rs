@@ -112,6 +112,8 @@ pub enum Hit {
     SettingsBack,
     Section(Section),
     Theme(usize),
+    /// Interruptor "Sites no tema escuro".
+    DarkSites,
     Layout(LayoutMode),
     Retry,
     ScrollThumb,
@@ -285,6 +287,8 @@ pub struct App {
     zoom: f32,
     theme: usize,
     layout: LayoutMode,
+    /// Sites no tema escuro (`prefers-color-scheme: dark` com tema escuro).
+    dark_sites: bool,
     panel_collapsed: bool,
     tabs: Vec<Tab>,
     active: usize,
@@ -349,6 +353,7 @@ pub fn run(initial: Option<Url>, capture: Option<Capture>) -> Result<(), String>
         zoom: 1.0,
         theme: config.0,
         layout: config.1,
+        dark_sites: config.2,
         panel_collapsed: false,
         tabs: Vec::new(),
         active: 0,
@@ -381,6 +386,8 @@ pub fn run(initial: Option<Url>, capture: Option<Capture>) -> Result<(), String>
         capture,
         started: Instant::now(),
     };
+    // sites no tema escuro, se a configuração pedir
+    app.apply_color_scheme();
     event_loop.run_app(&mut app).map_err(|e| e.to_string())
 }
 
@@ -393,21 +400,25 @@ fn config_path() -> Option<PathBuf> {
     Some(base.join("Ferro").join("config.txt"))
 }
 
-fn load_config() -> (usize, LayoutMode) {
+fn load_config() -> (usize, LayoutMode, bool) {
     let text = config_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
     let get = |key: &str| text.lines().find_map(|l| l.strip_prefix(key).map(str::trim));
     (
         get("tema=").map_or(0, theme::by_id),
         get("layout=").map_or(LayoutMode::Sidebar, LayoutMode::from_id),
+        get("sites_escuros=") == Some("1"),
     )
 }
 
-fn save_config(theme: usize, layout: LayoutMode) {
+fn save_config(theme: usize, layout: LayoutMode, dark_sites: bool) {
     if let Some(p) = config_path() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, format!("tema={}\nlayout={}\n", THEMES[theme].id, layout.id()));
+        let _ = std::fs::write(
+            p,
+            format!("tema={}\nlayout={}\nsites_escuros={}\n", THEMES[theme].id, layout.id(), dark_sites as u8),
+        );
     }
 }
 
@@ -825,9 +836,25 @@ impl App {
         self.history.truncate(300);
     }
 
+    /// Avisa o motor se os sites devem ver o esquema escuro; se mudou,
+    /// recarrega as páginas abertas (as regras @media mudam).
+    fn apply_color_scheme(&mut self) {
+        let dark = self.dark_sites && self.theme().dark;
+        if crate::css::prefers_dark() == dark {
+            return;
+        }
+        crate::css::set_prefers_dark(dark);
+        let web: Vec<usize> = (0..self.tabs.len())
+            .filter(|&k| matches!(self.tabs[k].url().scheme(), "http" | "https" | "file"))
+            .collect();
+        for k in web {
+            self.load(k);
+        }
+    }
+
     fn set_layout(&mut self, layout: LayoutMode) {
         self.layout = layout;
-        save_config(self.theme, self.layout);
+        save_config(self.theme, self.layout, self.dark_sites);
         self.sync_viewport();
         self.request_redraw();
     }
@@ -1398,9 +1425,16 @@ impl App {
                 tab.history[tab.index].url = u;
                 self.request_redraw();
             }
+            Some(Hit::DarkSites) => {
+                self.dark_sites = !self.dark_sites;
+                save_config(self.theme, self.layout, self.dark_sites);
+                self.apply_color_scheme();
+                self.request_redraw();
+            }
             Some(Hit::Theme(i)) => {
                 self.theme = i;
-                save_config(self.theme, self.layout);
+                save_config(self.theme, self.layout, self.dark_sites);
+                self.apply_color_scheme();
                 // histórico e favoritos abertos trocam de cores junto
                 let internal: Vec<usize> = (0..self.tabs.len())
                     .filter(|&k| self.tabs[k].url().scheme() == "ferro" && self.tabs[k].kind() == Kind::Web)

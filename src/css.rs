@@ -58,6 +58,18 @@ pub struct MediaContext {
     pub height: f32,
 }
 
+static PREFERS_DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Os sites devem ver `prefers-color-scheme: dark`? (configuração "Sites no
+/// tema escuro", com um tema escuro no navegador)
+pub fn set_prefers_dark(on: bool) {
+    PREFERS_DARK.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn prefers_dark() -> bool {
+    PREFERS_DARK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // ------------------------------------------------------------------ seletores
 
 #[derive(Debug, Clone)]
@@ -1121,7 +1133,7 @@ fn feature_matches(f: &str, ctx: &MediaContext) -> bool {
         "min-height" => media_length(value).is_some_and(|v| ctx.height >= v),
         "max-height" => media_length(value).is_some_and(|v| ctx.height <= v),
         "orientation" => (value == "landscape") == (ctx.width >= ctx.height),
-        "prefers-color-scheme" => value == "light",
+        "prefers-color-scheme" => value == if prefers_dark() { "dark" } else { "light" },
         "prefers-reduced-motion" | "prefers-contrast" | "forced-colors" => value == "no-preference" || value == "none",
         "hover" | "any-hover" => value == "hover" || value.is_empty(),
         "pointer" | "any-pointer" => value == "fine" || value.is_empty(),
