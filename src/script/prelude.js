@@ -2407,3 +2407,64 @@ hidden(G, 'visualViewport', Object.assign(new EventTarget(), {
   get width() { return G.innerWidth; }, get height() { return G.innerHeight; }, scale: 1, offsetLeft: 0, offsetTop: 0,
   get pageLeft() { return 0; }, get pageTop() { return G.scrollY; }, onresize: null, onscroll: null,
 }));
+methods(G, {
+  scrollTo(x, y) {
+    const top = typeof x === 'object' && x ? x.top : y;
+    if (top !== undefined) N.scrollTo(Number(top) || 0);
+  },
+  scroll(x, y) { G.scrollTo(x, y); },
+  scrollBy(x, y) {
+    const dy = typeof x === 'object' && x ? x.top : y;
+    if (dy !== undefined) N.scrollTo(G.scrollY + (Number(dy) || 0));
+  },
+  open() { return null; },
+  close() {},
+  stop() {},
+  moveTo() {}, moveBy() {}, resizeTo() {}, resizeBy() {},
+  postMessage(data, origin) {
+    const ev = new MessageEvent('message', { data: structuredClone(data), origin: G.origin, source: G });
+    setTimeout(() => fireTrusted(G, ev), 0);
+  },
+  requestIdleCallback(cb) {
+    return setTimeout(() => cb({ didTimeout: false, timeRemaining: () => 50 }), 1);
+  },
+  cancelIdleCallback(id) { clearTimeout(id); },
+  matchMedia(q) { return new MediaQueryList(String(q)); },
+  getScreenDetails() { return Promise.reject(new DOMException('', 'NotSupportedError')); },
+});
+
+class MediaQueryList extends EventTarget {
+  constructor(q) { super(); this.media = q; this.onchange = null; }
+  get matches() { return N.matchMedia(this.media); }
+  addListener(cb) { this.addEventListener('change', cb); }
+  removeListener(cb) { this.removeEventListener('change', cb); }
+}
+hidden(G, 'MediaQueryList', MediaQueryList);
+
+// ---------------------------------------------------- performance
+const T0 = Date.now() - N.now();
+const ENTRIES = [];
+const PERF = Object.assign(new EventTarget(), {
+  timeOrigin: T0,
+  now() { return N.now(); },
+  mark(name, opts) { const e = { name, entryType: 'mark', startTime: N.now(), duration: 0, detail: opts?.detail ?? null }; ENTRIES.push(e); return e; },
+  measure(name, a, b) {
+    const t = (x) => (typeof x === 'string' ? (ENTRIES.find((e) => e.name === x)?.startTime ?? 0) : 0);
+    const start = t(a), end = b ? t(b) : N.now();
+    const e = { name, entryType: 'measure', startTime: start, duration: end - start, detail: null };
+    ENTRIES.push(e);
+    return e;
+  },
+  getEntries() { return ENTRIES.slice(); },
+  getEntriesByType(t) { return ENTRIES.filter((e) => e.entryType === t); },
+  getEntriesByName(n, t) { return ENTRIES.filter((e) => e.name === n && (!t || e.entryType === t)); },
+  clearMarks(n) { for (let i = ENTRIES.length - 1; i >= 0; i--) if (ENTRIES[i].entryType === 'mark' && (!n || ENTRIES[i].name === n)) ENTRIES.splice(i, 1); },
+  clearMeasures(n) { for (let i = ENTRIES.length - 1; i >= 0; i--) if (ENTRIES[i].entryType === 'measure' && (!n || ENTRIES[i].name === n)) ENTRIES.splice(i, 1); },
+  clearResourceTimings() {},
+  setResourceTimingBufferSize() {},
+  toJSON() { return { timeOrigin: T0 }; },
+  timing: { navigationStart: T0, fetchStart: T0, domainLookupStart: T0, domainLookupEnd: T0, connectStart: T0,
+    connectEnd: T0, requestStart: T0, responseStart: T0, responseEnd: T0, domLoading: T0, domInteractive: T0,
+    domContentLoadedEventStart: T0, domContentLoadedEventEnd: T0, domComplete: T0, loadEventStart: T0, loadEventEnd: T0 },
+  navigation: { type: 0, redirectCount: 0 },
+});
