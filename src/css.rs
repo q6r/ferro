@@ -87,3 +87,55 @@ pub struct Compound {
     pub pseudos: Vec<Pseudo>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AttrSelector {
+    pub name: String,
+    pub op: AttrOp,
+    pub value: String,
+    pub case_insensitive: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AttrOp {
+    Exists,
+    Equals,
+    Includes,
+    DashMatch,
+    Prefix,
+    Suffix,
+    Substring,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pseudo {
+    FirstChild,
+    LastChild,
+    OnlyChild,
+    FirstOfType,
+    LastOfType,
+    NthChild(i32, i32),
+    NthLastChild(i32, i32),
+    NthOfType(i32, i32),
+    Root,
+    Link,
+    Empty,
+    Checked,
+    Disabled,
+    Enabled,
+    Not(Vec<Selector>),
+    Is(Vec<Selector>),
+    Where(Vec<Selector>),
+    /// Estados dinâmicos (dependem do mouse e do foco).
+    Hover,
+    Active,
+    Focus,
+    FocusVisible,
+    FocusWithin,
+    /// :placeholder-shown (campo vazio com placeholder).
+    PlaceholderShown,
+    /// :fullscreen (o elemento em tela cheia).
+    Fullscreen,
+    /// Pseudo-classe que não sabemos avaliar: nunca casa.
+    Never,
+}
+
