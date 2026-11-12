@@ -151,3 +151,112 @@ pub(crate) struct LayoutInfo {
     pub scrollers: Vec<crate::layout::Scroller>,
 }
 
+/// Tudo o que os scripts de uma página enxergam.
+pub struct Host {
+    pub page: Loaded,
+    pub(crate) net: Net,
+    pub(crate) fonts: Rc<Fonts>,
+    pub(crate) images: crate::layout::Images,
+    /// Imagens já decodificadas, por URL (None = falhou).
+    image_cache: HashMap<Url, Option<Arc<ImageData>>>,
+    /// Imagem de cada `<canvas>` com contexto 2D.
+    pub(crate) canvases: HashMap<NodeId, crate::canvas::Bitmap>,
+    /// Canvas desenhados desde a última cópia para a tela.
+    pub(crate) canvas_dirty: HashSet<NodeId>,
+    /// Última cópia de cada canvas (o que a página mostra).
+    canvas_snaps: HashMap<NodeId, Arc<ImageData>>,
+    last_canvas_snap: Option<Instant>,
+    /// ImageBitmap (createImageBitmap): cópias por id.
+    pub(crate) bitmaps: HashMap<u32, Arc<ImageData>>,
+    /// Quadros (`<iframe>`) desta página, pelo nó.
+    pub(crate) frames: HashMap<NodeId, frames::Child>,
+    /// Quadros baixando (nó → endereço).
+    pub(crate) frame_loading: HashMap<NodeId, Url>,
+    /// Imagem atual de cada quadro e os que mudaram desde a última cópia.
+    pub(crate) frame_images: HashMap<NodeId, Arc<ImageData>>,
+    pub(crate) frames_changed: HashSet<NodeId>,
+    /// Quadro que recebe as teclas (o último clicado).
+    pub(crate) focused_frame: Option<NodeId>,
+    /// 0 = página da aba; 1 = dentro de um `<iframe>`...
+    pub(crate) frame_depth: u32,
+    /// Origem da página-mãe (só nos quadros).
+    pub(crate) parent_origin: Option<String>,
+    /// Arquivos de mídia baixando (elemento → endereço).
+    pub(crate) media_loading: HashMap<NodeId, Url>,
+    /// `<select>` clicado: a interface abre a lista (nó, rótulos, desabilitadas, escolhida).
+    pub(crate) select_popup: Option<(NodeId, Vec<String>, Vec<bool>, i32)>,
+    /// Mensagens para a página-mãe e vindas dela.
+    pub(crate) outbox: Vec<frames::Message>,
+    pub(crate) inbox: Vec<frames::Message>,
+    pub(crate) bitmap_seq: u32,
+    requested: HashSet<String>,
+    /// `<img>` esperando a imagem para disparar `load`/`error`.
+    img_waiters: HashMap<Url, Vec<NodeId>>,
+    pub(crate) width: f32,
+    pub(crate) height: f32,
+    pub(crate) scroll_y: f32,
+    pub(crate) wrappers: HashMap<NodeId, ObjRef>,
+    pub(crate) protos: HashMap<&'static str, ObjRef>,
+    /// O DOM mudou desde o último layout.
+    pub(crate) dirty: bool,
+    /// Algum `<style>`/`<link>` mudou: recoletar as folhas de estilo.
+    pub(crate) styles_dirty: bool,
+    /// Chegou recurso (imagem, fonte) que muda o desenho.
+    pub(crate) repaint: bool,
+    pub(crate) layout: Option<LayoutInfo>,
+    /// Scripts que já rodaram (ou que nunca devem rodar, como os do innerHTML).
+    pub(crate) started: HashSet<NodeId>,
+    /// Scripts do parser ainda rodando (None: acabaram ou não começaram).
+    pub(crate) parser: Option<ParserScripts>,
+    /// Módulos ES carregados neste documento.
+    pub(crate) modules: module::Modules,
+    /// `<script type=importmap>`: especificador → URL.
+    pub(crate) import_map: HashMap<String, Url>,
+    pub(crate) current_script: Option<NodeId>,
+    pub(crate) ready_state: &'static str,
+    /// Navegação pedida pela página (location.href = ..., clique em link).
+    pub(crate) navigate: Option<Url>,
+    /// Corpo do POST da navegação pedida (formulário com method=post).
+    pub(crate) post: Option<PostData>,
+    pool: Pool,
+    rx: mpsc::Receiver<Done>,
+    in_flight: usize,
+    pub(crate) fetch_seq: u32,
+    /// Callbacks dos fetch em andamento.
+    pub(crate) fetch_waiters: HashMap<u32, Value>,
+    pub(crate) raf: Vec<(u32, Value)>,
+    pub(crate) raf_seq: u32,
+    last_raf: Instant,
+    pub(crate) templates: HashMap<NodeId, NodeId>,
+    /// Folhas externas já baixadas.
+    sheet_cache: HashMap<Url, Option<String>>,
+    pub(crate) focused: Option<NodeId>,
+    /// O foco veio do teclado (Tab): `:focus-visible` vale para qualquer elemento.
+    pub(crate) keyboard_focus: bool,
+    /// Elemento sob o mouse.
+    pub(crate) hover: Option<NodeId>,
+    /// Elemento em tela cheia (requestFullscreen).
+    pub(crate) fullscreen: Option<NodeId>,
+    /// A tela cheia mudou e a interface ainda não sabe.
+    pub(crate) fullscreen_changed: bool,
+    /// As folhas de estilo têm `:hover`/`:active`? (None = ainda não olhou.)
+    dyn_rules: Option<bool>,
+    /// Funções do prelúdio que o Rust chama (disparar eventos etc.).
+    pub(crate) hooks: HashMap<&'static str, Value>,
+    pub(crate) custom: HashMap<String, ObjRef>,
+    /// Elementos personalizados que já rodaram o construtor.
+    pub(crate) upgraded: HashSet<NodeId>,
+    /// Há MutationObserver ativo (as mutações avisam o prelúdio).
+    pub(crate) observing: bool,
+    /// Hospedeiros com sombra `mode: "closed"` (shadowRoot devolve null).
+    pub(crate) closed_shadows: HashSet<NodeId>,
+    /// Media Source Extensions e players dos <video>/<audio>.
+    pub(crate) media: crate::media::Media,
+    /// Rolagem dos elementos que rolam por dentro.
+    pub(crate) scroll_offsets: HashMap<NodeId, (f32, f32)>,
+    /// A página pediu para rolar a janela (scrollTo, scrollIntoView).
+    pub(crate) page_scroll_request: Option<f32>,
+    pub(crate) title_changed: bool,
+    no_resources: bool,
+}
+
