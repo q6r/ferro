@@ -106,3 +106,93 @@ pub struct Paint {
 }
 
 impl Paint {
+    /// Cor do estilo no pixel (x, y) do dispositivo.
+    fn color_at(&self, x: f32, y: f32) -> Rgba {
+        let stops_at = |stops: &[(f32, Rgba)], t: f32| -> Rgba {
+            if stops.is_empty() {
+                return [0.0; 4];
+            }
+            if t <= stops[0].0 {
+                return stops[0].1;
+            }
+            for w in stops.windows(2) {
+                let ((t0, c0), (t1, c1)) = (w[0], w[1]);
+                if t <= t1 {
+                    let f = if t1 > t0 { (t - t0) / (t1 - t0) } else { 1.0 };
+                    // interpolação pré-multiplicada (como os navegadores)
+                    let a = c0[3] + (c1[3] - c0[3]) * f;
+                    let mut out = [0.0, 0.0, 0.0, a];
+                    for k in 0..3 {
+                        let p = c0[k] * c0[3] + (c1[k] * c1[3] - c0[k] * c0[3]) * f;
+                        out[k] = if a > 0.0 { p / a } else { 0.0 };
+                    }
+                    return out;
+                }
+            }
+            stops[stops.len() - 1].1
+        };
+        match &self.style {
+            Style::Solid(c) => *c,
+            Style::Linear { p0, p1, stops } => {
+                let (ux, uy) = self.inv.apply(x, y);
+                let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
+                let len2 = dx * dx + dy * dy;
+                let t = if len2 > 0.0 { ((ux - p0.0) * dx + (uy - p0.1) * dy) / len2 } else { 0.0 };
+                stops_at(stops, t)
+            }
+            Style::Radial { c0, r0, c1, r1, stops } => {
+                let (ux, uy) = self.inv.apply(x, y);
+                // resolve |p - c(t)| = r(t), c(t) = c0 + t(c1-c0), r(t) = r0 + t(r1-r0); maior t com r(t) >= 0
+                let (cdx, cdy, dr) = (c1.0 - c0.0, c1.1 - c0.1, r1 - r0);
+                let (pdx, pdy) = (ux - c0.0, uy - c0.1);
+                let a = cdx * cdx + cdy * cdy - dr * dr;
+                let b = pdx * cdx + pdy * cdy + r0 * dr;
+                let c = pdx * pdx + pdy * pdy - r0 * r0;
+                let t = if a.abs() < 1e-6 {
+                    if b.abs() < 1e-9 { return [0.0; 4] } else { c / (2.0 * b) }
+                } else {
+                    let disc = b * b - a * c;
+                    if disc < 0.0 {
+                        return [0.0; 4];
+                    }
+                    let s = disc.sqrt();
+                    let (t1, t2) = ((b + s) / a, (b - s) / a);
+                    let t = t1.max(t2);
+                    if r0 + t * dr >= 0.0 { t } else { t1.min(t2) }
+                };
+                if r0 + t * dr < 0.0 {
+                    return [0.0; 4];
+                }
+                stops_at(stops, t)
+            }
+            Style::Conic { center, angle, stops } => {
+                let (ux, uy) = self.inv.apply(x, y);
+                let a = (uy - center.1).atan2(ux - center.0) - angle;
+                let t = (a / std::f32::consts::TAU).rem_euclid(1.0);
+                stops_at(stops, t)
+            }
+            Style::Pattern { img, repeat_x, repeat_y } => {
+                let (ux, uy) = self.inv.apply(x, y);
+                let (w, h) = (img.width as f32, img.height as f32);
+                if w <= 0.0 || h <= 0.0 {
+                    return [0.0; 4];
+                }
+                let (mut sx, mut sy) = (ux.floor(), uy.floor());
+                if *repeat_x {
+                    sx = sx.rem_euclid(w);
+                } else if sx < 0.0 || sx >= w {
+                    return [0.0; 4];
+                }
+                if *repeat_y {
+                    sy = sy.rem_euclid(h);
+                } else if sy < 0.0 || sy >= h {
+                    return [0.0; 4];
+                }
+                let i = (sy as usize * img.width as usize + sx as usize) * 4;
+                let p = &img.rgba[i..i + 4];
+                [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]
+            }
+        }
+    }
+}
+
