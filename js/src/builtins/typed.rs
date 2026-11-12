@@ -514,3 +514,62 @@ fn find_last_index(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     find_generic(vm, a, true, true)
 }
 
+fn fill(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let v = if kind.is_bigint() {
+        Value::BigInt(super::bigint::to_bigint(vm, &a.arg(0))?)
+    } else {
+        Value::Number(vm.to_number(&a.arg(0))?)
+    };
+    let start = rel_index(vm, &a.arg(1), len, 0)?;
+    let end = rel_index(vm, &a.arg(2), len, len)?;
+    for i in start..end.max(start) {
+        vm.typed_set(&o, i, &v)?;
+    }
+    Ok(a.this.clone())
+}
+
+fn from_values(vm: &mut Vm, kind: TaKind, vals: &[Value]) -> Result<Value, Value> {
+    let t = new_typed(vm, kind, vals.len(), None)?;
+    for (i, v) in vals.iter().enumerate() {
+        vm.typed_set(&t, i, v)?;
+    }
+    Ok(Value::Object(t))
+}
+
+fn filter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, kind, _) = this_ta(vm, a)?;
+    let mut kept = Vec::new();
+    iterate_cb(vm, a, |_, _, v, r| {
+        if truthy(&r) {
+            kept.push(v);
+        }
+        Ok(true)
+    })?;
+    from_values(vm, kind, &kept)
+}
+
+fn map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, kind, _) = this_ta(vm, a)?;
+    let mut out = Vec::new();
+    iterate_cb(vm, a, |_, _, _, r| {
+        out.push(r);
+        Ok(true)
+    })?;
+    from_values(vm, kind, &out)
+}
+
+fn includes(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let start = rel_index(vm, &a.arg(1), len, 0)?;
+    let target = a.arg(0);
+    Ok(Value::Bool((start..len).any(|i| same_value_zero(&elem(&o, i), &target))))
+}
+
+fn index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let start = rel_index(vm, &a.arg(1), len, 0)?;
+    let target = a.arg(0);
+    Ok(Value::Number((start..len).find(|&i| strict_equals(&elem(&o, i), &target)).map_or(-1.0, |i| i as f64)))
+}
+
