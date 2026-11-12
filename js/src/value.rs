@@ -776,6 +776,7 @@ pub enum Kind {
     DisposeJob(Option<Box<crate::builtins::disposable::DisposeJob>>),
     /// Objeto de JSON.rawJSON.
     RawJson,
+    FinReg(Box<crate::builtins::collections::FinRegData>),
 }
 
 pub struct Object {

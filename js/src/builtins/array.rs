@@ -65,6 +65,25 @@ pub fn install(r: &Realm) {
     let ip = &r.array_iter_proto;
     ip.borrow_mut().props.insert(PropKey::str("next"), Property::hidden(Value::Object(r.array_iter_next.clone())));
     r.tag(ip, "Array Iterator");
+    // Array.prototype[@@unscopables]: nomes que `with` não enxerga
+    let unscopables = ObjRef::new(Object::new(None, Kind::Ordinary));
+    for name in [
+        "at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "includes", "keys",
+        "toReversed", "toSorted", "toSpliced", "values",
+    ] {
+        unscopables.borrow_mut().props.insert(PropKey::str(name), Property::data(Value::Bool(true)));
+    }
+    proto.borrow_mut().props.insert(
+        PropKey::Sym(r.sym_unscopables.clone()),
+        Property {
+            slot: Slot::Data {
+                value: Value::Object(unscopables),
+                writable: false,
+            },
+            enumerable: false,
+            configurable: true,
+        },
+    );
     // %IteratorPrototype%[Symbol.iterator] devolve o próprio iterador
     r.method_sym(&r.iterator_proto, &r.sym_iterator, "[Symbol.iterator]", 0, return_this);
 }

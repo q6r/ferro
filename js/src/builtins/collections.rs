@@ -82,17 +82,33 @@ pub fn install(r: &Realm) {
 
     let fr = ObjRef::new(Object::new(Some(r.object_proto.clone()), Kind::Ordinary));
     r.ctor("FinalizationRegistry", 1, finreg_ctor, &fr);
-    r.method(&fr, "register", 2, noop);
-    r.method(&fr, "unregister", 1, noop_false);
+    r.method(&fr, "register", 2, finreg_register);
+    r.method(&fr, "unregister", 1, finreg_unregister);
     r.tag(&fr, "FinalizationRegistry");
 }
 
-fn noop(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
-    Ok(Value::Undefined)
+/// Dados de um FinalizationRegistry. A limpeza nunca é chamada (o spec
+/// deixa isso a critério da implementação), mas as células seguem as regras
+/// de register/unregister.
+pub struct FinRegData {
+    pub cleanup: Value,
+    pub cells: Vec<FinCell>,
 }
 
-fn noop_false(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
-    Ok(Value::Bool(false))
+pub struct FinCell {
+    pub target: WeakKey,
+    pub held: Value,
+    /// Token de unregister (endereço e referência fraca).
+    pub token: Option<(usize, WeakKey)>,
+}
+
+impl FinRegData {
+    pub fn trace(&self, f: &mut dyn FnMut(&Value)) {
+        f(&self.cleanup);
+        for c in &self.cells {
+            f(&c.held);
+        }
+    }
 }
 
 fn require_new(vm: &mut Vm, a: &CallArgs, name: &str) -> Result<ObjRef, Value> {
@@ -834,7 +850,67 @@ fn weakref_deref(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn finreg_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let nt = require_new(vm, a, "FinalizationRegistry")?;
+    let cleanup = a.arg(0);
+    if !cleanup.is_callable() {
+        return Err(vm.type_error("FinalizationRegistry: cleanup must be callable"));
+    }
     let def = own_proto(vm, a);
     let proto = vm.proto_from_ctor(Some(&nt), &def)?;
-    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Ordinary))))
+    let data = FinRegData { cleanup, cells: Vec::new() };
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::FinReg(Box::new(data))))))
+}
+
+fn this_finreg(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<ObjRef, Value> {
+    if let Value::Object(o) = &a.this
+        && matches!(o.borrow().kind, Kind::FinReg(_))
+    {
+        return Ok(o.clone());
+    }
+    Err(incompatible(vm, a, &format!("FinalizationRegistry.prototype.{what}")))
+}
+
+fn finreg_register(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_finreg(vm, a, "register")?;
+    let (target, held, token) = (a.arg(0), a.arg(1), a.arg(2));
+    if !can_be_weak(vm, &target) {
+        let d = vm.describe(&target);
+        return Err(vm.type_error(format!("FinalizationRegistry.prototype.register: invalid target {d}")));
+    }
+    if crate::vm::same_value(&target, &held) {
+        return Err(vm.type_error("FinalizationRegistry.prototype.register: target and holdings must not be same"));
+    }
+    let token = if can_be_weak(vm, &token) {
+        WeakKey::of(&token)
+    } else if token.is_undefined() {
+        None
+    } else {
+        let d = vm.describe(&token);
+        return Err(vm.type_error(format!("FinalizationRegistry.prototype.register: invalid unregister token {d}")));
+    };
+    let Some((_, target)) = WeakKey::of(&target) else { return Ok(Value::Undefined) };
+    if let Kind::FinReg(d) = &mut o.borrow_mut().kind {
+        // células de alvos já mortos não servem mais (a limpeza não roda)
+        d.cells.retain(|c| c.target.alive());
+        d.cells.push(FinCell { target, held, token });
+    }
+    Ok(Value::Undefined)
+}
+
+fn finreg_unregister(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_finreg(vm, a, "unregister")?;
+    let token = a.arg(0);
+    if !can_be_weak(vm, &token) {
+        let d = vm.describe(&token);
+        return Err(vm.type_error(format!("Invalid unregisterToken ('{d}')")));
+    }
+    let Some((id, _)) = WeakKey::of(&token) else { return Ok(Value::Bool(false)) };
+    let mut removed = false;
+    if let Kind::FinReg(d) = &mut o.borrow_mut().kind {
+        d.cells.retain(|c| {
+            let hit = matches!(&c.token, Some((tid, k)) if *tid == id && k.alive());
+            removed |= hit;
+            !hit
+        });
+    }
+    Ok(Value::Bool(removed))
 }

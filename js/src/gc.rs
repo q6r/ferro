@@ -258,6 +258,7 @@ impl Graph {
             Kind::FromAsync(Some(d)) => d.trace(&mut |v| self.value(v, out)),
             Kind::DisposableStack(d) => d.trace(&mut |v| self.value(v, out)),
             Kind::DisposeJob(Some(j)) => j.trace(&mut |v| self.value(v, out)),
+            Kind::FinReg(d) => d.trace(&mut |v| self.value(v, out)),
             Kind::AsyncGenerator(a) => {
                 if let Some(f) = &a.frame {
                     self.frame(f, out);
