@@ -2187,3 +2187,72 @@ fn document_write(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn document_writeln(vm: &mut Vm, a: &mut CallArgs) -> R {
+    a.args.push(s("\n"));
+    document_write(vm, a)
+}
+
+fn element_from_point(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let x = vm.to_number(&a.arg(0))? as f32;
+    let y = vm.to_number(&a.arg(1))? as f32;
+    let h = host(vm);
+    super::ensure_layout(&h);
+    let scroll = h.borrow().scroll_y;
+    let found = {
+        let hb = h.borrow();
+        let doc = &hb.page.doc;
+        hb.layout.as_ref().and_then(|info| {
+            let depth = |mut n: NodeId| {
+                let mut d = 0;
+                while let Some(p) = doc.node(n).parent {
+                    d += 1;
+                    n = p;
+                }
+                d
+            };
+            info.boxes
+                .iter()
+                .filter(|(n, r)| {
+                    let yy = y + scroll;
+                    x >= r.x && x < r.x + r.w && yy >= r.y && yy < r.y + r.h && doc.is_connected(*n)
+                })
+                .max_by_key(|(n, _)| depth(*n))
+                .map(|(n, _)| *n)
+        })
+    };
+    let found = found.or_else(|| find_tag(vm, "html"));
+    Ok(wrap_opt(vm, found))
+}
+
+fn has_focus(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Bool(true))
+}
+
+fn collection_of(vm: &mut Vm, test: impl Fn(&Document, NodeId) -> bool) -> Value {
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.descendants(Document::ROOT).into_iter().filter(|&d| test(doc, d)).collect()
+    });
+    list(vm, found, "HTMLCollection")
+}
+
+fn forms(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(collection_of(vm, |d, n| d.tag(n) == Some("form")))
+}
+
+fn images(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(collection_of(vm, |d, n| d.tag(n) == Some("img")))
+}
+
+fn scripts(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(collection_of(vm, |d, n| d.tag(n) == Some("script")))
+}
+
+fn links(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(collection_of(vm, |d, n| {
+        matches!(d.tag(n), Some("a" | "area")) && d.element(n).is_some_and(|e| e.attr("href").is_some())
+    }))
+}
+
+// ------------------------------------------------------------ construtores
+
