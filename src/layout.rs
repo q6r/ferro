@@ -46,3 +46,71 @@ impl Rect {
 
 // ------------------------------------------------------------- árvore de caixas
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BoxKind {
+    Block(NodeId),
+    Anonymous,
+    Inline(NodeId),
+    Text(NodeId),
+    /// Elemento substituído (img, input, svg...): uma caixa indivisível na linha.
+    Atomic(NodeId),
+    /// inline-block / inline-flex / inline-grid: bloco por dentro, peça única na linha.
+    InlineBlock(NodeId),
+}
+
+pub struct LayoutBox {
+    pub kind: BoxKind,
+    pub style: Rc<ComputedStyle>,
+    pub children: Vec<LayoutBox>,
+    /// Texto gerado (conteúdo de ::before/::after).
+    pub text: Option<Rc<str>>,
+    /// Caixa de pseudo-elemento.
+    pub generated: bool,
+}
+
+impl LayoutBox {
+    pub fn new(kind: BoxKind, style: Rc<ComputedStyle>, children: Vec<LayoutBox>) -> LayoutBox {
+        LayoutBox {
+            kind,
+            style,
+            children,
+            text: None,
+            generated: false,
+        }
+    }
+
+    pub fn is_block_level(&self) -> bool {
+        matches!(self.kind, BoxKind::Block(_) | BoxKind::Anonymous)
+    }
+
+    /// Posicionado com absolute/fixed: não ocupa espaço no fluxo.
+    pub fn is_out_of_flow(&self) -> bool {
+        matches!(self.kind, BoxKind::Block(_)) && self.style.is_out_of_flow()
+    }
+
+    pub fn is_float(&self) -> bool {
+        matches!(self.kind, BoxKind::Block(_)) && self.style.float != Float::None && !self.style.is_out_of_flow()
+    }
+
+    /// Bloco que ocupa o seu lugar no fluxo normal (nem float nem posicionado).
+    pub fn is_inflow_block(&self) -> bool {
+        self.is_block_level() && !self.is_out_of_flow() && !self.is_float()
+    }
+
+    pub fn node(&self) -> Option<NodeId> {
+        match self.kind {
+            BoxKind::Block(n)
+            | BoxKind::Inline(n)
+            | BoxKind::Text(n)
+            | BoxKind::Atomic(n)
+            | BoxKind::InlineBlock(n) => Some(n),
+            BoxKind::Anonymous => None,
+        }
+    }
+
+    pub fn dump(&self, doc: &Document) -> String {
+        let mut out = String::new();
+        self.dump_into(doc, 0, &mut out);
+        out
+    }
+
