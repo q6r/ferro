@@ -593,3 +593,59 @@ impl Vm {
         }
     }
 
+    pub fn get_index(&mut self, obj: &Value, key: &Value) -> Result<Value, Value> {
+        if let Value::Number(n) = key {
+            let i = *n as usize;
+            if i as f64 == *n {
+                match obj {
+                    Value::Object(o) => {
+                        let b = o.borrow();
+                        match &b.kind {
+                            Kind::Array(v) => {
+                                if let Some(x) = v.get(i)
+                                    && !matches!(x, Value::Empty)
+                                {
+                                    return Ok(x.clone());
+                                }
+                            }
+                            Kind::TypedArray(t) => return Ok(t.get(i).unwrap_or(Value::Undefined)),
+                            _ => {}
+                        }
+                    }
+                    Value::String(s) if i < s.len() => return Ok(Value::String(s.slice(i, i + 1))),
+                    _ => {}
+                }
+            }
+        }
+        let k = self.to_property_key(key)?;
+        self.get(obj, &k)
+    }
+
+    pub fn set_index(&mut self, obj: &Value, key: &Value, v: Value, strict: bool) -> Result<(), Value> {
+        if let (Value::Object(o), Value::Number(n)) = (obj, key) {
+            let i = *n as usize;
+            if i as f64 == *n && matches!(o.borrow().kind, Kind::TypedArray(_)) {
+                return self.typed_set(o, i, &v);
+            }
+            if i as f64 == *n {
+                let mut b = o.borrow_mut();
+                let frozen = b.frozen;
+                let ext = b.extensible;
+                if let Kind::Array(vec) = &mut b.kind
+                    && !frozen
+                {
+                    if i < vec.len() && !matches!(vec[i], Value::Empty) {
+                        vec[i] = v;
+                        return Ok(());
+                    }
+                    if i == vec.len() && ext {
+                        vec.push(v);
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        let k = self.to_property_key(key)?;
+        self.put(obj, k, v, strict)
+    }
+
