@@ -96,3 +96,83 @@ impl Vm {
         }
     }
 
+    pub fn proxy_has(&mut self, o: &ObjRef, key: &PropKey) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "has")?;
+        match self.trap(&h, "has")? {
+            Some(f) => {
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value()])?;
+                Ok(truthy(&r))
+            }
+            None => self.has_property(&t, key),
+        }
+    }
+
+    pub fn proxy_delete(&mut self, o: &ObjRef, key: &PropKey) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "deleteProperty")?;
+        match self.trap(&h, "deleteProperty")? {
+            Some(f) => {
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value()])?;
+                Ok(truthy(&r))
+            }
+            None => {
+                if is_proxy(&t) {
+                    return self.proxy_delete(&t, key);
+                }
+                Ok(self.delete_prop(&t, key))
+            }
+        }
+    }
+
+    pub fn proxy_own_keys(&mut self, o: &ObjRef) -> Result<Vec<PropKey>, Value> {
+        let (t, h) = self.proxy_parts(o, "ownKeys")?;
+        match self.trap(&h, "ownKeys")? {
+            Some(f) => {
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t)])?;
+                let list = super::function::list_from_array_like(self, &r)?;
+                let mut out = Vec::with_capacity(list.len());
+                for v in list {
+                    match v {
+                        Value::String(s) => out.push(PropKey::Str(s)),
+                        Value::Symbol(s) => out.push(PropKey::Sym(s)),
+                        other => {
+                            let d = self.describe(&other);
+                            return Err(self.type_error(format!("{d} is not a valid property name")));
+                        }
+                    }
+                }
+                Ok(out)
+            }
+            None => self.own_keys(&t),
+        }
+    }
+
+    pub fn proxy_get_own_property(&mut self, o: &ObjRef, key: &PropKey) -> Result<Option<Property>, Value> {
+        let (t, h) = self.proxy_parts(o, "getOwnPropertyDescriptor")?;
+        match self.trap(&h, "getOwnPropertyDescriptor")? {
+            Some(f) => {
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value()])?;
+                if r.is_undefined() {
+                    return Ok(None);
+                }
+                let d = to_descriptor(self, &r)?;
+                let slot = if d.is_accessor() {
+                    Slot::Accessor {
+                        get: d.get.clone().flatten(),
+                        set: d.set.clone().flatten(),
+                    }
+                } else {
+                    Slot::Data {
+                        value: d.value.clone().unwrap_or_default(),
+                        writable: d.writable.unwrap_or(false),
+                    }
+                };
+                Ok(Some(Property {
+                    slot,
+                    enumerable: d.enumerable.unwrap_or(false),
+                    configurable: d.configurable.unwrap_or(false),
+                }))
+            }
+            None => self.get_own_property(&t, key),
+        }
+    }
+
