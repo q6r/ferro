@@ -373,3 +373,34 @@ pub fn settings(
     }
 }
 
+/// Página de erro de carregamento.
+pub fn error(p: &mut Painter, t: &Theme, area: Rect, url: &str, message: &str, hits: &mut Hits, hover: Option<Hit>) {
+    p.rect(area, t.ntp_bg);
+    let cx = area.x + area.w / 2.0;
+    let mut y = area.y + (area.h * 0.28).max(80.0);
+    // a "página" era um arquivo: foi para a pasta de downloads
+    let downloaded = message.starts_with("Arquivo baixado");
+    p.icon(cx, y, if downloaded { Icon::Download } else { Icon::Warning }, 56.0, if downloaded { t.accent } else { t.muted });
+    y += 70.0;
+    let title = if downloaded { "Download concluído" } else { "Não foi possível abrir esta página" };
+    let tw = p.measure(title, 26.0, Weight::Semibold);
+    p.text(cx - tw / 2.0, y, title, 26.0, t.text, Weight::Semibold);
+    y += 36.0;
+    let max = (area.w - 80.0).min(720.0);
+    for (line, size) in [(url, 15.0), (message, 14.0)] {
+        let s = p.ellipsize(line, size, Weight::Regular, max);
+        let w = p.measure(&s, size, Weight::Regular);
+        p.text(cx - w / 2.0, y, &s, size, t.muted, Weight::Regular);
+        y += 26.0;
+    }
+    if downloaded {
+        return;
+    }
+    let label = "Tentar novamente";
+    let lw = p.measure(label, 15.0, Weight::Semibold);
+    let b = rect(cx - (lw + 48.0) / 2.0, y + 18.0, lw + 48.0, 42.0);
+    let c = if hover == Some(Hit::Retry) { mix(t.accent, t.text, 0.15) } else { t.accent };
+    p.rrect(b, 21.0, c);
+    p.text(b.x + 24.0, Painter::baseline(b.y + 21.0, 15.0), label, 15.0, t.on_accent, Weight::Semibold);
+    hits.push((b, Hit::Retry));
+}
