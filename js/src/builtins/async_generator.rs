@@ -74,3 +74,74 @@ fn enqueue(vm: &mut Vm, this: &Value, mode: u8, value: Value) -> Result<Value, V
     Ok(promise)
 }
 
+/// Atende os pedidos da fila enquanto o gerador não estiver rodando.
+fn resume_next(vm: &mut Vm, g: &ObjRef) {
+    loop {
+        let (state, mode, value) = {
+            let b = g.borrow();
+            let Kind::AsyncGenerator(d) = &b.kind else { return };
+            let Some(req) = d.queue.front() else { return };
+            (d.state, req.mode, req.value.clone())
+        };
+        match state {
+            GenState::Running => return,
+            GenState::Start if mode != RESUME_NEXT => {
+                set_state(g, GenState::Done);
+                continue;
+            }
+            GenState::Done => {
+                let r = match mode {
+                    RESUME_THROW => Err(value),
+                    RESUME_RETURN => Ok(value),
+                    _ => Ok(Value::Undefined),
+                };
+                finish_front(vm, g, r, true);
+                continue;
+            }
+            _ => {
+                let frame = {
+                    let mut b = g.borrow_mut();
+                    let Kind::AsyncGenerator(d) = &mut b.kind else { return };
+                    d.state = GenState::Running;
+                    d.frame.take()
+                };
+                let Some(mut frame) = frame else {
+                    set_state(g, GenState::Done);
+                    continue;
+                };
+                if state == GenState::Yield {
+                    frame.stack.push(value);
+                    frame.stack.push(Value::Number(mode as f64));
+                }
+                run(vm, g, frame);
+                return;
+            }
+        }
+    }
+}
+
+fn set_state(g: &ObjRef, s: GenState) {
+    if let Kind::AsyncGenerator(d) = &mut g.borrow_mut().kind {
+        d.state = s;
+    }
+}
+
+/// Resolve (ou rejeita) o pedido da frente com `{ value, done }`.
+fn finish_front(vm: &mut Vm, g: &ObjRef, r: Result<Value, Value>, done: bool) {
+    let req = {
+        let mut b = g.borrow_mut();
+        let Kind::AsyncGenerator(d) = &mut b.kind else { return };
+        d.queue.pop_front()
+    };
+    let Some(req) = req else { return };
+    match r {
+        Ok(v) => {
+            let res = iter_result(vm, v, done);
+            let _ = vm.call(&req.cap.resolve, Value::Undefined, vec![res]);
+        }
+        Err(e) => {
+            let _ = vm.call(&req.cap.reject, Value::Undefined, vec![e]);
+        }
+    }
+}
+
