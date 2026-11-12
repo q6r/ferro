@@ -774,3 +774,85 @@ fn list_marker(style: ListStyle, n: i64) -> Option<String> {
     }
 }
 
+fn translate(it: &mut DisplayItem, dx: f32, dy: f32) {
+    match it {
+        DisplayItem::Rect { rect, .. }
+        | DisplayItem::RoundRect { rect, .. }
+        | DisplayItem::Image { rect, .. }
+        | DisplayItem::Video { rect, .. }
+        | DisplayItem::Canvas { rect, .. }
+        | DisplayItem::Hit { rect, .. }
+        | DisplayItem::Shadow { rect, .. }
+        | DisplayItem::RoundBorder { rect, .. }
+        | DisplayItem::Gradient { rect, .. } => {
+            rect.x += dx;
+            rect.y += dy;
+        }
+        DisplayItem::TransformStart { origin, .. } => {
+            origin.0 += dx;
+            origin.1 += dy;
+        }
+        DisplayItem::BgImage { rect, tile, .. } => {
+            rect.x += dx;
+            rect.y += dy;
+            tile.x += dx;
+            tile.y += dy;
+        }
+        DisplayItem::Text { x, baseline, .. } => {
+            *x += dx;
+            *baseline += dy;
+        }
+        DisplayItem::PushClip(r) => {
+            r.x += dx;
+            r.y += dy;
+        }
+        DisplayItem::PopClip
+        | DisplayItem::LayerStart { .. }
+        | DisplayItem::LayerEnd
+        | DisplayItem::FixedStart
+        | DisplayItem::FixedEnd
+        | DisplayItem::TransformEnd => {}
+    }
+}
+
+fn fade(it: &mut DisplayItem, opacity: f32) {
+    match it {
+        DisplayItem::Rect { color, .. }
+        | DisplayItem::RoundRect { color, .. }
+        | DisplayItem::Text { color, .. }
+        | DisplayItem::Shadow { color, .. }
+        | DisplayItem::RoundBorder { color, .. } => {
+            color.a = (color.a as f32 * opacity).round() as u8;
+        }
+        _ => {}
+    }
+}
+
+/// Matriz 2D `[a b c d e f]` de uma lista de funções de `transform`
+/// (porcentagens de translate relativas à caixa `w`×`h`).
+fn transform_matrix(fns: &[crate::style::TransformFn], w: f32, h: f32) -> [f32; 6] {
+    use crate::style::TransformFn as T;
+    let mul = |m: [f32; 6], n: [f32; 6]| {
+        [
+            m[0] * n[0] + m[2] * n[1],
+            m[1] * n[0] + m[3] * n[1],
+            m[0] * n[2] + m[2] * n[3],
+            m[1] * n[2] + m[3] * n[3],
+            m[0] * n[4] + m[2] * n[5] + m[4],
+            m[1] * n[4] + m[3] * n[5] + m[5],
+        ]
+    };
+    let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    for f in fns {
+        let n = match *f {
+            T::Translate(x, xp, y, yp) => [1.0, 0.0, 0.0, 1.0, x + xp / 100.0 * w, y + yp / 100.0 * h],
+            T::Scale(sx, sy) => [sx, 0.0, 0.0, sy, 0.0, 0.0],
+            T::Rotate(a) => [a.cos(), a.sin(), -a.sin(), a.cos(), 0.0, 0.0],
+            T::Skew(ax, ay) => [1.0, ay.tan(), ax.tan(), 1.0, 0.0, 0.0],
+            T::Matrix(v) => v,
+        };
+        m = mul(m, n);
+    }
+    m
+}
+
