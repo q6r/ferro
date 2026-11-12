@@ -97,3 +97,48 @@ pub fn number_to_string_radix(n: f64, radix: u32) -> String {
     if neg { format!("-{s}") } else { s }
 }
 
+/// Texto → número (o `Number("...")` do JavaScript).
+pub fn string_to_number(units: &[u16]) -> f64 {
+    let t = trim_js(units);
+    if t.is_empty() {
+        return 0.0;
+    }
+    if t.iter().any(|&c| c > 0x7f) {
+        return f64::NAN;
+    }
+    let s: String = t.iter().map(|&c| c as u8 as char).collect();
+    match s.as_str() {
+        "Infinity" | "+Infinity" => return f64::INFINITY,
+        "-Infinity" => return f64::NEG_INFINITY,
+        _ => {}
+    }
+    let b = s.as_bytes();
+    if b.len() > 2 && b[0] == b'0' {
+        let radix = match b[1] {
+            b'x' | b'X' => 16,
+            b'o' | b'O' => 8,
+            b'b' | b'B' => 2,
+            _ => 0,
+        };
+        if radix != 0 {
+            return parse_radix_digits(&s[2..], radix).unwrap_or(f64::NAN);
+        }
+    }
+    if !is_decimal_literal(b) {
+        return f64::NAN;
+    }
+    s.parse::<f64>().unwrap_or(f64::NAN)
+}
+
+fn parse_radix_digits(s: &str, radix: u32) -> Option<f64> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut v = 0f64;
+    for c in s.chars() {
+        let d = c.to_digit(radix)?;
+        v = v * radix as f64 + d as f64;
+    }
+    Some(v)
+}
+
