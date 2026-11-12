@@ -1091,3 +1091,76 @@ impl App {
         }
     }
 
+    fn run_suggestion(&mut self, i: usize) {
+        match self.suggestions.get(i).map(|s| &s.action) {
+            Some(Action::Tab(t)) => {
+                let t = *t;
+                self.activate(t);
+            }
+            Some(Action::Open(u)) => {
+                let u = u.clone();
+                self.close_palette();
+                self.navigate(self.active, u);
+            }
+            None => {}
+        }
+    }
+
+    fn submit_palette(&mut self) {
+        // Enter sem editar abre o endereço que já está no campo
+        if !self.palette_edited || self.suggestions.is_empty() {
+            if let Some(u) = resolve_input(&self.omni.text) {
+                self.close_palette();
+                self.navigate(self.active, u);
+            } else if !self.suggestions.is_empty() {
+                self.run_suggestion(self.suggestion);
+            }
+            return;
+        }
+        self.run_suggestion(self.suggestion);
+    }
+
+    fn clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        self.clipboard.as_mut()
+    }
+
+    // ------------------------------------------------------------- rolagem
+
+    fn scroll_to(&mut self, y: f32) {
+        let i = self.active;
+        let max = self.max_scroll(i);
+        let tab = &mut self.tabs[i];
+        tab.scroll = y.clamp(0.0, max);
+        tab.fragment = None;
+        self.request_redraw();
+    }
+
+    fn scroll_by(&mut self, dy: f32) {
+        let cur = self.effective_scroll(self.active);
+        self.scroll_to(cur + dy);
+        let (x, y) = self.mouse;
+        self.update_hover(x, y);
+    }
+
+    fn drag_scrollbar(&mut self, thumb_top: f32) {
+        let Some((track, th)) = self.scrollbar else { return };
+        let free = (track.h - th).max(1.0);
+        let max = self.max_scroll(self.active);
+        self.scroll_to((thumb_top - track.y) / free * max);
+    }
+
+    fn set_zoom(&mut self, z: f32) {
+        self.zoom = ((z * 100.0).round() / 100.0).clamp(0.3, 3.0);
+        self.sync_viewport();
+        self.request_redraw();
+    }
+
+    // ---------------------------------------------------------- mouse
+
+    fn hit_at(&self, x: f32, y: f32) -> Option<Hit> {
+        self.hits.iter().rev().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h)
+    }
+
