@@ -444,3 +444,62 @@ pub struct ComputedStyle {
     pub mask_repeat: (bool, bool),
 }
 
+/// Propriedades customizadas (`--x`) visíveis num elemento: as declaradas
+/// nele e, por herança, as dos ancestrais. Encadeadas, para não copiar o
+/// mapa inteiro a cada elemento que declara uma.
+#[derive(Debug, Default)]
+pub struct CustomVars {
+    own: ferro_js::fxhash::FxHashMap<Rc<str>, Rc<str>>,
+    parent: Option<Rc<CustomVars>>,
+    depth: u32,
+}
+
+impl CustomVars {
+    /// Novo elo com as declarações do elemento sobre as herdadas.
+    fn child(parent: &Rc<CustomVars>, own: ferro_js::fxhash::FxHashMap<Rc<str>, Rc<str>>) -> Rc<CustomVars> {
+        if parent.own.is_empty() && parent.parent.is_none() {
+            return Rc::new(CustomVars { own, parent: None, depth: 0 });
+        }
+        if parent.depth >= 12 {
+            // corrente comprida: achata (buscas continuam rápidas)
+            let mut all = parent.flatten();
+            all.extend(own);
+            return Rc::new(CustomVars { own: all, parent: None, depth: 0 });
+        }
+        Rc::new(CustomVars { own, parent: Some(parent.clone()), depth: parent.depth + 1 })
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Rc<str>> {
+        let mut c = self;
+        loop {
+            if let Some(v) = c.own.get(name) {
+                return Some(v);
+            }
+            c = c.parent.as_deref()?;
+        }
+    }
+
+    /// Todas as visíveis (as do elemento vencem as herdadas).
+    pub fn flatten(&self) -> ferro_js::fxhash::FxHashMap<Rc<str>, Rc<str>> {
+        let mut out = match &self.parent {
+            Some(p) => p.flatten(),
+            None => Default::default(),
+        };
+        for (k, v) in &self.own {
+            out.insert(k.clone(), v.clone());
+        }
+        out
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.own.is_empty() && self.parent.as_ref().is_none_or(|p| p.is_empty())
+    }
+}
+
+/// Lados na ordem do CSS: top, right, bottom, left.
+pub const TOP: usize = 0;
+pub const RIGHT: usize = 1;
+pub const BOTTOM: usize = 2;
+pub const LEFT: usize = 3;
+
+impl ComputedStyle {
