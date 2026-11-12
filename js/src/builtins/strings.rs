@@ -486,3 +486,59 @@ fn replace_impl(vm: &mut Vm, a: &CallArgs, all: bool) -> Result<Value, Value> {
     Ok(Value::String(JsStr::from_units(out)))
 }
 
+fn replace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    replace_impl(vm, a, false)
+}
+
+fn replace_all(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    replace_impl(vm, a, true)
+}
+
+fn slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "slice")?;
+    let len = s.len();
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let end = rel_index(vm, &a.arg(1), len, len)?;
+    Ok(Value::String(if start < end { s.slice(start, end) } else { JsStr::empty() }))
+}
+
+fn split(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.this.is_nullish() {
+        return Err(vm.type_error("String.prototype.split called on null or undefined"));
+    }
+    let sep = a.arg(0);
+    if !sep.is_nullish() {
+        let key = PropKey::Sym(vm.realm.sym_split.clone());
+        let m = vm.get(&sep, &key)?;
+        if !m.is_nullish() {
+            return vm.call(&m, sep, vec![a.this.clone(), a.arg(1)]);
+        }
+    }
+    let s = vm.to_string(&a.this)?;
+    let limit = if a.arg(1).is_undefined() { u32::MAX } else { crate::conv::to_uint32(vm.to_number(&a.arg(1))?) };
+    let mut out = Vec::new();
+    if limit == 0 {
+        return Ok(vm.array_value(out));
+    }
+    if sep.is_undefined() {
+        return Ok(vm.array_value(vec![Value::String(s)]));
+    }
+    let sep = vm.to_string(&sep)?;
+    if sep.is_empty() {
+        for i in 0..s.len().min(limit as usize) {
+            out.push(Value::String(s.slice(i, i + 1)));
+        }
+        return Ok(vm.array_value(out));
+    }
+    let mut last = 0;
+    while let Some(p) = s.find(&sep, last) {
+        out.push(Value::String(s.slice(last, p)));
+        if out.len() as u32 >= limit {
+            return Ok(vm.array_value(out));
+        }
+        last = p + sep.len();
+    }
+    out.push(Value::String(s.slice(last, s.len())));
+    Ok(vm.array_value(out))
+}
+
