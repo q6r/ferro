@@ -131,3 +131,66 @@ fn document_write_e_scripts_em_ordem() {
     });
 }
 
+#[test]
+fn digitar_em_campos() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0"><form action="/busca"><input id=q name=q style="display:block;width:300px;height:30px"></form>
+            <textarea id=t style="display:block;height:40px"></textarea>
+            <script>
+              window.eventos = [];
+              q.addEventListener('keydown', e => eventos.push('down:' + e.key));
+              q.addEventListener('input', e => eventos.push('input:' + e.data));
+              q.addEventListener('change', () => eventos.push('change'));
+            </script></body>"#,
+        );
+        assert!(!s.editing());
+        // clicar no campo dá o foco
+        assert!(s.click(10.0, 10.0).is_none());
+        assert!(s.editing());
+        for (k, t) in [("O", "O"), ("l", "l"), ("á", "á"), ("x", "x")] {
+            s.key(k, Some(t), false, false, false, false);
+        }
+        s.key("Backspace", None, false, false, false, false);
+        assert_eq!(eval(&mut s, "q.value"), "Olá");
+        assert_eq!(eval(&mut s, "eventos.slice(0, 2).join()"), "down:O,input:O");
+        // Enter envia o formulário
+        s.key("Enter", None, false, false, false, false);
+        assert_eq!(s.take_navigation().map(|u| u.url.to_string()), Some("https://teste.ferro/busca?q=Ol%C3%A1".into()));
+        // Tab passa o foco para o textarea (e o input dispara change)
+        s.key("Tab", None, false, false, false, false);
+        assert_eq!(eval(&mut s, "document.activeElement.id"), "t");
+        assert_eq!(eval(&mut s, "eventos.includes('change')"), "true");
+        s.key("a", Some("a"), false, false, false, false);
+        s.key("Enter", None, false, false, false, false);
+        s.key("b", Some("b"), false, false, false, false);
+        assert_eq!(eval(&mut s, "t.value === 'a' + String.fromCharCode(10) + 'b'"), "true");
+    });
+}
+
+#[test]
+fn rolagem_dentro_de_elemento() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0"><div id=caixa style="height:100px;overflow:auto">
+              <div style="height:400px">conteúdo</div><p id=fim style="margin:0;height:20px">fim</p></div>
+            <script>window.rolou = 0; caixa.addEventListener('scroll', () => rolou++);</script></body>"#,
+        );
+        assert_eq!(eval(&mut s, "caixa.scrollHeight + ',' + caixa.clientHeight + ',' + caixa.scrollTop"), "420,100,0");
+        // pela roda do mouse (motor)
+        let caixa = match s.js.eval("caixa", "t") {
+            Ok(v) => super::node_of(&v).unwrap(),
+            Err(_) => panic!("sem caixa"),
+        };
+        assert!(s.scroll_element(caixa, 0.0, 150.0));
+        let _ = s.render();
+        assert_eq!(eval(&mut s, "caixa.scrollTop"), "150");
+        // o conteúdo subiu junto
+        assert_eq!(eval(&mut s, "Math.round(fim.getBoundingClientRect().top)"), "250");
+        // pelo JS, com limite
+        eval(&mut s, "caixa.scrollTop = 9999");
+        assert_eq!(eval(&mut s, "caixa.scrollTop"), "320");
+        assert_eq!(eval(&mut s, "rolou"), "1");
+    });
+}
+
