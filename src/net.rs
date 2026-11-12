@@ -205,3 +205,63 @@ impl Net {
     }
 }
 
+/// data:[tipo][;base64],dados
+fn decode_data_url(s: &str) -> Result<(String, Vec<u8>), String> {
+    let rest = s.strip_prefix("data:").ok_or("não é data: URL")?;
+    let (meta, data) = rest.split_once(',').ok_or("data: URL sem vírgula")?;
+    let is_b64 = meta.ends_with(";base64");
+    let mime = meta.trim_end_matches(";base64");
+    let mime = if mime.is_empty() { "text/plain;charset=US-ASCII" } else { mime };
+    let raw = percent_decode(data);
+    let body = if is_b64 { base64_decode(&raw)? } else { raw };
+    Ok((mime.to_string(), body))
+}
+
+pub fn percent_decode(s: &str) -> Vec<u8> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let Ok(v) = u8::from_str_radix(std::str::from_utf8(&b[i + 1..i + 3]).unwrap_or("zz"), 16)
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn base64_decode(input: &[u8]) -> Result<Vec<u8>, String> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0;
+    for &c in input {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        acc = (acc << 6) | val(c).ok_or("base64 inválido")?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Ok(out)
+}
+
