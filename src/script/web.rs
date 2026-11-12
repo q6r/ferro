@@ -629,3 +629,65 @@ fn define_custom(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(vm.array_value(out))
 }
 
+/// Estilo calculado: as propriedades mais consultadas, em texto CSS.
+fn computed_style(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else {
+        return Err(vm.type_error("Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of type 'Element'."));
+    };
+    let h = host(vm);
+    super::ensure_layout(&h);
+    let props: Vec<(String, String)> = {
+        let hb = h.borrow();
+        let Some(info) = hb.layout.as_ref() else { return Ok(Value::Null) };
+        let style = info.styles.nodes.get(n).cloned().flatten();
+        let rect = info.boxes.iter().find(|(id, _)| *id == n).map(|(_, r)| *r);
+        match style {
+            Some(st) => css_props(&st, rect),
+            None => vec![("display".into(), "none".into())],
+        }
+    };
+    let o = vm.new_object();
+    for (k, v) in props {
+        set(vm, &o, &k, s(&v));
+    }
+    Ok(Value::Object(o))
+}
+
+/// "InlineBlock" → "inline-block".
+fn kebab(debug: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in debug.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn color_css(c: crate::style::Color) -> String {
+    if c.a == 255 {
+        format!("rgb({}, {}, {})", c.r, c.g, c.b)
+    } else {
+        let a = (c.a as f32 / 255.0 * 100.0).round() / 100.0;
+        format!("rgba({}, {}, {}, {a})", c.r, c.g, c.b)
+    }
+}
+
+fn len_css(l: crate::style::Len) -> String {
+    match l {
+        crate::style::Len::Auto => "auto".into(),
+        crate::style::Len::Px(v) => format!("{}px", trim_num(v)),
+        crate::style::Len::Percent(p) => format!("{}%", trim_num(p)),
+    }
+}
+
+fn trim_num(v: f32) -> String {
+    let r = (v * 100.0).round() / 100.0;
+    if r.fract() == 0.0 { format!("{}", r as i64) } else { format!("{r}") }
+}
+
