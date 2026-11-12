@@ -619,3 +619,59 @@ fn element_fn(vm: &mut Vm, rec: &ObjRef, index: usize, kind: u8) -> ObjRef {
     f
 }
 
+/// kind: 0 = all, 1 = allSettled cumprida, 2 = allSettled rejeitada, 3 = any rejeitada.
+fn all_element(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(data) = native_data(&a.callee) else { return Ok(Value::Undefined) };
+    if matches!(rec_get(&data, "called"), Value::Bool(true)) {
+        return Ok(Value::Undefined);
+    }
+    vm.define_data(&data, PropKey::str("called"), Value::Bool(true));
+    let Value::Object(rec) = rec_get(&data, "rec") else { return Ok(Value::Undefined) };
+    let index = match rec_get(&data, "index") {
+        Value::Number(n) => n as usize,
+        _ => 0,
+    };
+    let kind = match rec_get(&data, "kind") {
+        Value::Number(n) => n as u8,
+        _ => 0,
+    };
+    let x = a.arg(0);
+    let stored = match kind {
+        1 | 2 => {
+            let o = vm.new_object();
+            let (status, key) = if kind == 1 { ("fulfilled", "value") } else { ("rejected", "reason") };
+            vm.define_data(&o, PropKey::str("status"), Value::str(status));
+            vm.define_data(&o, PropKey::str(key), x);
+            Value::Object(o)
+        }
+        _ => x,
+    };
+    if let Value::Object(values) = rec_get(&rec, "values") {
+        vm.define_data(&values, crate::ops::index_key(index), stored);
+    }
+    if rec_done(vm, &rec) {
+        let values = rec_get(&rec, "values");
+        if kind == 3 {
+            let errors = super::function::list_from_array_like(vm, &values)?;
+            let agg = make_aggregate(vm, errors);
+            let reject = rec_get(&rec, "reject");
+            vm.call(&reject, Value::Undefined, vec![agg])?;
+        } else {
+            let resolve = rec_get(&rec, "resolve");
+            vm.call(&resolve, Value::Undefined, vec![values])?;
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+fn make_aggregate(vm: &mut Vm, errors: Vec<Value>) -> Value {
+    let ctor = vm.get_global(&crate::string::JsStr::new("AggregateError")).unwrap_or_default();
+    let arr = vm.array_value(errors);
+    match ctor {
+        Value::Object(c) => vm
+            .construct(&c, vec![arr, Value::str("All promises were rejected")], &c)
+            .unwrap_or_else(|e| e),
+        _ => Value::Undefined,
+    }
+}
+
