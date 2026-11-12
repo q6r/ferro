@@ -76,3 +76,35 @@ pub fn should_collect() -> bool {
     since > 300_000 && since > 2 * LIVE.with(Cell::get)
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Stats {
+    /// Objetos, ambientes e closures examinados.
+    pub examined: usize,
+    /// Objetos e ambientes em ciclos de lixo (esvaziados).
+    pub freed: usize,
+    pub ms: f64,
+}
+
+enum Node {
+    Obj(Rc<RefCell<Object>>),
+    Env(Rc<RefCell<Scope>>),
+    Clo(Rc<Closure>),
+}
+
+/// Estado de uma coleta: nós, arestas (CSR) e a época.
+struct Graph {
+    epoch: u64,
+    nodes: Vec<Node>,
+    busy: Vec<bool>,
+    edge_start: Vec<u32>,
+    edges: Vec<u32>,
+    /// (mapa, chave: None = símbolo/fora do registro, Some(MAX) = morta, valor)
+    ephemerons: Vec<(u32, Option<u32>, u32)>,
+    weak_colls: Vec<u32>,
+}
+
+impl Graph {
+    fn tag(&self, idx: usize) -> u64 {
+        self.epoch << 32 | idx as u64
+    }
+
