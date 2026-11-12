@@ -406,3 +406,23 @@ impl App {
         }
     }
 
+    pub(super) fn draw_status(&self, p: &mut Painter, t: &Theme, g: &Geo) {
+        let Some(href) = &self.hover_link else { return };
+        let text = self
+            .tab()
+            .frame
+            .as_ref()
+            .and_then(|f| f.base.join(href.trim()).ok())
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| href.clone());
+        let c = g.content;
+        let text = p.ellipsize(&text, 12.0, Weight::Regular, (c.w * 0.6).max(120.0));
+        let tw = p.measure(&text, 12.0, Weight::Regular);
+        let r = rect(c.x + 10.0, c.y + c.h - 36.0, tw + 22.0, 26.0);
+        p.rrect(r, 13.0, t.popup);
+        p.stroke(r, 13.0, 1.0, t.border);
+        p.text(r.x + 11.0, Painter::baseline(r.y + 13.0, 12.0), &text, 12.0, t.text, Weight::Regular);
+    }
+
+    // ------------------------------------------------------------- paleta
+
