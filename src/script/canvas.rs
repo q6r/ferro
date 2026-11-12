@@ -162,3 +162,43 @@ fn style(vm: &mut Vm, v: &Value) -> Result<Option<Style>, Value> {
     }))
 }
 
+fn paint(vm: &mut Vm, style_v: &Value, m: Mat, alpha: f32, op: &str) -> Result<Option<Paint>, Value> {
+    let Some(style) = style(vm, style_v)? else { return Ok(None) };
+    Ok(Some(Paint { style, inv: m.invert().unwrap_or(Mat::IDENTITY), alpha: alpha.clamp(0.0, 1.0), op: Op::parse(op) }))
+}
+
+fn with_bitmap<T>(vm: &Vm, n: NodeId, f: impl FnOnce(&mut Bitmap) -> T) -> Option<T> {
+    write(vm, |h| {
+        let r = h.canvases.get_mut(&n).map(f);
+        if r.is_some() {
+            h.canvas_dirty.insert(n);
+        }
+        r
+    })
+}
+
+/// `cvSize(el, w, h)`: cria ou redimensiona (apaga) a imagem.
+fn size(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let (w, h) = (num(vm, a, 1)?.max(0.0) as usize, num(vm, a, 2)?.max(0.0) as usize);
+    write(vm, |hb| {
+        hb.canvases.entry(n).or_insert_with(|| Bitmap::new(0, 0)).resize(w, h);
+        hb.canvas_dirty.insert(n);
+    });
+    Ok(Value::Undefined)
+}
+
+/// `cvFill(el, caminho, evenodd, estilo, matriz, alfa, op)`.
+fn fill(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let path = decode_path(&numbers(&a.arg(1)));
+    let evenodd = ferro_js::vm::truthy(&a.arg(2));
+    let m = matrix(vm, &a.arg(4))?;
+    let alpha = num(vm, a, 5)?;
+    let op = text(vm, a, 6)?;
+    if let Some(p) = paint(vm, &a.arg(3), m, alpha, &op)? {
+        with_bitmap(vm, n, |b| b.fill_path(&path, evenodd, &p));
+    }
+    Ok(Value::Undefined)
+}
+
