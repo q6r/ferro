@@ -698,3 +698,37 @@ impl App {
         tab.engine.navigate_post(nav, url, post);
     }
 
+    fn navigate(&mut self, i: usize, url: Url) {
+        let scroll_now = self.effective_scroll(i);
+        let tab = &mut self.tabs[i];
+        tab.history[tab.index].scroll = scroll_now;
+        tab.history.truncate(tab.index + 1);
+        // mesmo documento, só muda o fragmento: rola sem recarregar
+        if let Some(frame) = &tab.frame
+            && let Some(frag) = url.fragment()
+            && tab.kind() == Kind::Web
+            && same_document(tab.url(), &url)
+        {
+            let y = anchor_y(frame, frag);
+            let title = tab.entry().title.clone();
+            tab.history.push(Entry { url, title, scroll: 0.0 });
+            tab.index += 1;
+            if let Some(y) = y {
+                tab.scroll = y;
+            }
+            self.request_redraw();
+            return;
+        }
+        tab.history.push(Entry {
+            url,
+            title: String::new(),
+            scroll: 0.0,
+        });
+        tab.index += 1;
+        self.load(i);
+        if i == self.active {
+            self.close_palette();
+        }
+        self.request_redraw();
+    }
+
