@@ -3667,3 +3667,53 @@ fn transform(text: &str, t: TextTransform) -> String {
     }
 }
 
+/// Divide em pedaços alternados de espaço e não-espaço.
+fn split_runs(s: &str, is_space: impl Fn(char) -> bool) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut cur_space: Option<bool> = None;
+    for (i, c) in s.char_indices() {
+        let sp = is_space(c);
+        if cur_space.is_some_and(|v| v != sp) {
+            out.push(&s[start..i]);
+            start = i;
+        }
+        cur_space = Some(sp);
+    }
+    if start < s.len() {
+        out.push(&s[start..]);
+    }
+    out
+}
+
+impl<'a> LineBuilder<'a> {
+    fn new(fonts: &'a Fonts, container: &'a ComputedStyle, ox: f32, oy: f32, width: f32, floats: Vec<FloatBox>) -> Self {
+        let cfont = fonts.for_style(container);
+        let m = fonts.line_metrics(cfont, container.font_size);
+        let strut = container.line_height_px(m.normal).max(1.0);
+        let mut lb = LineBuilder {
+            fonts,
+            container,
+            ox,
+            oy,
+            width,
+            floats,
+            strut,
+            top: 0.0,
+            gap: 0.0,
+            inset: 0.0,
+            avail: width,
+            lines: Vec::new(),
+            cur: Vec::new(),
+            x: 0.0,
+            pending_space: 0.0,
+            after_space: true,
+            soft_break: false,
+            can_merge: false,
+            open: Vec::new(),
+            line_segs: Vec::new(),
+        };
+        lb.place_line();
+        lb
+    }
+
