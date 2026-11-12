@@ -666,3 +666,76 @@ impl Inspector {
     }
 }
 
+/// Agrupa elementos curtos de arrays em colunas (como o Node).
+fn group_array(all: &[String], indent: usize) -> Vec<String> {
+    let has_more = all.last().is_some_and(|s| s.starts_with("... ") && s.contains(" more item"));
+    let output = if has_more { &all[..all.len() - 1] } else { all };
+    let mut grouped = group_entries(output, indent, all.len());
+    if has_more {
+        grouped.push(all[all.len() - 1].clone());
+    }
+    grouped
+}
+
+fn group_entries(output: &[String], indent: usize, total_entries: usize) -> Vec<String> {
+    let mut total = 0usize;
+    let mut max_len = 0usize;
+    let lens: Vec<usize> = output.iter().map(|s| s.chars().count()).collect();
+    for &l in &lens {
+        total += l + 2;
+        max_len = max_len.max(l);
+    }
+    let actual_max = max_len + 2;
+    if !(actual_max * 3 + indent < 80 && (total as f64 / actual_max as f64 > 5.0 || max_len <= 6)) {
+        return output.to_vec();
+    }
+    let n = output.len() as f64;
+    let average_bias = (actual_max as f64 - total as f64 / total_entries as f64).sqrt();
+    let biased_max = (actual_max as f64 - 3.0 - average_bias).max(1.0);
+    let columns = ((2.5 * biased_max * n).sqrt() / biased_max)
+        .round()
+        .min(((80 - indent) / actual_max) as f64)
+        .min(12.0)
+        .min(15.0) as usize;
+    if columns <= 1 {
+        return output.to_vec();
+    }
+    let mut max_line = Vec::new();
+    for i in 0..columns {
+        let mut w = 0;
+        let mut j = i;
+        while j < output.len() {
+            w = w.max(lens[j]);
+            j += columns;
+        }
+        max_line.push(w + 2);
+    }
+    let numeric = output.iter().all(|s| s.parse::<f64>().is_ok() || s == "NaN" || s == "-0");
+    let mut tmp = Vec::new();
+    let mut i = 0;
+    while i < output.len() {
+        let max = (i + columns).min(output.len());
+        let mut line = String::new();
+        for j in i..max - 1 {
+            let cell = format!("{}, ", output[j]);
+            let pad = max_line[j - i].saturating_sub(lens[j] + 2);
+            if numeric {
+                line.push_str(&" ".repeat(pad));
+                line.push_str(&cell);
+            } else {
+                line.push_str(&cell);
+                line.push_str(&" ".repeat(pad));
+            }
+        }
+        let j = max - 1;
+        if numeric {
+            let pad = max_line[j - i].saturating_sub(2 + lens[j]);
+            line.push_str(&" ".repeat(pad));
+        }
+        line.push_str(&output[j]);
+        tmp.push(line);
+        i += columns;
+    }
+    tmp
+}
+
