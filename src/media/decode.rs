@@ -1,5 +1,6 @@
 //! Decodificadores (todos em Rust): AV1 (rav1d), H.264 Baseline/Main
-//! (rusty_h264) e AAC (symphonia). Os quadros saem em RGBA, prontos para a tela.
+//! (rusty_h264), VP9 (rusty_vp9), AAC (symphonia) e Opus (opus1). Os quadros
+//! saem em YUV 4:2:0 e viram RGBA na hora de mostrar.
 
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -244,10 +245,89 @@ impl Avc {
     }
 }
 
+// ------------------------------------------------------------------ VP9
+
+pub struct Vp9 {
+    dec: rusty_vp9::Vp9Decoder,
+}
+
+impl Vp9 {
+    fn decode(&mut self, s: &Sample) -> Result<Vec<Frame>, String> {
+        let pts = (s.pts * 1_000_000.0).round() as i64;
+        self.dec.push(&s.data, Some(pts)).map_err(|e| format!("vp9: {e:?}"))?;
+        let mut out = Vec::new();
+        loop {
+            match self.dec.next_frame() {
+                Ok(f) => {
+                    if let Some(fr) = vp9_frame(&f) {
+                        out.push(fr);
+                    }
+                }
+                Err(rusty_vp9::Error::Again | rusty_vp9::Error::Eof) => break,
+                Err(e) => return Err(format!("vp9: {e:?}")),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Quadro VP9 → YUV 4:2:0 de 8 bits (10/12 bits são reduzidos).
+fn vp9_frame(f: &rusty_vp9::DecodedFrame) -> Option<Frame> {
+    if f.subsampling_x != 1 || f.subsampling_y != 1 || f.planes.len() < 3 {
+        return None;
+    }
+    let (w, h) = (f.width as usize, f.height as usize);
+    let pts = f.pts.unwrap_or(0) as f64 / 1_000_000.0;
+    if f.bit_depth == 8 {
+        return Some(Frame::from_planes(pts, w, h, &f.planes[0], f.strides[0], &f.planes[1], &f.planes[2], f.strides[1]));
+    }
+    // amostras de 16 bits (little-endian): fica com os 8 mais altos
+    let shift = f.bit_depth - 8;
+    let to8 = |p: &[u8], stride: usize, pw: usize, ph: usize| {
+        let mut out = Vec::with_capacity(pw * ph);
+        for r in 0..ph {
+            let row = &p[r * stride..];
+            for c in 0..pw {
+                let v = u16::from_le_bytes([row[c * 2], row[c * 2 + 1]]);
+                out.push((v >> shift).min(255) as u8);
+            }
+        }
+        out
+    };
+    let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
+    let y = to8(&f.planes[0], f.strides[0], w, h);
+    let u = to8(&f.planes[1], f.strides[1], cw, ch);
+    let v = to8(&f.planes[2], f.strides[2], cw, ch);
+    Some(Frame { pts, width: w, height: h, y, u, v })
+}
+
+// ------------------------------------------------------------------ VP8
+
+pub struct Vp8 {
+    dec: vp8_decoder::Decoder,
+}
+
+impl Vp8 {
+    fn decode(&mut self, s: &Sample) -> Result<Vec<Frame>, String> {
+        match self.dec.decode(&s.data) {
+            Ok(Some(p)) => {
+                let (w, h) = (p.width as usize, p.height as usize);
+                Ok(vec![Frame::from_planes(s.pts, w, h, p.y, p.y_stride, p.u, p.v, p.uv_stride)])
+            }
+            Ok(None) => Ok(Vec::new()),
+            // depois de uma busca, espera o próximo quadro-chave
+            Err(vp8_decoder::DecodeError::NeedKeyframe) => Ok(Vec::new()),
+            Err(e) => Err(format!("vp8: {e:?}")),
+        }
+    }
+}
+
 /// Decodificador de vídeo de uma trilha.
 pub enum VideoDecoder {
     Av1(av1::Av1),
     Avc(Box<Avc>),
+    Vp9(Box<Vp9>),
+    Vp8(Box<Vp8>),
 }
 
 impl VideoDecoder {
@@ -255,6 +335,8 @@ impl VideoDecoder {
         match codec {
             Codec::Av1 { .. } => av1::Av1::new().map(VideoDecoder::Av1),
             Codec::Avc { config } => Avc::new(config).map(|a| VideoDecoder::Avc(Box::new(a))),
+            Codec::Vp9 => Some(VideoDecoder::Vp9(Box::new(Vp9 { dec: rusty_vp9::Vp9Decoder::new() }))),
+            Codec::Vp8 => Some(VideoDecoder::Vp8(Box::new(Vp8 { dec: vp8_decoder::Decoder::new() }))),
             _ => None,
         }
     }
@@ -263,6 +345,8 @@ impl VideoDecoder {
         match self {
             VideoDecoder::Av1(d) => d.decode(s),
             VideoDecoder::Avc(d) => d.decode(s),
+            VideoDecoder::Vp9(d) => d.decode(s),
+            VideoDecoder::Vp8(d) => d.decode(s),
         }
     }
 
@@ -271,22 +355,63 @@ impl VideoDecoder {
         match self {
             VideoDecoder::Av1(d) => d.reset(),
             VideoDecoder::Avc(d) => d.dec = rusty_h264_decoder::Decoder::new(),
+            VideoDecoder::Vp9(d) => d.dec = rusty_vp9::Vp9Decoder::new(),
+            VideoDecoder::Vp8(d) => d.dec = vp8_decoder::Decoder::new(),
         }
     }
 }
 
 // ------------------------------------------------------------------- AAC
 
+enum AudioInner {
+    Aac(Box<symphonia_codec_aac::AacDecoder>),
+    Vorbis(Box<symphonia_codec_vorbis::VorbisDecoder>),
+    Opus { dec: Box<opus1::multistream::MultistreamDecoder>, channels: usize, buf: Vec<f32> },
+}
+
 pub struct AudioDecoder {
-    dec: symphonia_codec_aac::AacDecoder,
+    dec: AudioInner,
     pub sample_rate: u32,
     pub channels: usize,
+}
+
+/// Decodificador Opus a partir do OpusHead (mapa 0: mono/estéreo; 1: até 8
+/// canais). Mais de 2 canais vira estéreo na saída.
+fn opus_decoder(head: &[u8]) -> Option<AudioDecoder> {
+    use opus1::SampleRate;
+    use opus1::multistream::MultistreamDecoder;
+    let channels = (*head.get(9).unwrap_or(&2)).max(1) as usize;
+    let family = *head.get(18).unwrap_or(&0);
+    let dec = if family == 0 || head.len() < 21 + channels {
+        let c = channels.min(2);
+        let mapping: &[u8] = if c == 2 { &[0, 1] } else { &[0] };
+        MultistreamDecoder::new(SampleRate::Hz48000, c, 1, (c == 2) as usize, mapping).ok()?
+    } else {
+        let (streams, coupled) = (head[19] as usize, head[20] as usize);
+        MultistreamDecoder::new(SampleRate::Hz48000, channels, streams, coupled, &head[21..21 + channels]).ok()?
+    };
+    let channels = if family == 0 { channels.min(2) } else { channels };
+    Some(AudioDecoder {
+        dec: AudioInner::Opus { dec: Box::new(dec), channels, buf: vec![0.0; 5760 * channels] },
+        sample_rate: 48000,
+        channels: channels.min(2),
+    })
 }
 
 impl AudioDecoder {
     pub fn new(codec: &Codec) -> Option<AudioDecoder> {
         use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
         use symphonia_core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
+        if let Codec::Opus { head } = codec {
+            return opus_decoder(head);
+        }
+        if let Codec::Vorbis { headers } = codec {
+            use symphonia_core::codecs::audio::well_known::CODEC_ID_VORBIS;
+            let mut params = AudioCodecParameters::new();
+            params.for_codec(CODEC_ID_VORBIS).with_extra_data(headers.clone().into_boxed_slice());
+            let dec = symphonia_codec_vorbis::VorbisDecoder::try_new(&params, &AudioDecoderOptions::default()).ok()?;
+            return Some(AudioDecoder { dec: AudioInner::Vorbis(Box::new(dec)), sample_rate: 48000, channels: 2 });
+        }
         let Codec::Aac { config, channels, sample_rate } = codec else { return None };
         let mut params = AudioCodecParameters::new();
         params.for_codec(CODEC_ID_AAC).with_sample_rate(*sample_rate);
@@ -294,16 +419,39 @@ impl AudioDecoder {
             params.with_extra_data(config.clone().into_boxed_slice());
         }
         let dec = symphonia_codec_aac::AacDecoder::try_new(&params, &AudioDecoderOptions::default()).ok()?;
-        Some(AudioDecoder { dec, sample_rate: *sample_rate, channels: (*channels).max(1) as usize })
+        Some(AudioDecoder { dec: AudioInner::Aac(Box::new(dec)), sample_rate: *sample_rate, channels: (*channels).max(1) as usize })
     }
 
     /// Amostras PCM intercaladas (f32), já no formato da trilha.
     pub fn decode(&mut self, s: &Sample) -> Result<Vec<f32>, String> {
-        use symphonia_core::codecs::audio::AudioDecoder as _;
         use symphonia_core::packet::PacketRef;
         use symphonia_core::units::{Duration, Timestamp};
+        let dec: &mut dyn symphonia_core::codecs::audio::AudioDecoder = match &mut self.dec {
+            AudioInner::Aac(d) => &mut **d,
+            AudioInner::Vorbis(d) => &mut **d,
+            AudioInner::Opus { dec, channels, buf } => {
+                let n = dec.decode(&s.data, 5760, buf).map_err(|e| format!("opus: {e:?}"))?;
+                let ch = *channels;
+                let pcm = &buf[..n * ch];
+                if ch <= 2 {
+                    return Ok(pcm.to_vec());
+                }
+                // 5.1 (ordem Vorbis: FL, C, FR, SL, SR, LFE) e outros → estéreo
+                let mut out = Vec::with_capacity(n * 2);
+                for f in pcm.chunks(ch) {
+                    let (l, r) = if ch >= 5 {
+                        (0.5 * (f[0] + 0.707 * f[1] + 0.707 * f[3]), 0.5 * (f[2] + 0.707 * f[1] + 0.707 * f[4]))
+                    } else {
+                        (f[0], f[1])
+                    };
+                    out.push(l);
+                    out.push(r);
+                }
+                return Ok(out);
+            }
+        };
         let packet = PacketRef::new(0, Timestamp::new(0), Duration::new(0), &s.data);
-        let buf = self.dec.decode_ref(&packet).map_err(|e| format!("aac: {e}"))?;
+        let buf = dec.decode_ref(&packet).map_err(|e| format!("aac: {e}"))?;
         let spec = buf.spec().clone();
         self.sample_rate = spec.rate();
         self.channels = spec.channels().count().max(1);
@@ -314,6 +462,10 @@ impl AudioDecoder {
 
     pub fn reset(&mut self) {
         use symphonia_core::codecs::audio::AudioDecoder as _;
-        self.dec.reset();
+        match &mut self.dec {
+            AudioInner::Aac(d) => d.reset(),
+            AudioInner::Vorbis(d) => d.reset(),
+            AudioInner::Opus { dec, .. } => dec.reset_state(),
+        }
     }
 }

@@ -21,6 +21,10 @@ wuff = "0.2.10"
 # mídia (tudo em Rust, sem assembly nem C)
 rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8"] }
 rusty_h264-decoder = { version = "0.17.2", default-features = false, features = ["std"] }
+rusty_vp9 = "0.1.3"
+vp8-decoder = "0.1.1"
+symphonia-codec-vorbis = "0.6.1"
+opus1 = "0.3.0"
 symphonia-core = "0.6.1"
 symphonia-codec-aac = "0.6.1"
 cpal = "0.18.2"

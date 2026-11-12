@@ -4,6 +4,7 @@
 
 pub mod decode;
 pub mod mp4;
+mod webm;
 pub mod player;
 
 use std::collections::HashMap;
@@ -36,8 +37,22 @@ pub fn is_type_supported(mime: &str) -> bool {
             || c.starts_with("mp4a.40.5")
             || c == "mp4a.40"
     };
+    // WebM: VP9 (perfil 0, e o 2 de 10 bits, reduzido para 8), AV1 8 bits, Opus
+    let ok_webm = |c: &str| {
+        let c = c.trim();
+        c == "vp9"
+            || c == "vp9.0"
+            || c == "vp8"
+            || c == "vp8.0"
+            || c == "vorbis"
+            || c.starts_with("vp09.00.")
+            || c.starts_with("vp09.02.")
+            || (c.starts_with("av01.0.") && !c.contains(".10."))
+            || c == "opus"
+    };
     match ty.as_str() {
         "video/mp4" | "audio/mp4" => codecs.is_none_or(|c| !c.is_empty() && c.split(',').all(ok_codec)),
+        "video/webm" | "audio/webm" => codecs.is_none_or(|c| !c.is_empty() && c.split(',').all(ok_webm)),
         _ => false,
     }
 }
@@ -204,12 +219,15 @@ impl Media {
             return Err(format!("Failed to execute 'addSourceBuffer' on 'MediaSource': The type provided ('{mime}') is unsupported."));
         }
         let id = self.next();
+        if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+            eprintln!("[mídia] SourceBuffer {id}: {mime}");
+        }
         self.buffers.insert(
             id,
             SourceBuffer {
                 source,
                 mime: mime.to_string(),
-                demux: Demuxer::new(),
+                demux: if mime.to_ascii_lowercase().contains("webm") { Demuxer::webm() } else { Demuxer::new() },
                 samples: HashMap::new(),
                 timestamp_offset: 0.0,
             },
@@ -231,6 +249,10 @@ impl Media {
         let sb = self.buffers.get_mut(&id).ok_or("SourceBuffer removido")?;
         sb.timestamp_offset = offset;
         let samples = sb.demux.push(data)?;
+        if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+            let span = samples.first().map(|a| (a.pts, samples.last().map_or(a.pts, |z| z.pts + z.duration)));
+            eprintln!("[mídia] append sb{id}: {} bytes, {} amostras {span:?}, offset {offset}", data.len(), samples.len());
+        }
         for mut s in samples {
             s.pts += offset;
             s.dts += offset;
@@ -413,7 +435,7 @@ impl Media {
                 let Some(list) = sb.samples.get(&t.id) else { continue };
                 if t.is_video() {
                     v.get_or_insert((t.codec.clone(), list.clone()));
-                } else if matches!(t.codec, Codec::Aac { .. }) {
+                } else if t.is_audio() {
                     a.get_or_insert((t.codec.clone(), list.clone()));
                 }
             }
@@ -537,6 +559,10 @@ impl Media {
                         Codec::Av1 { .. } => "av1".to_string(),
                         Codec::Avc { .. } => "avc".to_string(),
                         Codec::Aac { channels, sample_rate, .. } => format!("aac {channels}ch {sample_rate}Hz"),
+                        Codec::Vp9 => "vp9".to_string(),
+                        Codec::Vp8 => "vp8".to_string(),
+                        Codec::Vorbis { .. } => "vorbis".to_string(),
+                        Codec::Opus { .. } => "opus".to_string(),
                         Codec::Other(s) => s.clone(),
                     };
                     let n = sb.samples.get(&t.id).map_or(0, |l| l.lock().unwrap().len());

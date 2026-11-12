@@ -83,6 +83,24 @@ pub(crate) enum Done {
     MediaFile { node: NodeId, url: Url, bytes: Option<Vec<u8>> },
 }
 
+impl Done {
+    /// Nome do tipo (para o log de lentidão).
+    fn kind(&self) -> &'static str {
+        match self {
+            Done::Script { .. } => "script",
+            Done::Fetch { .. } => "fetch",
+            Done::Image { .. } => "imagem",
+            Done::Bg { .. } => "fundo",
+            Done::Font => "fonte",
+            Done::Sheet { .. } => "folha de estilo",
+            Done::ParserScript { .. } => "script do HTML",
+            Done::Module { .. } => "módulo",
+            Done::Frame { .. } => "iframe",
+            Done::MediaFile { .. } => "arquivo de mídia",
+        }
+    }
+}
+
 /// Scripts do HTML ainda rodando (em ordem, um de cada vez).
 pub(crate) struct ParserScripts {
     /// Textos dos scripts externos que já chegaram.
@@ -801,7 +819,12 @@ impl Session {
             let done = self.host.borrow().rx.try_recv();
             let Ok(done) = done else { break };
             self.host.borrow_mut().in_flight -= 1;
+            let kind = if log { done.kind() } else { "" };
+            let t0 = Instant::now();
             self.on_done(done);
+            if log && t0.elapsed().as_millis() > 100 {
+                eprintln!("[mídia] resposta lenta ({kind}): {:.0} ms", t0.elapsed().as_secs_f64() * 1000.0);
+            }
         }
         let t_net = start.elapsed();
         // timers vencidos (com limite, para não travar a aba)
@@ -811,7 +834,11 @@ impl Session {
         }
         let t_timers = start.elapsed();
         // mídia: relógio e eventos dos <video>/<audio>
+        let t_media = Instant::now();
         let media_events = self.host.borrow_mut().media.tick();
+        if log && t_media.elapsed().as_millis() > 50 {
+            eprintln!("[mídia] media.tick lento: {:.0} ms", t_media.elapsed().as_secs_f64() * 1000.0);
+        }
         if media_events.iter().any(|(_, ty)| matches!(*ty, "loadedmetadata" | "resize")) {
             // o tamanho do vídeo ficou conhecido: a caixa muda de proporção
             self.host.borrow_mut().dirty = true;
@@ -832,18 +859,27 @@ impl Session {
                 std::mem::take(&mut hb.raf)
             };
             let ts = Value::Number(now_ms(&self.js.vm));
+            let t_raf = Instant::now();
+            let count = list.len();
             for (_, cb) in list {
                 if let Err(e) = self.js.vm.call(&cb, Value::Undefined, vec![ts.clone()]) {
                     self.js.vm.report_uncaught(&e);
                 }
             }
             self.js.vm.run_microtasks();
+            if log && t_raf.elapsed().as_millis() > 100 {
+                eprintln!("[mídia] requestAnimationFrame lento: {count} callbacks, {:.0} ms", t_raf.elapsed().as_secs_f64() * 1000.0);
+            }
         }
         // mensagens da página-mãe e os quadros desta página
         if !self.host.borrow().inbox.is_empty() {
             self.deliver_inbox();
         }
+        let t_frames = Instant::now();
         self.tick_frames();
+        if log && t_frames.elapsed().as_millis() > 100 {
+            eprintln!("[mídia] iframes lentos: {:.0} ms", t_frames.elapsed().as_secs_f64() * 1000.0);
+        }
         // coletor de ciclos, entre uma tarefa e outra; com o usuário mexendo
         // na página, só se a memória estiver crescendo muito
         let busy = self.last_input.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));

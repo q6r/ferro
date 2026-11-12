@@ -15,6 +15,14 @@ pub enum Codec {
     Avc { config: Vec<u8> },
     /// AAC: o AudioSpecificConfig do `esds`.
     Aac { config: Vec<u8>, channels: u16, sample_rate: u32 },
+    /// VP9 (WebM).
+    Vp9,
+    /// VP8 (WebM).
+    Vp8,
+    /// Opus (WebM): `head` é o cabeçalho OpusHead (canais, pre-skip, mapa).
+    Opus { head: Vec<u8> },
+    /// Vorbis (WebM): `headers` são os três cabeçalhos, em lacing Xiph.
+    Vorbis { headers: Vec<u8> },
     Other(String),
 }
 
@@ -33,7 +41,11 @@ pub struct Track {
 
 impl Track {
     pub fn is_video(&self) -> bool {
-        matches!(self.codec, Codec::Av1 { .. } | Codec::Avc { .. })
+        matches!(self.codec, Codec::Av1 { .. } | Codec::Avc { .. } | Codec::Vp9 | Codec::Vp8)
+    }
+
+    pub fn is_audio(&self) -> bool {
+        matches!(self.codec, Codec::Aac { .. } | Codec::Opus { .. } | Codec::Vorbis { .. })
     }
 }
 
@@ -55,6 +67,8 @@ pub struct Demuxer {
     pub tracks: Vec<Track>,
     /// `moof` lido, esperando o `mdat` (bytes do moof, posição no fluxo).
     moof: Option<Vec<u8>>,
+    /// Fluxo WebM (detectado pelo cabeçalho EBML ou pelo tipo do SourceBuffer).
+    webm: Option<Box<super::webm::Webm>>,
 }
 
 fn be16(b: &[u8], i: usize) -> u16 {
@@ -150,6 +164,9 @@ fn esds_config(esds: &[u8]) -> Option<Vec<u8>> {
 /// MP4 comum (não fragmentado, o de `<video src="x.mp4">`): as trilhas do
 /// `moov` e todas as amostras, montadas pelas tabelas do `stbl`.
 pub fn demux_file(data: &[u8]) -> Result<(Vec<Track>, Vec<Sample>), String> {
+    if super::webm::is_webm(data) {
+        return super::webm::demux_file(data);
+    }
     let top = boxes(data);
     let moov = top.iter().find(|(t, _)| t == b"moov").map(|(_, b)| *b).ok_or("MP4 sem moov")?;
     let mut d = Demuxer::new();
@@ -265,8 +282,19 @@ impl Demuxer {
         self.tracks.iter().find(|t| t.id == id)
     }
 
+    /// Leitor de WebM em vez de MP4 (SourceBuffer de tipo `video/webm`).
+    pub fn webm() -> Demuxer {
+        Demuxer { webm: Some(Box::default()), ..Demuxer::default() }
+    }
+
     /// Acrescenta bytes; devolve as amostras completas encontradas.
     pub fn push(&mut self, data: &[u8]) -> Result<Vec<Sample>, String> {
+        if self.webm.is_none() && self.pending.is_empty() && super::webm::is_webm(data) {
+            self.webm = Some(Box::default());
+        }
+        if let Some(w) = &mut self.webm {
+            return w.push(data, &mut self.tracks);
+        }
         self.pending.extend_from_slice(data);
         let mut out = Vec::new();
         loop {
