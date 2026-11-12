@@ -304,3 +304,43 @@ impl Media {
         out.unwrap_or_default()
     }
 
+    fn has_metadata(&self, source: u32) -> bool {
+        self.sources.get(&source).is_some_and(|ms| {
+            !ms.buffers.is_empty() && ms.buffers.iter().all(|id| self.buffers.get(id).is_some_and(|b| !b.demux.tracks.is_empty()))
+        })
+    }
+
+    /// Tamanho do vídeo (da primeira trilha de vídeo).
+    fn video_size(&self, source: u32) -> (u32, u32) {
+        let Some(ms) = self.sources.get(&source) else { return (0, 0) };
+        for id in &ms.buffers {
+            if let Some(sb) = self.buffers.get(id)
+                && let Some(t) = sb.demux.tracks.iter().find(|t| t.is_video())
+            {
+                return (t.width, t.height);
+            }
+        }
+        (0, 0)
+    }
+
+    fn new_playback(&self, el: NodeId) -> Playback {
+        let mut p = Playback::new();
+        p.pipeline.node = el;
+        p.pipeline.sink = self.frame_sink.clone();
+        p
+    }
+
+    pub fn attach(&mut self, el: NodeId, source: u32) {
+        let mut p = self.new_playback(el);
+        p.source = Some(source);
+        self.players.insert(el, p);
+    }
+
+    pub fn player(&mut self, el: NodeId) -> &mut Playback {
+        if !self.players.contains_key(&el) {
+            let p = self.new_playback(el);
+            self.players.insert(el, p);
+        }
+        self.players.get_mut(&el).unwrap()
+    }
+
