@@ -507,3 +507,29 @@ impl Media {
         events
     }
 
+    /// Algum player tocando (o laço da aba não pode dormir muito).
+    pub fn active(&self) -> bool {
+        self.players.values().any(|p| !p.paused || p.seeking || (p.source.is_some() && p.ready_state < 4))
+    }
+
+    /// Informações das trilhas (para depuração).
+    pub fn describe(&self, source: u32) -> String {
+        let Some(ms) = self.sources.get(&source) else { return String::new() };
+        let mut out = String::new();
+        for id in &ms.buffers {
+            if let Some(sb) = self.buffers.get(id) {
+                for t in &sb.demux.tracks {
+                    let c = match &t.codec {
+                        Codec::Av1 { .. } => "av1".to_string(),
+                        Codec::Avc { .. } => "avc".to_string(),
+                        Codec::Aac { channels, sample_rate, .. } => format!("aac {channels}ch {sample_rate}Hz"),
+                        Codec::Other(s) => s.clone(),
+                    };
+                    let n = sb.samples.get(&t.id).map_or(0, |l| l.lock().unwrap().len());
+                    out.push_str(&format!("[{} {c} {}x{} {n} amostras {:?}] ", sb.mime, t.width, t.height, sb.buffered()));
+                }
+            }
+        }
+        out
+    }
+}
