@@ -488,3 +488,39 @@ fn insert(vm: &mut Vm, parent: NodeId, child: NodeId, before: Option<NodeId>) ->
     Ok(())
 }
 
+/// Argumentos de append/prepend/before/after: nós ou textos (viram nós de texto).
+fn nodes_from_args(vm: &mut Vm, a: &CallArgs) -> Result<Vec<NodeId>, Value> {
+    let mut out = Vec::new();
+    for v in &a.args {
+        match node_of(v) {
+            Some(n) => out.push(n),
+            None => {
+                let text = vm.to_rust_string(v)?;
+                out.push(write(vm, |h| h.page.doc.create(NodeData::Text(text))));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn insert_all(vm: &mut Vm, parent: NodeId, nodes: Vec<NodeId>, before: Option<NodeId>) -> Result<(), Value> {
+    for n in nodes {
+        insert(vm, parent, n, before)?;
+    }
+    Ok(())
+}
+
+// ------------------------------------------------------------------- Node
+
+fn node_type(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(read(vm, |h| match &h.page.doc.node(n).data {
+        NodeData::Element(e) if e.tag == FRAGMENT_TAG => 11.0,
+        NodeData::Element(_) => 1.0,
+        NodeData::Text(_) => 3.0,
+        NodeData::Comment(_) => 8.0,
+        NodeData::Document => 9.0,
+        NodeData::Doctype(_) => 10.0,
+    })))
+}
+
