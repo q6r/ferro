@@ -778,3 +778,37 @@ fn resolved_options(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 // ---------------------------------------------------------------- números
 
+fn currency_symbol(code: &str, lang: &str, display: &str) -> String {
+    if display == "code" {
+        return code.to_string();
+    }
+    let narrow = display == "narrowSymbol";
+    match code {
+        "USD" => if lang == "en" || narrow { "$" } else { "US$" }.into(),
+        "BRL" => "R$".into(),
+        "EUR" => "€".into(),
+        "GBP" => "£".into(),
+        "JPY" => if lang == "en" || narrow { "¥" } else { "JP¥" }.into(),
+        "CNY" => "CN¥".into(),
+        "INR" => "₹".into(),
+        "KRW" => "₩".into(),
+        "MXN" => if narrow { "$" } else { "MX$" }.into(),
+        "CAD" => if narrow { "$" } else { "CA$" }.into(),
+        "AUD" => if narrow { "$" } else { "A$" }.into(),
+        _ => code.into(),
+    }
+}
+
+fn currency_digits(code: &str) -> usize {
+    match code {
+        "JPY" | "KRW" | "CLP" | "VND" | "ISK" => 0,
+        _ => 2,
+    }
+}
+
+fn number_format_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let opts = make_num_opts(vm, locale, &a.arg(1))?;
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::NumberFormat(opts))
+}
+
