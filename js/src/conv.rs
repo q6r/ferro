@@ -367,3 +367,46 @@ pub fn to_fixed(n: f64, digits: usize) -> String {
     }
 }
 
+/// `toExponential(digits)`; `None` = quantos dígitos forem necessários.
+pub fn to_exponential(n: f64, digits: Option<usize>) -> String {
+    if !n.is_finite() {
+        return number_to_string(n);
+    }
+    let s = match digits {
+        Some(d) => format!("{:.*e}", d, n),
+        None => format!("{n:e}"),
+    };
+    let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
+    let e: i32 = exp.parse().unwrap_or(0);
+    format!("{mant}e{}{}", if e >= 0 { '+' } else { '-' }, e.abs())
+}
+
+/// `toPrecision(p)`.
+pub fn to_precision(n: f64, p: usize) -> String {
+    if !n.is_finite() {
+        return number_to_string(n);
+    }
+    if n == 0.0 {
+        return if p > 1 { format!("0.{}", "0".repeat(p - 1)) } else { "0".into() };
+    }
+    let s = format!("{:.*e}", p - 1, n);
+    let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
+    let e: i32 = exp.parse().unwrap_or(0);
+    if e < -6 || e >= p as i32 {
+        return format!("{mant}e{}{}", if e >= 0 { '+' } else { '-' }, e.abs());
+    }
+    let neg = mant.starts_with('-');
+    let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
+    let out = if e >= 0 {
+        let int_len = e as usize + 1;
+        if int_len >= digits.len() {
+            digits
+        } else {
+            format!("{}.{}", &digits[..int_len], &digits[int_len..])
+        }
+    } else {
+        format!("0.{}{}", "0".repeat((-e - 1) as usize), digits)
+    };
+    if neg { format!("-{out}") } else { out }
+}
+
