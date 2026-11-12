@@ -167,3 +167,52 @@ fn parse(line: &str, url: &Url, from_http: bool) -> Option<Cookie> {
     Some(c)
 }
 
+fn store(line: &str, url: &Url, from_http: bool) {
+    let Some(mut c) = parse(line, url, from_http) else { return };
+    let mut jar = JAR.lock().unwrap_or_else(|e| e.into_inner());
+    let old = jar
+        .cookies
+        .iter()
+        .position(|o| o.name == c.name && o.domain == c.domain && o.path == c.path);
+    if let Some(i) = old {
+        // um script não substitui um cookie HttpOnly
+        if jar.cookies[i].http_only && !from_http {
+            return;
+        }
+        c.created = jar.cookies[i].created;
+        jar.cookies.remove(i);
+    } else {
+        jar.seq += 1;
+        c.created = jar.seq;
+    }
+    let persistent = c.expires.is_some() || old.is_some();
+    if c.expires.is_none_or(|t| t > now()) {
+        jar.cookies.push(c);
+    }
+    if persistent {
+        crate::dados::cookies_changed();
+    }
+}
+
+/// Os cookies permanentes (com validade), uma linha cada, para o disco.
+pub fn export() -> String {
+    use crate::dados::escape;
+    let t = now();
+    let jar = JAR.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = String::new();
+    for c in jar.cookies.iter().filter(|c| c.expires.is_some_and(|e| e > t)) {
+        out.push_str(&format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            escape(&c.name),
+            escape(&c.value),
+            escape(&c.domain),
+            c.host_only as u8,
+            escape(&c.path),
+            c.secure as u8,
+            c.http_only as u8,
+            c.expires.unwrap_or(0.0),
+        ));
+    }
+    out
+}
+
