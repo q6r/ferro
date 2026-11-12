@@ -413,3 +413,93 @@ impl Lexer {
         Ok(char::from_u32(code).unwrap_or('\u{FFFD}'))
     }
 
+    fn read_number(&mut self) -> Result<Tok, LexError> {
+        let c = self.peek();
+        let radix = if c == '0' {
+            match self.peek_at(1) {
+                'x' | 'X' => 16,
+                'o' | 'O' => 8,
+                'b' | 'B' => 2,
+                _ => 10,
+            }
+        } else {
+            10
+        };
+        if radix != 10 {
+            self.pos += 2;
+            let mut digits = String::new();
+            while self.peek().is_digit(radix) || self.peek() == '_' {
+                if self.peek() != '_' {
+                    digits.push(self.peek());
+                }
+                self.pos += 1;
+            }
+            if self.peek() == 'n' {
+                self.pos += 1;
+                return Ok(Tok::BigInt(format!("0{}{digits}", if radix == 16 { 'x' } else if radix == 8 { 'o' } else { 'b' }).into()));
+            }
+            let mut v: f64 = 0.0;
+            for d in digits.chars() {
+                v = v * radix as f64 + d.to_digit(radix).unwrap() as f64;
+            }
+            return self.end_number(Tok::Num(v));
+        }
+        // octal legado: 0777
+        if c == '0' && self.peek_at(1).is_ascii_digit() {
+            let start = self.pos;
+            self.pos += 1;
+            let mut legacy = true;
+            while self.peek().is_ascii_digit() {
+                if self.peek() >= '8' {
+                    legacy = false;
+                }
+                self.pos += 1;
+            }
+            let text: String = self.src[start..self.pos].iter().collect();
+            let v = if legacy {
+                text.chars().skip(1).fold(0.0, |a, d| a * 8.0 + d.to_digit(8).unwrap() as f64)
+            } else {
+                text.parse().unwrap_or(f64::NAN)
+            };
+            return self.end_number(Tok::Num(v));
+        }
+        let mut text = String::new();
+        let take_digits = |lx: &mut Lexer, text: &mut String| {
+            while lx.peek().is_ascii_digit() || lx.peek() == '_' {
+                if lx.peek() != '_' {
+                    text.push(lx.peek());
+                }
+                lx.pos += 1;
+            }
+        };
+        take_digits(self, &mut text);
+        if self.peek() == 'n' {
+            self.pos += 1;
+            return Ok(Tok::BigInt(text.into()));
+        }
+        if self.peek() == '.' {
+            text.push('.');
+            self.pos += 1;
+            take_digits(self, &mut text);
+        }
+        if matches!(self.peek(), 'e' | 'E')
+            && (self.peek_at(1).is_ascii_digit() || (matches!(self.peek_at(1), '+' | '-') && self.peek_at(2).is_ascii_digit()))
+        {
+            text.push('e');
+            self.pos += 1;
+            if matches!(self.peek(), '+' | '-') {
+                text.push(self.peek());
+                self.pos += 1;
+            }
+            take_digits(self, &mut text);
+        }
+        if text.starts_with('.') {
+            text.insert(0, '0');
+        }
+        if text.ends_with('.') {
+            text.push('0');
+        }
+        let v: f64 = text.parse().map_err(|_| self.err("número inválido"))?;
+        self.end_number(Tok::Num(v))
+    }
+
