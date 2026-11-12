@@ -390,3 +390,42 @@ fn peephole(ops: Vec<Op>, lines: &mut [(u32, u32)], call_names: &mut [(u32, u32)
     out
 }
 
+/// Template marcado: textos cozidos e crus.
+pub type TemplateSrc = (Vec<Option<Rc<[u16]>>>, Vec<Rc<str>>);
+
+/// Função compilada.
+pub struct Code {
+    pub name: JsStr,
+    pub ops: Vec<Op>,
+    pub consts: Vec<Value>,
+    pub functions: Vec<Rc<Code>>,
+    /// (pc, linha) em ordem crescente de pc.
+    pub lines: Vec<(u32, u32)>,
+    pub nregs: u32,
+    /// Registradores que recebem os argumentos.
+    pub nparams: u32,
+    /// Registradores até aqui começam como undefined; os demais como "vazio" (TDZ).
+    pub var_end: u32,
+    /// Usa `arguments` ou parâmetro rest (precisa da lista de argumentos).
+    pub needs_args: bool,
+    /// Valor de `length`.
+    pub length: u32,
+    pub kind: FnKind,
+    pub is_async: bool,
+    pub is_generator: bool,
+    pub strict: bool,
+    pub is_script: bool,
+    pub source: Rc<str>,
+    pub file: Rc<str>,
+    pub line: u32,
+    pub templates: Vec<TemplateSrc>,
+    pub template_cache: RefCell<Vec<Option<ObjRef>>>,
+    /// (pc da chamada, constante com o texto do alvo) para mensagens de erro.
+    pub call_names: Vec<(u32, u32)>,
+    /// Células de variáveis léxicas globais já encontradas (por constante).
+    pub global_cache: RefCell<Vec<Option<crate::vm::LexCell>>>,
+    /// Propriedades do objeto global já encontradas: (geração das léxicas,
+    /// geração das propriedades, posição), por constante.
+    pub gobj_cache: RefCell<Vec<(u32, u32, u32)>>,
+}
+
