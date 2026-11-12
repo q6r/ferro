@@ -124,3 +124,60 @@ pub enum Hit {
     Menu,
 }
 
+/// Ações do menu de contexto (botão direito).
+#[derive(Clone, PartialEq)]
+enum MenuAction {
+    OpenLinkTab(String),
+    CopyLink(String),
+    CopySelection,
+    SelectAll,
+    Back,
+    Forward,
+    Reload,
+    Find,
+    Fullscreen,
+}
+
+type Hits = Vec<(Rect, Hit)>;
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    NewTab,
+    Settings(Section),
+    Web,
+}
+
+struct Entry {
+    url: Url,
+    title: String,
+    scroll: f32,
+}
+
+struct Tab {
+    id: u64,
+    engine: EngineHandle,
+    history: Vec<Entry>,
+    index: usize,
+    frame: Option<Box<Frame>>,
+    nav: u64,
+    loading: bool,
+    progress: f32,
+    /// Rolagem em px CSS.
+    scroll: f32,
+    /// Ainda não chegou o primeiro quadro da navegação atual.
+    fresh: bool,
+    /// Âncora a rolar quando a página chegar.
+    fragment: Option<String>,
+    error: Option<String>,
+    /// Última rolagem avisada ao motor (para `window.scrollY`).
+    sent_scroll: f32,
+    /// Um campo de texto da página tem o foco: as teclas são dela.
+    editing: bool,
+    /// Corpo do POST para o próximo carregamento (envio de formulário).
+    pending_post: Option<crate::script::PostData>,
+    /// Ponteiro que a página pede onde o mouse está.
+    cursor: crate::style::Cursor,
+    /// Última posição do mouse avisada ao motor (coordenadas do documento).
+    sent_mouse: Option<(f32, f32)>,
+}
+
