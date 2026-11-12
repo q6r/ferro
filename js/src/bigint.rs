@@ -535,3 +535,80 @@ impl BigInt {
         }
     }
 
+    /// BigInt.asUintN(bits, x).
+    pub fn as_uint_n(&self, bits: u64) -> BigInt {
+        if bits == 0 {
+            return BigInt::zero();
+        }
+        let limbs = bits.div_ceil(32) as usize;
+        let mut v = self.twos(limbs.max(self.mag.len() + 1));
+        v.truncate(limbs);
+        let extra = (limbs as u64) * 32 - bits;
+        if extra > 0
+            && let Some(top) = v.last_mut()
+        {
+            *top &= u32::MAX >> extra;
+        }
+        BigInt::from_parts(false, v)
+    }
+
+    /// BigInt.asIntN(bits, x).
+    pub fn as_int_n(&self, bits: u64) -> BigInt {
+        if bits == 0 {
+            return BigInt::zero();
+        }
+        let u = self.as_uint_n(bits);
+        let half = BigInt::from_i64(1).shl(bits - 1);
+        if u.cmp(&half) != Ordering::Less { u.sub(&half.shl(1)) } else { u }
+    }
+
+    /// Valor como i64/u64 truncado em 64 bits (para typed arrays).
+    pub fn to_u64_wrapping(&self) -> u64 {
+        let v = self.as_uint_n(64);
+        let mut x = 0u64;
+        for (i, &d) in v.mag.iter().enumerate().take(2) {
+            x |= (d as u64) << (32 * i);
+        }
+        x
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn b(s: &str) -> BigInt {
+        BigInt::parse_js(s).unwrap()
+    }
+
+    #[test]
+    fn aritmetica() {
+        let x = b("123456789012345678901234567890");
+        let y = b("987654321098765432109876543210");
+        assert_eq!(x.add(&y).to_string_radix(10), "1111111110111111111011111111100");
+        assert_eq!(x.sub(&y).to_string_radix(10), "-864197532086419753208641975320");
+        assert_eq!(x.mul(&y).to_string_radix(10), "121932631137021795226185032733622923332237463801111263526900");
+        assert_eq!(y.div(&x).unwrap().to_string_radix(10), "8");
+        assert_eq!(y.rem(&x).unwrap().to_string_radix(10), "9000000000900000000090");
+        assert_eq!(b("-7").div(&b("2")).unwrap().to_string_radix(10), "-3");
+        assert_eq!(b("-7").rem(&b("2")).unwrap().to_string_radix(10), "-1");
+        assert_eq!(b("2").pow(100).to_string_radix(10), "1267650600228229401496703205376");
+        assert_eq!(b("255").to_string_radix(16), "ff");
+        assert_eq!(b("-1").shl(70).to_string_radix(10), "-1180591620717411303424");
+        assert_eq!(b("-9").shr(1).to_string_radix(10), "-5");
+        assert_eq!(b("-6").and(&b("3")).to_string_radix(10), "2");
+        assert_eq!(b("-6").or(&b("3")).to_string_radix(10), "-5");
+        assert_eq!(b("5").not().to_string_radix(10), "-6");
+        assert_eq!(b("255").as_int_n(8).to_string_radix(10), "-1");
+        assert_eq!(b("-1").as_uint_n(64).to_string_radix(10), "18446744073709551615");
+        assert_eq!(BigInt::from_f64(1e20).unwrap().to_string_radix(10), "100000000000000000000");
+        assert_eq!(b("9007199254740993").to_f64(), 9007199254740992.0);
+        assert_eq!(b("123456789012345678901234567890").to_f64(), 1.2345678901234568e29);
+        assert_eq!(BigInt::parse_literal("0xFF_FFn").unwrap().to_string_radix(10), "65535");
+        // divisão longa com vários dígitos
+        let big = b("340282366920938463463374607431768211457");
+        let d = b("18446744073709551617");
+        assert_eq!(big.div(&d).unwrap().to_string_radix(10), "18446744073709551615");
+        assert_eq!(big.rem(&d).unwrap().to_string_radix(10), "2");
+    }
+}
