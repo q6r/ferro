@@ -760,3 +760,63 @@ fn proto_set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
+fn define_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let key = vm.to_property_key(&a.arg(0))?;
+    let Value::Object(f) = a.arg(1) else {
+        return Err(vm.type_error("Object.prototype.__defineGetter__: Expecting function"));
+    };
+    let d = Descriptor {
+        get: Some(Some(f)),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    define_own_property(vm, &o, key, d)?;
+    Ok(Value::Undefined)
+}
+
+fn define_setter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let key = vm.to_property_key(&a.arg(0))?;
+    let Value::Object(f) = a.arg(1) else {
+        return Err(vm.type_error("Object.prototype.__defineSetter__: Expecting function"));
+    };
+    let d = Descriptor {
+        set: Some(Some(f)),
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    define_own_property(vm, &o, key, d)?;
+    Ok(Value::Undefined)
+}
+
+fn lookup_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let key = vm.to_property_key(&a.arg(0))?;
+    let mut cur = Some(o);
+    while let Some(c) = cur {
+        if let Some(p) = c.borrow().own(&key) {
+            return Ok(match p.slot {
+                Slot::Accessor { get: Some(g), .. } => Value::Object(g),
+                _ => Value::Undefined,
+            });
+        }
+        cur = c.proto();
+    }
+    Ok(Value::Undefined)
+}
+
+/// Nome de uma chave como texto JS (para mensagens e Function.name).
+pub fn key_string(k: &PropKey) -> JsStr {
+    match k {
+        PropKey::Str(s) => s.clone(),
+        PropKey::Sym(s) => JsStr::new(&format!("[{}]", s.description().map(|d| d.to_rust()).unwrap_or_default())),
+    }
+}
+
+#[allow(dead_code)]
+fn unused(vm: &mut Vm, a: &CallArgs) -> Result<JsStr, Value> {
+    arg_str(vm, a, 0)
+}
