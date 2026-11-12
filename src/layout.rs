@@ -3938,3 +3938,82 @@ impl<'a> LineBuilder<'a> {
         self.can_merge = false;
     }
 
+    /// Fecha a linha atual. `forced` cria a linha mesmo vazia (<br>, \n em pre).
+    fn break_line(&mut self, forced: bool) {
+        if self.cur.is_empty() && self.line_segs.is_empty() && !forced {
+            return;
+        }
+        let frags = std::mem::take(&mut self.cur);
+        // "strut": toda linha tem pelo menos a altura da fonte do contêiner
+        let c = self.container;
+        let cfont = self.fonts.for_style(c);
+        let m = self.fonts.line_metrics(cfont, c.font_size);
+        let lh = c.line_height_px(m.normal);
+        let half = (lh - (m.ascent + m.descent)) / 2.0;
+        let (mut above, mut below) = (m.ascent + half, m.descent + half);
+        for f in &frags {
+            match &f.kind {
+                FragKind::Text(_) => {
+                    let m = self.fonts.line_metrics(f.font, f.style.font_size);
+                    let lh = f.style.line_height_px(m.normal);
+                    let half = (lh - (m.ascent + m.descent)) / 2.0;
+                    above = above.max(m.ascent + half);
+                    below = below.max(m.descent + half);
+                }
+                FragKind::Box { h, .. } | FragKind::InlineBlock { h, .. } if f.valign == VAlign::Middle => {
+                    above = above.max(h / 2.0 + f.mid);
+                    below = below.max(h / 2.0 - f.mid);
+                }
+                FragKind::Box { h, .. } => above = above.max(*h),
+                FragKind::InlineBlock { h, base, .. } => {
+                    above = above.max(*base);
+                    below = below.max(h - base);
+                }
+            }
+        }
+        let mut segs = std::mem::take(&mut self.line_segs);
+        let mut width = frags.last().map_or(0.0, |f| f.x + f.w);
+        for sg in &segs {
+            width = width.max(sg.x1);
+        }
+        // elementos decorados que continuam na próxima linha
+        for o in &mut self.open {
+            let lead = if o.first { o.style.border(LEFT) + px(o.style.padding[LEFT]) } else { 0.0 };
+            if width > o.start + lead + 0.5 {
+                segs.push(Seg {
+                    id: o.id,
+                    style: o.style.clone(),
+                    x0: o.start,
+                    x1: width,
+                    first: o.first,
+                    last: false,
+                });
+                o.first = false;
+            }
+            o.start = 0.0;
+        }
+        segs.sort_by_key(|sg| sg.id);
+        let (above, below) = (above.max(0.0), below.max(0.0));
+        self.lines.push(Line {
+            frags,
+            width,
+            above,
+            below,
+            inset: self.inset,
+            avail: self.avail,
+            gap: self.gap,
+            segs,
+        });
+        self.top += self.gap + above + below;
+        self.x = 0.0;
+        self.pending_space = 0.0;
+        self.after_space = true;
+        self.can_merge = false;
+        self.place_line();
+    }
+
+    fn finish(mut self) -> Vec<Line> {
+        self.break_line(false);
+        self.lines
+    }
+}
