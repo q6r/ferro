@@ -446,3 +446,54 @@ fn define_props_from(vm: &mut Vm, o: &ObjRef, props: &Value) -> Result<(), Value
     Ok(())
 }
 
+fn define_properties(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(o) = a.arg(0) else {
+        return Err(vm.type_error("Object.defineProperties called on non-object"));
+    };
+    define_props_from(vm, &o, &a.arg(1))?;
+    Ok(Value::Object(o))
+}
+
+fn get_own_property_names(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let ks: Vec<Value> = vm.own_keys(&o)?.into_iter().filter(|k| matches!(k, PropKey::Str(_))).map(|k| k.to_value()).collect();
+    Ok(vm.array_value(ks))
+}
+
+fn get_own_property_symbols(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let ks: Vec<Value> = vm.own_keys(&o)?.into_iter().filter(|k| matches!(k, PropKey::Sym(_))).map(|k| k.to_value()).collect();
+    Ok(vm.array_value(ks))
+}
+
+fn get_own_property_descriptor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let key = vm.to_property_key(&a.arg(1))?;
+    if matches!(&key, PropKey::Sym(s) if s.is_private()) {
+        return Ok(Value::Undefined);
+    }
+    let p = vm.get_own_property(&o, &key)?;
+    Ok(match p {
+        Some(p) => from_property(vm, &p),
+        None => Value::Undefined,
+    })
+}
+
+fn get_own_property_descriptors(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let out = vm.new_object();
+    for k in vm.own_keys(&o)? {
+        let p = vm.get_own_property(&o, &k)?;
+        if let Some(p) = p {
+            let d = from_property(vm, &p);
+            vm.define_data(&out, k, d);
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn get_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    Ok(vm.get_prototype_of(&o)?.map(Value::Object).unwrap_or(Value::Null))
+}
+
