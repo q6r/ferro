@@ -2929,3 +2929,43 @@ class Response {
   static error() { const r = new Response(null, { status: 0 }); r.type = 'error'; return r; }
   static redirect(url, status = 302) { return new Response(null, { status, headers: { location: String(url) } }); }
 }
+function charsetOf(ct) {
+  const m = /charset=["']?([\w-]+)/i.exec(ct || '');
+  return m ? m[1] : 'utf-8';
+}
+hidden(G, 'Response', Response);
+function fromNative(r, url) {
+  const res = new Response(null, { status: r.status, headers: r.headers });
+  res._bytes = r.body || new Uint8Array(0);
+  res.url = r.url || url;
+  res.redirected = !!r.url && r.url !== url;
+  res.type = 'basic';
+  return res;
+}
+hidden(G, 'fetch', function fetch(input, init) {
+  return new Promise((resolve, reject) => {
+    const req = new Request(input, init);
+    if (req.signal.aborted) { reject(req.signal.reason); return; }
+    if (req.url.startsWith('blob:')) {
+      const b = BLOBS.get(req.url.split('/').pop());
+      if (b) resolve(new Response(b, { status: 200 }));
+      else reject(new TypeError('Failed to fetch'));
+      return;
+    }
+    const [bytes, ct] = encodeBody(req._body);
+    if (ct && !req.headers.has('content-type')) req.headers.set('content-type', ct);
+    let finished = false;
+    req.signal.addEventListener('abort', () => {
+      if (!finished) { finished = true; reject(req.signal.reason); }
+    });
+    N.fetch(req.method, req.url, [...req.headers], bytes, req.credentials !== 'omit', (r) => {
+      if (finished) return;
+      finished = true;
+      if (r.error) reject(new TypeError('Failed to fetch'));
+      else resolve(fromNative(r, req.url));
+    });
+  });
+});
+
+// ------------------------------------------------- XMLHttpRequest
+class XMLHttpRequestEventTarget extends EventTarget {}
