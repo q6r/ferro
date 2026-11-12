@@ -256,3 +256,149 @@ impl Canvas {
         self.paint_list(items, fonts, t, None);
     }
 
+    /// Pinta a lista de exibição com uma transformação, dentro de `clip`
+    /// (em pixels do dispositivo).
+    pub fn paint_list(&mut self, items: &[DisplayItem], fonts: &Fonts, t0: Transform, clip: Option<Rect>) {
+        let base = self.clip(clip);
+        let mut clips = vec![base];
+        let mut t = t0;
+        let mut fixed = 0u32;
+        let mut idx = 0;
+        while idx < items.len() {
+            let item = &items[idx];
+            idx += 1;
+            let clip = *clips.last().unwrap();
+            match item {
+                DisplayItem::TransformStart { m, origin } => {
+                    // o trecho até o TransformEnd correspondente
+                    let start = idx;
+                    let mut depth = 1;
+                    while idx < items.len() {
+                        match items[idx] {
+                            DisplayItem::TransformStart { .. } => depth += 1,
+                            DisplayItem::TransformEnd => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        idx += 1;
+                    }
+                    let sub = &items[start..idx.min(items.len())];
+                    idx += 1;
+                    self.paint_transformed(sub, fonts, t, *m, *origin, clip);
+                }
+                DisplayItem::TransformEnd => {}
+                DisplayItem::Shadow { rect, radius, blur, color } => {
+                    self.shadow_clip(t.rect(*rect), radius * t.scale, blur * t.scale, *color, clip)
+                }
+                DisplayItem::FixedStart => {
+                    fixed += 1;
+                    t = Transform { dy: t0.dy + self.fixed_shift, ..t0 };
+                }
+                DisplayItem::FixedEnd => {
+                    fixed = fixed.saturating_sub(1);
+                    if fixed == 0 {
+                        t = t0;
+                    }
+                }
+                DisplayItem::Rect { rect, color } => self.fill_clip(t.rect(*rect), *color, clip),
+                DisplayItem::RoundRect { rect, radius, color } => {
+                    self.round_rect_clip(t.rect(*rect), radius * t.scale, *color, None, clip)
+                }
+                DisplayItem::Text {
+                    x,
+                    baseline,
+                    text,
+                    font,
+                    size,
+                    color,
+                } => {
+                    let b = baseline * t.scale + t.dy;
+                    let s = size * t.scale;
+                    if b + s < clip.y0 as f32 || b - s * 1.5 > clip.y1 as f32 {
+                        continue;
+                    }
+                    self.text_clip(fonts, x * t.scale + t.dx, b, text, *font, s, *color, clip);
+                }
+                DisplayItem::Image { rect, image } => self.image_clip(image, t.rect(*rect), clip),
+                DisplayItem::RoundBorder {
+                    rect,
+                    radius,
+                    width,
+                    color,
+                } => self.round_rect_clip(
+                    t.rect(*rect),
+                    radius * t.scale,
+                    *color,
+                    Some((width * t.scale).max(1.0)),
+                    clip,
+                ),
+                DisplayItem::Gradient {
+                    rect,
+                    radius,
+                    angle,
+                    stops,
+                } => self.gradient_clip(t.rect(*rect), radius * t.scale, *angle, stops, clip),
+                DisplayItem::BgImage {
+                    rect,
+                    image,
+                    tile,
+                    repeat,
+                    tint,
+                } => {
+                    let area = clip.intersect(Clip::from_rect(t.rect(*rect)));
+                    self.tiles_clip(image, t.rect(*tile), *repeat, area, *tint);
+                }
+                DisplayItem::PushClip(r) => clips.push(clip.intersect(Clip::from_rect(t.rect(*r)))),
+                DisplayItem::LayerStart { .. } | DisplayItem::LayerEnd | DisplayItem::Hit { .. } => {}
+                DisplayItem::Video { rect, node } => {
+                    let r = t.rect(*rect);
+                    if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+                        eprintln!("[mídia] pinta vídeo {node} em {r:?}: quadro {}", self.videos.contains_key(node));
+                    }
+                    self.fill_clip(r, Color::BLACK, clip);
+                    if let Some(img) = self.videos.get(node).cloned() {
+                        // object-fit: contain (barras pretas onde sobrar)
+                        let s = (r.w / img.width as f32).min(r.h / img.height as f32);
+                        let (w, h) = (img.width as f32 * s, img.height as f32 * s);
+                        let fit = Rect { x: r.x + (r.w - w) / 2.0, y: r.y + (r.h - h) / 2.0, w, h };
+                        self.image_clip(&img, fit, clip);
+                    }
+                    if self.paused.contains(node) {
+                        // botão de tocar no meio do vídeo
+                        let d = (r.w.min(r.h) * 0.22).clamp(36.0 * t.scale, 88.0 * t.scale);
+                        let c = Rect { x: r.x + (r.w - d) / 2.0, y: r.y + (r.h - d) / 2.0, w: d, h: d };
+                        self.round_rect_clip(c, d / 2.0, Color { r: 0, g: 0, b: 0, a: 150 }, None, clip);
+                        let s = d * 0.36;
+                        let (cx, cy) = (c.x + d / 2.0 + s * 0.12, c.y + d / 2.0);
+                        // triângulo, linha a linha
+                        let y0 = (cy - s / 2.0).max(clip.y0 as f32) as i32;
+                        let y1 = (cy + s / 2.0).min(clip.y1 as f32) as i32;
+                        for py in y0..y1 {
+                            let f = 1.0 - ((py as f32 + 0.5 - cy).abs() / (s / 2.0));
+                            let w = (s * 0.9 * f).max(0.0);
+                            let x0 = (cx - s * 0.45).max(clip.x0 as f32) as i32;
+                            let x1 = (cx - s * 0.45 + w).min(clip.x1 as f32) as i32;
+                            for px in x0..x1 {
+                                self.blend(px, py, Color::WHITE, 255);
+                            }
+                        }
+                    }
+                }
+                DisplayItem::Canvas { rect, node } => {
+                    if let Some(img) = self.videos.get(node).cloned() {
+                        self.image_clip(&img, t.rect(*rect), clip);
+                    }
+                }
+                DisplayItem::PopClip => {
+                    if clips.len() > 1 {
+                        clips.pop();
+                    }
+                }
+            }
+        }
+    }
+
