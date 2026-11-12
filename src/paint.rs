@@ -206,3 +206,53 @@ pub struct Canvas {
     pub paused: std::collections::HashSet<usize>,
 }
 
+impl Canvas {
+    pub fn new(width: usize, height: usize, bg: Color) -> Canvas {
+        Canvas {
+            width,
+            height,
+            videos: Default::default(),
+            fixed_shift: 0.0,
+            paused: Default::default(),
+            pixels: vec![pack(bg); width * height],
+        }
+    }
+
+    pub fn resize(&mut self, width: usize, height: usize) {
+        if width != self.width || height != self.height {
+            self.width = width;
+            self.height = height;
+            self.pixels = vec![0; width * height];
+        }
+    }
+
+    pub fn clear(&mut self, color: Color) {
+        self.pixels.fill(pack(color));
+    }
+
+    fn full(&self) -> Clip {
+        Clip {
+            x0: 0,
+            y0: 0,
+            x1: self.width as i32,
+            y1: self.height as i32,
+        }
+    }
+
+    fn clip(&self, clip: Option<Rect>) -> Clip {
+        match clip {
+            Some(r) => self.full().intersect(Clip::from_rect(r)),
+            None => self.full(),
+        }
+    }
+
+    /// Pinta a lista de exibição (modo linha de comando).
+    pub fn paint(&mut self, items: &[DisplayItem], fonts: &Fonts, scroll_y: f32) {
+        let t = Transform {
+            scale: 1.0,
+            dx: 0.0,
+            dy: -scroll_y,
+        };
+        self.paint_list(items, fonts, t, None);
+    }
+
