@@ -783,3 +783,61 @@ pub(crate) fn var_names(ss: &[Stmt], out: &mut Vec<Name>, annex_b: bool, nested:
     }
 }
 
+fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>, annex_b: bool, nested: bool) {
+    match s {
+        Stmt::Var(VarKind::Var, decls, _) => {
+            for d in decls {
+                bound_names(&d.target, out);
+            }
+        }
+        Stmt::Function(f) if nested && annex_b => {
+            if let Some(n) = &f.name {
+                out.push(n.clone());
+            }
+        }
+        Stmt::If(_, c, e) => {
+            var_names_stmt(c, out, annex_b, true);
+            if let Some(e) = e {
+                var_names_stmt(e, out, annex_b, true);
+            }
+        }
+        Stmt::Block(b) => var_names(b, out, annex_b, true),
+        Stmt::For { init, body, .. } => {
+            if let Some(ForInit::Var(VarKind::Var, decls)) = init {
+                for d in decls {
+                    bound_names(&d.target, out);
+                }
+            }
+            var_names_stmt(body, out, annex_b, true);
+        }
+        Stmt::ForIn { left, body, .. } | Stmt::ForOf { left, body, .. } => {
+            if let ForHead::Var(VarKind::Var, p) = left {
+                bound_names(p, out);
+            }
+            var_names_stmt(body, out, annex_b, true);
+        }
+        Stmt::While(_, b) | Stmt::DoWhile(b, _) => var_names_stmt(b, out, annex_b, true),
+        Stmt::Labeled(_, b) => var_names_stmt(b, out, annex_b, nested),
+        Stmt::Try {
+            block,
+            handler,
+            finalizer,
+            ..
+        } => {
+            var_names(block, out, annex_b, true);
+            if let Some(h) = handler {
+                var_names(h, out, annex_b, true);
+            }
+            if let Some(f) = finalizer {
+                var_names(f, out, annex_b, true);
+            }
+        }
+        Stmt::Switch(_, cases) => {
+            for c in cases {
+                var_names(&c.body, out, annex_b, true);
+            }
+        }
+        _ => {}
+    }
+}
+
