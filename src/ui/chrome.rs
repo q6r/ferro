@@ -341,3 +341,68 @@ impl App {
         hits.push((sb, Hit::Settings));
     }
 
+    /// Navegação e a cápsula de endereço (abre a paleta ao clicar).
+    fn draw_bar(&self, p: &mut Painter, t: &Theme, g: &Geo, hits: &mut Hits) {
+        let b = g.bar;
+        let tab = self.tab();
+        let y = b.y + 6.0;
+        let buttons = [
+            (Hit::Back, Icon::Back, tab.index > 0),
+            (Hit::Forward, Icon::Forward, tab.index + 1 < tab.history.len()),
+            (Hit::Reload, if tab.loading { Icon::Close } else { Icon::Reload }, tab.kind() == Kind::Web),
+        ];
+        for (k, (hit, icon, enabled)) in buttons.into_iter().enumerate() {
+            let r = rect(b.x + 2.0 + k as f32 * 38.0, y, 32.0, 32.0);
+            if enabled && self.hover == Some(hit) {
+                p.rrect(r, 16.0, hover_bg(t));
+            }
+            let c = if enabled { t.text } else { with_alpha(t.muted, 90) };
+            p.icon(r.x + 16.0, r.y + 16.0, icon, 19.0, c);
+            if enabled {
+                hits.push((r, hit));
+            }
+        }
+
+        let c = g.capsule;
+        let hov = self.hover == Some(Hit::Capsule);
+        p.rrect(c, 18.0, if hov { t.card_hover } else { t.card });
+        p.stroke(c, 18.0, 1.0, t.border);
+        hits.push((c, Hit::Capsule));
+
+        let zoom = (self.zoom != 1.0).then(|| format!("{:.0}%", self.zoom * 100.0));
+        let zoom_w = zoom.as_ref().map_or(0.0, |z| p.measure(z, 12.0, Weight::Semibold) + 18.0);
+        let clip = rect(c.x + 12.0, c.y, c.w - 24.0 - zoom_w, c.h);
+        let base = Painter::baseline(c.y + 18.0, 14.0);
+        if tab.kind() == Kind::NewTab {
+            let label = "Pesquise ou digite um endereço";
+            let lw = p.measure(label, 14.0, Weight::Regular) + 24.0;
+            let x0 = c.x + (c.w - lw) / 2.0;
+            p.icon(x0 + 8.0, c.y + 18.0, Icon::Search, 16.0, t.muted);
+            p.text_clipped(x0 + 24.0, base, label, 14.0, t.muted, Weight::Regular, Some(clip));
+        } else {
+            let (domain, rest) = display_url(tab.url());
+            let icon = match tab.url().scheme() {
+                "https" => Icon::Lock,
+                "http" => Icon::Unlocked,
+                "ferro" => Icon::Settings,
+                _ => Icon::File,
+            };
+            let dw = p.measure(&domain, 14.0, Weight::Semibold);
+            let rw = p.measure(&rest, 14.0, Weight::Regular);
+            let total = 24.0 + dw + rw;
+            let x0 = if total <= clip.w { c.x + (c.w - total) / 2.0 } else { c.x + 14.0 };
+            p.icon(x0 + 8.0, c.y + 18.0, icon, 15.0, t.muted);
+            p.text_clipped(x0 + 24.0, base, &domain, 14.0, t.text, Weight::Semibold, Some(clip));
+            p.text_clipped(x0 + 24.0 + dw, base, &rest, 14.0, t.muted, Weight::Regular, Some(clip));
+        }
+        if let Some(z) = zoom {
+            let zr = rect(c.x + c.w - zoom_w - 4.0, c.y + 7.0, zoom_w - 4.0, 22.0);
+            p.rrect(zr, 11.0, t.field_hover);
+            p.text(zr.x + 7.0, Painter::baseline(zr.y + 11.0, 12.0), &z, 12.0, t.text, Weight::Semibold);
+        }
+        if tab.loading {
+            let bar = rect(c.x + 18.0, c.y + c.h - 4.0, (c.w - 36.0) * tab.progress, 2.5);
+            p.rrect(bar, 1.25, t.accent);
+        }
+    }
+
