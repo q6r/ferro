@@ -902,3 +902,80 @@ impl Canvas {
         }
     }
 
+    fn gradient_clip(&mut self, r: Rect, radius: f32, angle: f32, stops: &[(Color, f32)], clip: Clip) {
+        let c = clip.intersect(Clip::from_rect(r));
+        if c.is_empty() || stops.is_empty() {
+            return;
+        }
+        // tabela de 256 cores ao longo da linha do gradiente
+        let lut: Vec<Color> = (0..256)
+            .map(|i| {
+                let t = i as f32 / 255.0;
+                match stops.iter().position(|s| s.1 >= t) {
+                    Some(0) => stops[0].0,
+                    None => stops[stops.len() - 1].0,
+                    Some(k) => {
+                        let (a, b) = (stops[k - 1], stops[k]);
+                        let span = (b.1 - a.1).max(1e-6);
+                        lerp_color(a.0, b.0, ((t - a.1) / span).clamp(0.0, 1.0))
+                    }
+                }
+            })
+            .collect();
+        let a = angle.to_radians();
+        let (dx, dy) = (a.sin(), -a.cos());
+        let len = (r.w * dx.abs() + r.h * dy.abs()).max(1.0);
+        let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        for y in c.y0..c.y1 {
+            let py = y as f32 + 0.5;
+            for x in c.x0..c.x1 {
+                let px = x as f32 + 0.5;
+                let cov = if radius > 0.0 {
+                    (0.5 - rr_sdf(px, py, r, radius)).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                if cov <= 0.0 {
+                    continue;
+                }
+                let t = (((px - cx) * dx + (py - cy) * dy) / len + 0.5).clamp(0.0, 1.0);
+                let col = lut[(t * 255.0) as usize];
+                self.blend(x, y, col, (cov * 255.0) as u32);
+            }
+        }
+    }
+
+    /// Repete uma imagem a partir de `tile` para cobrir a área.
+    fn tiles_clip(&mut self, img: &ImageData, tile: Rect, repeat: (bool, bool), area: Clip, tint: Option<Color>) {
+        if area.is_empty() || tile.w < 0.5 || tile.h < 0.5 {
+            return;
+        }
+        let start = |pos: f32, size: f32, lo: i32, rep: bool| {
+            if rep { pos - ((pos - lo as f32) / size).ceil() * size } else { pos }
+        };
+        let x0 = start(tile.x, tile.w, area.x0, repeat.0);
+        let y0 = start(tile.y, tile.h, area.y0, repeat.1);
+        let mut count = 0;
+        let mut y = y0;
+        while y < area.y1 as f32 && count < 4000 {
+            let mut x = x0;
+            while x < area.x1 as f32 && count < 4000 {
+                self.image_tinted(img, Rect { x, y, w: tile.w, h: tile.h }, area, tint);
+                count += 1;
+                if !repeat.0 {
+                    break;
+                }
+                x += tile.w;
+            }
+            if !repeat.1 {
+                break;
+            }
+            y += tile.h;
+        }
+    }
+
+    fn image_clip(&mut self, img: &ImageData, r: Rect, clip: Clip) {
+        self.image_tinted(img, r, clip, None);
+    }
+
