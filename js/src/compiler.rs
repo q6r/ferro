@@ -489,3 +489,83 @@ impl Usage {
         }
     }
 
+    fn stmt(&mut self, s: &Stmt, d: u32, a: bool) {
+        match s {
+            Stmt::Expr(e, _) | Stmt::Throw(e, _) => self.expr(e, d, a),
+            Stmt::Var(_, decls, _) => self.decls(decls, d, a),
+            Stmt::Function(f) => {
+                if let Some(n) = &f.name {
+                    self.name(n, d);
+                }
+                self.func(f, d, a);
+            }
+            Stmt::Class(c) => self.class(c, d, a),
+            Stmt::Return(e, _) => {
+                if let Some(e) = e {
+                    self.expr(e, d, a);
+                }
+            }
+            Stmt::If(t, c, e) => {
+                self.expr(t, d, a);
+                self.stmt(c, d, a);
+                if let Some(e) = e {
+                    self.stmt(e, d, a);
+                }
+            }
+            Stmt::Block(b) => self.stmts(b, d, a),
+            Stmt::For { init, test, update, body } => {
+                match init {
+                    Some(ForInit::Var(_, decls)) => self.decls(decls, d, a),
+                    Some(ForInit::Expr(e)) => self.expr(e, d, a),
+                    None => {}
+                }
+                if let Some(t) = test {
+                    self.expr(t, d, a);
+                }
+                if let Some(u) = update {
+                    self.expr(u, d, a);
+                }
+                self.stmt(body, d, a);
+            }
+            Stmt::ForIn { left, right, body } | Stmt::ForOf { left, right, body, .. } => {
+                match left {
+                    ForHead::Var(_, p) | ForHead::Pattern(p) => self.pattern(p, d, a),
+                }
+                self.expr(right, d, a);
+                self.stmt(body, d, a);
+            }
+            Stmt::While(t, b) | Stmt::DoWhile(b, t) => {
+                self.expr(t, d, a);
+                self.stmt(b, d, a);
+            }
+            Stmt::Try {
+                block,
+                param,
+                handler,
+                finalizer,
+            } => {
+                self.stmts(block, d, a);
+                if let Some(p) = param {
+                    self.pattern(p, d, a);
+                }
+                if let Some(h) = handler {
+                    self.stmts(h, d, a);
+                }
+                if let Some(f) = finalizer {
+                    self.stmts(f, d, a);
+                }
+            }
+            Stmt::Switch(disc, cases) => {
+                self.expr(disc, d, a);
+                for c in cases {
+                    if let Some(t) = &c.test {
+                        self.expr(t, d, a);
+                    }
+                    self.stmts(&c.body, d, a);
+                }
+            }
+            Stmt::Labeled(_, b) => self.stmt(b, d, a),
+            Stmt::Break(..) | Stmt::Continue(..) | Stmt::Empty | Stmt::Debugger => {}
+        }
+    }
+
