@@ -2333,3 +2333,79 @@ fn parse_direction(v: &str) -> Option<FlexDirection> {
     })
 }
 
+fn parse_justify(v: &str) -> Option<Justify> {
+    let v = v.trim().trim_start_matches("safe ").trim_start_matches("unsafe ");
+    Some(match v {
+        "flex-start" | "start" | "left" | "normal" | "stretch" => Justify::Start,
+        "flex-end" | "end" | "right" => Justify::End,
+        "center" => Justify::Center,
+        "space-between" => Justify::SpaceBetween,
+        "space-around" => Justify::SpaceAround,
+        "space-evenly" => Justify::SpaceEvenly,
+        _ => return None,
+    })
+}
+
+fn parse_align(v: &str) -> Option<Align> {
+    let v = v.trim().trim_start_matches("safe ").trim_start_matches("unsafe ");
+    Some(match v {
+        "stretch" | "normal" => Align::Stretch,
+        "flex-start" | "start" | "self-start" => Align::Start,
+        "flex-end" | "end" | "self-end" => Align::End,
+        "center" => Align::Center,
+        "baseline" | "first baseline" | "last baseline" => Align::Baseline,
+        _ => return None,
+    })
+}
+
+fn parse_basis(v: &str, u: &Units) -> Option<FlexBasis> {
+    match v.trim() {
+        "auto" => Some(FlexBasis::Auto),
+        "content" | "max-content" | "fit-content" | "min-content" => Some(FlexBasis::Content),
+        t => parse_len(t, u).map(FlexBasis::Len),
+    }
+}
+
+fn side_index(side: &str) -> usize {
+    match side {
+        "top" | "block-start" => TOP,
+        "right" | "inline-end" => RIGHT,
+        "bottom" | "block-end" => BOTTOM,
+        _ => LEFT,
+    }
+}
+
+fn font_family(v: &str) -> FontFamily {
+    for fam in v.split(',') {
+        let f = fam.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase();
+        if f.contains("mono") || f.contains("courier") || f.contains("consol") || f == "menlo" {
+            return FontFamily::Mono;
+        }
+        if f == "serif" || f.contains("times") || f.contains("georgia") || f.contains("garamond") {
+            return FontFamily::Serif;
+        }
+        if f == "system-ui"
+            || f.contains("-apple-system")
+            || f.contains("blinkmacsystemfont")
+            || f.contains("segoe")
+            || f.contains("roboto")
+            || f.contains("inter")
+            || f.contains("google sans")
+            || f.contains("youtube sans")
+            || f.contains("helvetica neue")
+        {
+            return FontFamily::System;
+        }
+        if f == "sans-serif"
+            || f.contains("arial")
+            || f.contains("helvetica")
+            || f.contains("sans")
+            || f.contains("verdana")
+            || f.contains("tahoma")
+        {
+            return FontFamily::Sans;
+        }
+    }
+    FontFamily::Sans
+}
+
