@@ -96,3 +96,38 @@ fn location_e_formulario() {
     });
 }
 
+#[test]
+fn timers_e_raf() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<div id=d></div><script>
+              setTimeout(() => d.textContent += 't', 0);
+              requestAnimationFrame(ts => d.textContent += (typeof ts === 'number' ? 'r' : '?'));
+              queueMicrotask(() => d.textContent += 'm');
+            </script>"#,
+        );
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 200 {
+            s.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let txt = eval(&mut s, "document.getElementById('d').textContent");
+        assert!(txt.starts_with('m') && txt.contains('t') && txt.contains('r'), "{txt}");
+        // o DOM mudou: a aba precisa redesenhar
+        assert!(s.wants_frame() || s.host.borrow().dirty);
+    });
+}
+
+#[test]
+fn document_write_e_scripts_em_ordem() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body><script>window.ordem = ['a']; document.write('<p id=w>escrito</p><script>ordem.push(\'b\')<\/script>');</script>
+            <script>ordem.push('c'); window.temW = !!document.getElementById('w');</script></body>"#,
+        );
+        assert_eq!(eval(&mut s, "ordem.join()"), "a,b,c");
+        assert_eq!(eval(&mut s, "temW"), "true");
+        assert_eq!(eval(&mut s, "document.getElementById('w').previousElementSibling.localName"), "script");
+    });
+}
+
