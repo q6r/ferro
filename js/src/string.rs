@@ -101,3 +101,37 @@ impl JsStr {
         out.into_boxed_slice()
     }
 
+    pub fn len(&self) -> usize {
+        self.0.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.len == 0
+    }
+
+    pub fn to_rust(&self) -> String {
+        String::from_utf16_lossy(self.units())
+    }
+
+    pub fn concat(&self, other: &JsStr) -> JsStr {
+        if other.is_empty() {
+            return self.clone();
+        }
+        if self.is_empty() {
+            return other.clone();
+        }
+        let len = self.len() + other.len();
+        if len < ROPE_MIN {
+            let mut v = Vec::with_capacity(len);
+            v.extend_from_slice(self.units());
+            v.extend_from_slice(other.units());
+            return JsStr::from_units(v);
+        }
+        JsStr(Rc::new(StrData {
+            hash: std::cell::Cell::new(0),
+            len,
+            flat: OnceCell::new(),
+            parts: RefCell::new(Some((self.clone(), other.clone()))),
+        }))
+    }
+
