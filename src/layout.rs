@@ -3854,3 +3854,53 @@ impl<'a> LineBuilder<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn place_text(
+        &mut self,
+        word: &str,
+        w: f32,
+        style: &Rc<ComputedStyle>,
+        font: FontId,
+        inh: &Inherited,
+        wrap: bool,
+        collapse: bool,
+    ) {
+        let mut sp = self.pending_space;
+        let may_break = wrap || (self.soft_break && sp > 0.0);
+        if may_break && !self.cur.is_empty() && self.x + sp + w > self.avail {
+            self.break_line(false);
+            sp = 0.0;
+        }
+        self.x += sp;
+        self.pending_space = 0.0;
+        self.after_space = false;
+        self.soft_break = false;
+
+        if self.can_merge
+            && let Some(last) = self.cur.last_mut()
+            && Rc::ptr_eq(&last.style, style)
+            && same_inherited(&last.inh, inh)
+            && let FragKind::Text(t) = &mut last.kind
+        {
+            if sp > 0.0 && collapse {
+                t.push(' ');
+            }
+            t.push_str(word);
+            last.w = self.x + w - last.x;
+            self.x += w;
+            return;
+        }
+        self.cur.push(Frag {
+            x: self.x,
+            w,
+            font,
+            style: style.clone(),
+            inh: inh.clone(),
+            kind: FragKind::Text(word.to_string()),
+            valign: VAlign::Baseline,
+            mid: 0.0,
+        });
+        self.x += w;
+        self.can_merge = true;
+    }
+
