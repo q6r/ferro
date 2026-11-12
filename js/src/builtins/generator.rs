@@ -48,3 +48,68 @@ fn set_state(g: &ObjRef, state: GenState, frame: Option<Box<Frame>>) {
     }
 }
 
+/// Retoma o gerador com um valor e um modo (next/throw/return).
+pub fn resume(vm: &mut Vm, this: &Value, v: Value, mode: u8) -> Result<Value, Value> {
+    let Value::Object(g) = this else {
+        let d = vm.describe(this);
+        return Err(vm.type_error(format!("next method called on incompatible receiver {d}")));
+    };
+    let (state, frame) = {
+        let mut b = g.borrow_mut();
+        match &mut b.kind {
+            Kind::Generator(d) => {
+                let s = d.state;
+                if s == GenState::Running {
+                    (s, None)
+                } else {
+                    (s, d.frame.take())
+                }
+            }
+            _ => {
+                drop(b);
+                let d = vm.describe(this);
+                return Err(vm.type_error(format!("next method called on incompatible receiver {d}")));
+            }
+        }
+    };
+    match state {
+        GenState::Running => return Err(vm.type_error("Generator is already running")),
+        GenState::Done => {
+            return match mode {
+                RESUME_THROW => Err(v),
+                RESUME_RETURN => Ok(iter_result(vm, v, true)),
+                _ => Ok(iter_result(vm, Value::Undefined, true)),
+            };
+        }
+        GenState::Start if mode != RESUME_NEXT => {
+            set_state(g, GenState::Done, None);
+            return if mode == RESUME_THROW { Err(v) } else { Ok(iter_result(vm, v, true)) };
+        }
+        _ => {}
+    }
+    let Some(mut frame) = frame else {
+        set_state(g, GenState::Done, None);
+        return Ok(iter_result(vm, Value::Undefined, true));
+    };
+    if state == GenState::Yield {
+        frame.stack.push(v);
+        frame.stack.push(Value::Number(mode as f64));
+    }
+    set_state(g, GenState::Running, None);
+    frame.suspended = false;
+    let r = vm.run_frame(&mut frame);
+    match r {
+        Ok(v) if frame.suspended => {
+            set_state(g, GenState::Yield, Some(frame));
+            Ok(iter_result(vm, v, false))
+        }
+        Ok(v) => {
+            set_state(g, GenState::Done, None);
+            Ok(iter_result(vm, v, true))
+        }
+        Err(e) => {
+            set_state(g, GenState::Done, None);
+            Err(e)
+        }
+    }
+}
