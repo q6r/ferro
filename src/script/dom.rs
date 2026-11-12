@@ -1697,3 +1697,65 @@ fn noop(_vm: &mut Vm, _a: &mut CallArgs) -> R {
 
 // --------------------------------------------------------- HTMLElement
 
+/// innerText aproximado: o texto sem `<script>`/`<style>` e com quebras nos blocos.
+fn inner_text(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let text = read(vm, |h| {
+        let doc = &h.page.doc;
+        let mut out = String::new();
+        fn walk(doc: &Document, n: NodeId, out: &mut String) {
+            match &doc.node(n).data {
+                NodeData::Text(t) => {
+                    let collapsed: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                    if !collapsed.is_empty() {
+                        if t.starts_with(char::is_whitespace) && !out.is_empty() && !out.ends_with(['\n', ' ']) {
+                            out.push(' ');
+                        }
+                        out.push_str(&collapsed);
+                        if t.ends_with(char::is_whitespace) {
+                            out.push(' ');
+                        }
+                    }
+                }
+                NodeData::Element(e) => {
+                    let tag = e.tag.as_str();
+                    if matches!(tag, "script" | "style" | "template" | "noscript" | "head") {
+                        return;
+                    }
+                    if tag == "br" {
+                        while out.ends_with(' ') {
+                            out.pop();
+                        }
+                        out.push('\n');
+                        return;
+                    }
+                    let block = matches!(
+                        tag,
+                        "div" | "p" | "li" | "ul" | "ol" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "tr" | "table"
+                            | "section" | "article" | "header" | "footer" | "nav" | "form" | "pre" | "blockquote"
+                    );
+                    if block && !out.is_empty() && !out.ends_with('\n') {
+                        while out.ends_with(' ') {
+                            out.pop();
+                        }
+                        out.push('\n');
+                    }
+                    for &c in &doc.node(n).children {
+                        walk(doc, c, out);
+                    }
+                    if block && !out.ends_with('\n') {
+                        while out.ends_with(' ') {
+                            out.pop();
+                        }
+                        out.push('\n');
+                    }
+                }
+                _ => {}
+            }
+        }
+        walk(doc, n, &mut out);
+        out.trim().to_string()
+    });
+    Ok(s(&text))
+}
+
