@@ -119,3 +119,37 @@ fn fill_from(vm: &mut Vm, o: &ObjRef, iterable: &Value, adder_name: &str, pairs:
     Ok(())
 }
 
+fn map_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let nt = require_new(vm, a, "Map")?;
+    let def = vm.realm.map_proto.clone();
+    let o = new_coll(vm, &nt, &def, false)?;
+    fill_from(vm, &o, &a.arg(0), "set", true)?;
+    Ok(Value::Object(o))
+}
+
+fn set_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let nt = require_new(vm, a, "Set")?;
+    let def = vm.realm.set_proto.clone();
+    let o = new_coll(vm, &nt, &def, true)?;
+    fill_from(vm, &o, &a.arg(0), "add", false)?;
+    Ok(Value::Object(o))
+}
+
+fn weakmap_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let nt = require_new(vm, a, "WeakMap")?;
+    let def = vm.realm.weakmap_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    let o = ObjRef::new(Object::new(Some(proto), Kind::WeakMap(WeakColl::default())));
+    fill_from(vm, &o, &a.arg(0), "set", true)?;
+    Ok(Value::Object(o))
+}
+
+fn weakset_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let nt = require_new(vm, a, "WeakSet")?;
+    let def = vm.realm.weakset_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    let o = ObjRef::new(Object::new(Some(proto), Kind::WeakSet(WeakColl::default())));
+    fill_from(vm, &o, &a.arg(0), "add", false)?;
+    Ok(Value::Object(o))
+}
+
