@@ -1842,3 +1842,77 @@ impl Vm {
         }
     }
 
+    /// Nome de função definido por chave computada (`[Symbol.iterator]() {}`).
+    fn name_from_key(&mut self, fo: &ObjRef, key: &PropKey, kind: u8) {
+        let current = match fo.borrow().props.get(&PropKey::str("name")) {
+            Some(Property {
+                slot: Slot::Data { value: Value::String(s), .. },
+                ..
+            }) => !s.is_empty(),
+            _ => false,
+        };
+        if current {
+            return;
+        }
+        let base = match key {
+            PropKey::Str(s) => s.to_rust(),
+            PropKey::Sym(s) => match s.description() {
+                Some(d) => format!("[{d}]"),
+                None => String::new(),
+            },
+        };
+        let name = match kind {
+            GETTER => format!("get {base}"),
+            SETTER => format!("set {base}"),
+            _ => base,
+        };
+        fo.borrow_mut().props.insert(
+            PropKey::str("name"),
+            Property {
+                slot: Slot::Data {
+                    value: Value::str(&name),
+                    writable: false,
+                },
+                enumerable: false,
+                configurable: true,
+            },
+        );
+    }
+
+    fn template_object(&mut self, code: &Code, i: usize) -> Value {
+        if let Some(Some(o)) = code.template_cache.borrow().get(i) {
+            return Value::Object(o.clone());
+        }
+        let (cooked, raw) = &code.templates[i];
+        let cooked_vals: Vec<Value> = cooked
+            .iter()
+            .map(|c| match c {
+                Some(u) => Value::String(JsStr::from_slice(u)),
+                None => Value::Undefined,
+            })
+            .collect();
+        let raw_vals: Vec<Value> = raw.iter().map(|r| Value::str(r)).collect();
+        let raw_arr = self.new_array(raw_vals);
+        raw_arr.borrow_mut().frozen = true;
+        raw_arr.borrow_mut().extensible = false;
+        let arr = self.new_array(cooked_vals);
+        arr.borrow_mut().props.insert(
+            PropKey::str("raw"),
+            Property {
+                slot: Slot::Data {
+                    value: Value::Object(raw_arr),
+                    writable: false,
+                },
+                enumerable: false,
+                configurable: false,
+            },
+        );
+        arr.borrow_mut().frozen = true;
+        arr.borrow_mut().extensible = false;
+        if let Some(slot) = code.template_cache.borrow_mut().get_mut(i) {
+            *slot = Some(arr.clone());
+        }
+        Value::Object(arr)
+    }
+}
+
