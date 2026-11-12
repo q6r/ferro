@@ -784,3 +784,65 @@ impl Parser {
 
     // ----------------------------------------------------------- padrões
 
+    fn parse_binding_target(&mut self) -> PResult<Pattern> {
+        if self.is("[") {
+            self.advance()?;
+            let mut elems = Vec::new();
+            let mut rest = None;
+            loop {
+                if self.eat("]")? {
+                    break;
+                }
+                if self.is(",") {
+                    self.advance()?;
+                    elems.push(None);
+                    continue;
+                }
+                if self.eat("...")? {
+                    rest = Some(Box::new(self.parse_binding_target()?));
+                    self.eat(",")?;
+                    self.expect("]")?;
+                    break;
+                }
+                elems.push(Some(self.parse_binding_element()?));
+                if !self.is("]") {
+                    self.expect(",")?;
+                }
+            }
+            return Ok(Pattern::Array { elems, rest });
+        }
+        if self.is("{") {
+            self.advance()?;
+            let mut props = Vec::new();
+            let mut rest = None;
+            while !self.eat("}")? {
+                if self.eat("...")? {
+                    rest = Some(Box::new(Pattern::Ident(self.binding_ident()?)));
+                    self.eat(",")?;
+                    self.expect("}")?;
+                    break;
+                }
+                let key = self.parse_prop_key()?;
+                let value = if self.eat(":")? {
+                    self.parse_binding_element()?
+                } else {
+                    let name = match &key {
+                        PropKeyExpr::Name(n) => n.clone(),
+                        _ => return self.unexpected(),
+                    };
+                    let mut p = Pattern::Ident(name);
+                    if self.eat("=")? {
+                        p = Pattern::Default(Box::new(p), Box::new(self.parse_assign(false)?));
+                    }
+                    p
+                };
+                props.push((key, value));
+                if !self.is("}") {
+                    self.expect(",")?;
+                }
+            }
+            return Ok(Pattern::Object { props, rest });
+        }
+        Ok(Pattern::Ident(self.binding_ident()?))
+    }
+
