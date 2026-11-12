@@ -322,3 +322,115 @@ pub fn quote(s: &JsStr, out: &mut Vec<u16>) {
     out.push(0x22);
 }
 
+fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent: &str) -> Result<Option<Vec<u16>>, Value> {
+    let mut v = vm.get_obj(holder, key)?;
+    if matches!(v, Value::Object(_)) {
+        let to_json = vm.get_str(&v, "toJSON")?;
+        if to_json.is_callable() {
+            v = vm.call(&to_json, v, vec![key.to_value()])?;
+        }
+    }
+    if let Some(r) = &ctx.replacer {
+        let r = r.clone();
+        v = vm.call(&r, Value::Object(holder.clone()), vec![key.to_value(), v])?;
+    }
+    // objetos embrulhando primitivos
+    if let Value::Object(o) = &v {
+        let prim = match &o.borrow().kind {
+            Kind::Number(_) => Some(1),
+            Kind::String(_) => Some(2),
+            Kind::Boolean(b) => {
+                let b = *b;
+                return Ok(Some(if b { "true" } else { "false" }.encode_utf16().collect()));
+            }
+            _ => None,
+        };
+        match prim {
+            Some(1) => v = Value::Number(vm.to_number(&v)?),
+            Some(2) => v = Value::String(vm.to_string(&v)?),
+            _ => {}
+        }
+    }
+    if let Value::BigInt(_) = v {
+        return Err(vm.type_error("Do not know how to serialize a BigInt"));
+    }
+    Ok(Some(match &v {
+        Value::Null => "null".encode_utf16().collect(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.encode_utf16().collect(),
+        Value::String(s) => {
+            let mut out = Vec::with_capacity(s.len() + 2);
+            quote(s, &mut out);
+            out
+        }
+        Value::Number(n) => {
+            if n.is_finite() {
+                number_to_string(*n).encode_utf16().collect()
+            } else {
+                "null".encode_utf16().collect()
+            }
+        }
+        Value::Object(o) if !o.is_callable() => {
+            let id = o.id();
+            if ctx.stack.contains(&id) {
+                return Err(vm.type_error("Converting circular structure to JSON"));
+            }
+            ctx.stack.push(id);
+            let inner = format!("{indent}{}", ctx.gap);
+            let is_array = matches!(o.borrow().kind, Kind::Array(_));
+            let mut parts: Vec<Vec<u16>> = Vec::new();
+            if is_array {
+                let len = vm.length_of(o)?;
+                for i in 0..len {
+                    let s = serialize(vm, ctx, o, &index_key(i), &inner)?;
+                    parts.push(s.unwrap_or_else(|| "null".encode_utf16().collect()));
+                }
+            } else {
+                let keys = match &ctx.allow {
+                    Some(list) => list.clone(),
+                    None => super::object::enumerable_keys(vm, o)?,
+                };
+                for k in keys {
+                    if let Some(s) = serialize(vm, ctx, o, &k, &inner)? {
+                        let mut p = Vec::new();
+                        if let PropKey::Str(ks) = &k {
+                            quote(ks, &mut p);
+                        }
+                        p.push(0x3A);
+                        if !ctx.gap.is_empty() {
+                            p.push(0x20);
+                        }
+                        p.extend(s);
+                        parts.push(p);
+                    }
+                }
+            }
+            ctx.stack.pop();
+            let (open, close) = if is_array { (0x5B, 0x5D) } else { (0x7B, 0x7D) };
+            let mut out = vec![open];
+            if !parts.is_empty() {
+                if ctx.gap.is_empty() {
+                    for (i, p) in parts.into_iter().enumerate() {
+                        if i > 0 {
+                            out.push(0x2C);
+                        }
+                        out.extend(p);
+                    }
+                } else {
+                    let sep: Vec<u16> = format!(",\n{inner}").encode_utf16().collect();
+                    out.extend(format!("\n{inner}").encode_utf16());
+                    for (i, p) in parts.into_iter().enumerate() {
+                        if i > 0 {
+                            out.extend_from_slice(&sep);
+                        }
+                        out.extend(p);
+                    }
+                    out.extend(format!("\n{indent}").encode_utf16());
+                }
+            }
+            out.push(close);
+            out
+        }
+        _ => return Ok(None),
+    }))
+}
+
