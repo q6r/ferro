@@ -311,3 +311,64 @@ impl Document {
         self.nodes[child].parent = Some(parent);
     }
 
+    pub fn is_fragment(&self, id: NodeId) -> bool {
+        self.tag(id) == Some(FRAGMENT_TAG)
+    }
+
+    pub fn create_element(&mut self, tag: &str) -> NodeId {
+        self.create(NodeData::Element(ElementData {
+            tag: tag.to_string(),
+            attrs: Vec::new(),
+        }))
+    }
+
+    pub fn create_fragment(&mut self) -> NodeId {
+        self.create_element(FRAGMENT_TAG)
+    }
+
+    pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) {
+        if let NodeData::Element(e) = &mut self.nodes[id].data {
+            match e.attrs.iter_mut().find(|(k, _)| k == name) {
+                Some((_, v)) => *v = value.to_string(),
+                None => e.attrs.push((name.to_string(), value.to_string())),
+            }
+        }
+    }
+
+    pub fn remove_attr(&mut self, id: NodeId, name: &str) -> bool {
+        if let NodeData::Element(e) = &mut self.nodes[id].data {
+            let before = e.attrs.len();
+            e.attrs.retain(|(k, _)| k != name);
+            return e.attrs.len() != before;
+        }
+        false
+    }
+
+    /// Texto de um nó de texto/comentário.
+    pub fn set_data(&mut self, id: NodeId, text: &str) {
+        match &mut self.nodes[id].data {
+            NodeData::Text(t) | NodeData::Comment(t) => *t = text.to_string(),
+            _ => {}
+        }
+    }
+
+    /// `textContent = ...`: troca todos os filhos por um texto.
+    pub fn set_text_content(&mut self, id: NodeId, text: &str) {
+        if matches!(self.nodes[id].data, NodeData::Text(_) | NodeData::Comment(_)) {
+            self.set_data(id, text);
+            return;
+        }
+        self.remove_children(id);
+        if !text.is_empty() {
+            let t = self.create(NodeData::Text(text.to_string()));
+            self.append(id, t);
+        }
+    }
+
+    pub fn remove_children(&mut self, id: NodeId) {
+        let kids = std::mem::take(&mut self.nodes[id].children);
+        for k in kids {
+            self.nodes[k].parent = None;
+        }
+    }
+
