@@ -582,3 +582,72 @@ fn text_content(vm: &mut Vm, a: &mut CallArgs) -> R {
     }))
 }
 
+fn set_text_content(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let v = a.arg(0);
+    let text = if v.is_nullish() { String::new() } else { vm.to_rust_string(&v)? };
+    if char_data(vm, n).is_some() {
+        set_data_of(vm, n, &a.arg(0))?;
+        return Ok(Value::Undefined);
+    }
+    if n == Document::ROOT {
+        return Ok(Value::Undefined);
+    }
+    removing_children(vm, n);
+    let kids = write(vm, |h| {
+        h.page.doc.set_text_content(n, &text);
+        h.page.doc.node(n).children.clone()
+    });
+    inserted(vm, &kids, n);
+    Ok(Value::Undefined)
+}
+
+fn removing_children(vm: &mut Vm, n: NodeId) {
+    let kids = read(vm, |h| h.page.doc.node(n).children.clone());
+    for k in kids {
+        removing(vm, k);
+    }
+}
+
+fn parent_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let p = read(vm, |h| h.page.doc.node(n).parent);
+    Ok(wrap_opt(vm, p))
+}
+
+fn parent_element(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let p = read(vm, |h| h.page.doc.node(n).parent.filter(|&p| is_element(&h.page.doc, p)));
+    Ok(wrap_opt(vm, p))
+}
+
+fn child_nodes(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let kids = read(vm, |h| h.page.doc.node(n).children.clone());
+    Ok(list(vm, kids, "NodeList"))
+}
+
+fn first_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| h.page.doc.node(n).children.first().copied());
+    Ok(wrap_opt(vm, c))
+}
+
+fn last_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| h.page.doc.node(n).children.last().copied());
+    Ok(wrap_opt(vm, c))
+}
+
+fn previous_sibling(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| sibling(&h.page.doc, n, -1, false));
+    Ok(wrap_opt(vm, c))
+}
+
+fn next_sibling(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| sibling(&h.page.doc, n, 1, false));
+    Ok(wrap_opt(vm, c))
+}
+
