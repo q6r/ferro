@@ -153,3 +153,56 @@ fn weakset_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(o))
 }
 
+/// Acessa a coleção fraca de `this` (WeakMap ou WeakSet).
+fn with_weak<R>(vm: &mut Vm, a: &CallArgs, what: &str, f: impl FnOnce(&mut WeakColl) -> R) -> Result<R, Value> {
+    if let Value::Object(o) = &a.this {
+        let mut b = o.borrow_mut();
+        if let Kind::WeakMap(c) | Kind::WeakSet(c) = &mut b.kind {
+            return Ok(f(c));
+        }
+    }
+    Err(vm.type_error(format!("Method {what} called on incompatible receiver")))
+}
+
+fn weak_get(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    Ok(with_weak(vm, a, "WeakMap.prototype.get", |c| c.get(&k))?.unwrap_or(Value::Undefined))
+}
+
+fn weak_has(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    Ok(Value::Bool(with_weak(vm, a, "has", |c| c.has(&k))?))
+}
+
+fn weak_delete(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    Ok(Value::Bool(with_weak(vm, a, "delete", |c| c.delete(&k))?))
+}
+
+/// Acessa a coleção de `this` (Map ou Set).
+fn with_coll<R>(vm: &mut Vm, a: &CallArgs, what: &str, f: impl FnOnce(&mut Collection) -> R) -> Result<R, Value> {
+    if let Value::Object(o) = &a.this {
+        let mut b = o.borrow_mut();
+        match &mut b.kind {
+            Kind::Map(c) | Kind::Set(c) => return Ok(f(c)),
+            _ => {}
+        }
+    }
+    Err(vm.type_error(format!("Method {what} called on incompatible receiver")))
+}
+
+fn map_get(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    Ok(with_coll(vm, a, "get", |c| c.get(&k))?.unwrap_or(Value::Undefined))
+}
+
+fn map_set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (k, v) = (a.arg(0), a.arg(1));
+    with_coll(vm, a, "set", |c| c.set(k, v))?;
+    Ok(a.this.clone())
+}
+
+fn can_be_weak(v: &Value) -> bool {
+    matches!(v, Value::Object(_) | Value::Symbol(_))
+}
+
