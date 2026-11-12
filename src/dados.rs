@@ -51,3 +51,77 @@ pub fn enable(dir: PathBuf) {
     }
 }
 
+/// Os cookies mudaram (a thread grava depois).
+pub fn cookies_changed() {
+    COOKIES_DIRTY.store(true, Ordering::Relaxed);
+}
+
+/// O localStorage mudou.
+pub fn storage_changed() {
+    STORAGE_DIRTY.store(true, Ordering::Relaxed);
+}
+
+/// Grava agora o que mudou.
+pub fn flush() {
+    let Some(dir) = DIR.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
+    if COOKIES_DIRTY.swap(false, Ordering::Relaxed) {
+        write_atomic(dir.join(COOKIES_FILE), &crate::cookies::export());
+    }
+    if STORAGE_DIRTY.swap(false, Ordering::Relaxed) {
+        write_atomic(dir.join(STORAGE_FILE), &crate::script::export_local_storage());
+    }
+}
+
+/// Grava num arquivo temporário e troca (um travamento no meio não corrompe).
+fn write_atomic(path: PathBuf, text: &str) {
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
+/// Escapa um campo (tabulação, quebra de linha e barra invertida).
+pub fn escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn unescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('t') => out.push('\t'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some(o) => out.push(o),
+            None => {}
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escapes() {
+        let s = "a\tb\nc\\d\re";
+        assert_eq!(unescape(&escape(s)), s);
+        assert!(!escape(s).contains('\t'));
+    }
+}
