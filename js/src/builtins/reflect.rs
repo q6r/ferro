@@ -79,3 +79,63 @@ fn delete_property(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(vm.delete_prop(&o, &key)))
 }
 
+fn get(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "get")?;
+    let key = vm.to_property_key(&a.arg(1))?;
+    let receiver = if a.args.len() > 2 { a.arg(2) } else { Value::Object(o.clone()) };
+    vm.get_with(&o, &key, &receiver)
+}
+
+fn get_own_property_descriptor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "getOwnPropertyDescriptor")?;
+    let key = vm.to_property_key(&a.arg(1))?;
+    let p = vm.get_own_property(&o, &key)?;
+    Ok(match p {
+        Some(p) => from_property(vm, &p),
+        None => Value::Undefined,
+    })
+}
+
+fn get_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "getPrototypeOf")?;
+    Ok(vm.get_prototype_of(&o)?.map(Value::Object).unwrap_or(Value::Null))
+}
+
+fn has(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "has")?;
+    let key = vm.to_property_key(&a.arg(1))?;
+    Ok(Value::Bool(vm.has_property(&o, &key)?))
+}
+
+fn is_extensible(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "isExtensible")?;
+    Ok(Value::Bool(vm.is_extensible(&o)?))
+}
+
+fn own_keys(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "ownKeys")?;
+    let keys: Vec<Value> = vm.own_keys(&o)?.into_iter().map(|k| k.to_value()).collect();
+    Ok(vm.array_value(keys))
+}
+
+fn prevent_extensions(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "preventExtensions")?;
+    Ok(Value::Bool(vm.prevent_extensions(&o)?))
+}
+
+fn set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "set")?;
+    let key = vm.to_property_key(&a.arg(1))?;
+    let receiver = if a.args.len() > 3 { a.arg(3) } else { Value::Object(o.clone()) };
+    Ok(Value::Bool(vm.set_with(&o, key, a.arg(2), &receiver)?))
+}
+
+fn set_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = target(vm, a, "setPrototypeOf")?;
+    let p = match a.arg(1) {
+        Value::Object(p) => Some(p),
+        Value::Null => None,
+        _ => return Err(vm.type_error("Object prototype may only be an Object or null")),
+    };
+    Ok(Value::Bool(set_proto_checked(vm, &o, p)?))
+}
