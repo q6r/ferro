@@ -223,3 +223,153 @@ fn ring(p: &mut Painter, card: Rect, color: Color, width: f32) {
     p.stroke(r, 15.0, width, color);
 }
 
+/// Configurações (kit `uikits/configuracoes.png`).
+#[allow(clippy::too_many_arguments)]
+pub fn settings(
+    p: &mut Painter,
+    t: &Theme,
+    current: usize,
+    layout: LayoutMode,
+    area: Rect,
+    section: Section,
+    hits: &mut Hits,
+    hover: Option<Hit>,
+) {
+    p.rect(area, t.frame);
+    let side_x = area.x + 16.0;
+    let side_w = 214.0;
+
+    let back = rect(side_x + 4.0, area.y + 18.0, 98.0, 38.0);
+    p.rrect(back, 19.0, if hover == Some(Hit::SettingsBack) { t.card_hover } else { t.toolbar });
+    p.stroke(back, 19.0, 1.0, t.border);
+    p.icon(back.x + 24.0, back.y + 19.0, Icon::ChevronLeft, 16.0, t.text);
+    p.text(back.x + 40.0, Painter::baseline(back.y + 19.0, 15.0), "Voltar", 15.0, t.text, Weight::Regular);
+    hits.push((back, Hit::SettingsBack));
+
+    let items = [
+        (Section::Appearance, Icon::Swatch, "Aparência"),
+        (Section::Layout, Icon::Panel, "Layout"),
+        (Section::About, Icon::Info, "Sobre o Ferro"),
+    ];
+    let mut y = area.y + 82.0;
+    for (sec, ic, label) in items {
+        let r = rect(side_x, y, side_w, 44.0);
+        let selected = sec == section;
+        if selected {
+            p.rrect(r, 12.0, t.toolbar);
+            p.stroke(r, 12.0, 1.0, t.border);
+        } else if hover == Some(Hit::Section(sec)) {
+            p.rrect(r, 12.0, t.field_hover);
+        }
+        let color = if selected { t.text } else { t.muted };
+        p.icon(r.x + 24.0, r.y + 22.0, ic, 20.0, color);
+        let weight = if selected { Weight::Semibold } else { Weight::Regular };
+        p.text(r.x + 46.0, Painter::baseline(r.y + 22.0, 15.0), label, 15.0, color, weight);
+        hits.push((r, Hit::Section(sec)));
+        y += 50.0;
+    }
+
+    let panel = rect(side_x + side_w + 14.0, area.y + 10.0, area.x + area.w - (side_x + side_w + 14.0) - 10.0, area.h + 20.0);
+    p.rrect(panel, 18.0, t.toolbar);
+    p.stroke(panel, 18.0, 1.0, t.border);
+    let x = panel.x + 44.0;
+    let inner_w = panel.w - 88.0;
+    let mut by = panel.y + 46.0;
+
+    let page = match section {
+        Section::Appearance => "Aparência",
+        Section::Layout => "Layout",
+        Section::About => "Sobre o Ferro",
+    };
+    let mut bx = x;
+    for (i, part) in ["Início", "Configurações", page].iter().enumerate() {
+        let last = i == 2;
+        p.text(bx, Painter::baseline(by, 15.0), part, 15.0, if last { t.text } else { t.muted }, Weight::Regular);
+        bx += p.measure(part, 15.0, Weight::Regular) + 18.0;
+        if !last {
+            p.icon(bx - 4.0, by, Icon::ChevronRight, 14.0, t.muted);
+            bx += 18.0;
+        }
+    }
+    by += 78.0;
+    p.text(x, by, page, 38.0, t.text, Weight::Semibold);
+
+    match section {
+        Section::Appearance => {
+            by += 64.0;
+            p.text(x, by, "Tema", 26.0, t.text, Weight::Semibold);
+            by += 30.0;
+            p.text(x, by, "Cores do navegador, das abas e da busca.", 15.0, t.muted, Weight::Regular);
+            let (cw, ch, gap) = (184.0, 116.0, 20.0);
+            let per_row = (((inner_w + gap) / (cw + gap)).floor() as usize).max(1);
+            let top = by + 28.0;
+            for (i, th) in THEMES.iter().enumerate() {
+                let card = rect(
+                    x + (i % per_row) as f32 * (cw + gap),
+                    top + (i / per_row) as f32 * (ch + 50.0),
+                    cw,
+                    ch,
+                );
+                theme_preview(p, card, th);
+                if i == current {
+                    ring(p, card, t.accent, 2.0);
+                } else if hover == Some(Hit::Theme(i)) {
+                    ring(p, card, t.muted, 1.0);
+                }
+                p.text(card.x, card.y + ch + 26.0, th.name, 15.0, t.text, Weight::Regular);
+                hits.push((rect(card.x, card.y, cw, ch + 34.0), Hit::Theme(i)));
+            }
+        }
+        Section::Layout => {
+            by += 64.0;
+            p.text(x, by, "Onde ficam as abas", 26.0, t.text, Weight::Semibold);
+            by += 30.0;
+            p.text(x, by, "Mude quando quiser; as abas abertas continuam onde estão.", 15.0, t.muted, Weight::Regular);
+            let (cw, ch, gap) = (250.0, 156.0, 24.0);
+            let per_row = (((inner_w + gap) / (cw + gap)).floor() as usize).max(1);
+            let top = by + 28.0;
+            let modes = [
+                (LayoutMode::Sidebar, "Lateral", "Trilho de ícones e lista de abas"),
+                (LayoutMode::Capsules, "Cápsulas", "Abas em pílulas no topo"),
+            ];
+            for (i, (mode, name, desc)) in modes.into_iter().enumerate() {
+                let card = rect(
+                    x + (i % per_row) as f32 * (cw + gap),
+                    top + (i / per_row) as f32 * (ch + 70.0),
+                    cw,
+                    ch,
+                );
+                layout_preview(p, card, t, mode);
+                if mode == layout {
+                    ring(p, card, t.accent, 2.0);
+                } else if hover == Some(Hit::Layout(mode)) {
+                    ring(p, card, t.muted, 1.0);
+                }
+                p.text(card.x, card.y + ch + 26.0, name, 15.0, t.text, Weight::Semibold);
+                p.text(card.x, card.y + ch + 48.0, desc, 13.0, t.muted, Weight::Regular);
+                hits.push((rect(card.x, card.y, cw, ch + 56.0), Hit::Layout(mode)));
+            }
+        }
+        Section::About => {
+            by += 52.0;
+            let lines: [(&str, bool); 10] = [
+                ("Versão 0.1 (marco M1)", true),
+                ("Navegador com motor próprio, escrito do zero e 100% em Rust.", false),
+                ("", false),
+                ("•  HTML, DOM, CSS, cascata, layout, SVG e pintura: código próprio", false),
+                ("•  Uma thread de renderização por aba", false),
+                ("•  Rede e TLS 100% Rust (rustls + RustCrypto)", false),
+                ("•  Imagens PNG, JPEG, GIF, WebP e SVG", false),
+                ("•  Ícones: Mage Icons (Apache 2.0)", false),
+                ("", false),
+                ("Próximo marco: flexbox, grid, floats e tabelas (M2).", false),
+            ];
+            for (line, strong) in lines {
+                let w = if strong { Weight::Semibold } else { Weight::Regular };
+                p.text(x, by, line, 15.0, if strong { t.text } else { t.muted }, w);
+                by += 28.0;
+            }
+        }
+    }
+}
+
