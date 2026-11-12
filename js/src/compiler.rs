@@ -2485,3 +2485,47 @@ impl Compiler {
         }
     }
 
+    /// [valor] → [] atribuindo a `obj.x`, `a[i]`, `this.#p`, `super.x`.
+    fn assign_target(&mut self, e: &Expr) -> CResult<()> {
+        match e {
+            Expr::Ident(n, _) => self.store(n),
+            Expr::Member { obj, prop, .. } => {
+                self.expr(obj)?;
+                self.emit(Op::Swap);
+                let c = self.konst(prop);
+                self.emit(Op::SetProp(c));
+                self.emit(Op::Pop);
+            }
+            Expr::Index { obj, index, .. } => {
+                self.expr(obj)?;
+                self.expr(index)?;
+                self.emit(Op::Roll3);
+                self.emit(Op::SetIndex);
+                self.emit(Op::Pop);
+            }
+            Expr::PrivateMember(obj, name) => {
+                self.expr(obj)?;
+                self.load_private(name)?;
+                self.emit(Op::Roll3);
+                self.emit(Op::SetPrivate);
+                self.emit(Op::Pop);
+            }
+            Expr::SuperMember(name) => {
+                self.this()?;
+                self.emit(Op::Swap);
+                let c = self.konst(name);
+                self.emit(Op::SetSuper(c));
+                self.emit(Op::Pop);
+            }
+            Expr::SuperIndex(idx) => {
+                self.this()?;
+                self.expr(idx)?;
+                self.emit(Op::Roll3);
+                self.emit(Op::SetSuperIndex);
+                self.emit(Op::Pop);
+            }
+            _ => return syntax("alvo de atribuição inválido", 0),
+        }
+        Ok(())
+    }
+
