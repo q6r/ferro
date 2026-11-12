@@ -2591,3 +2591,46 @@ hidden(G, 'TextDecoder', TextDecoder);
 
 // ------------------------------------------------- URL e URLSearchParams
 const URLS = new WeakMap();
+class URLSearchParams {
+  constructor(init) {
+    const list = [];
+    URLS.set(this, { list, owner: null });
+    if (init === undefined || init === null) return;
+    if (typeof init === 'object' && typeof init[Symbol.iterator] === 'function') {
+      for (const pair of init) {
+        const p = [...pair];
+        if (p.length !== 2) throw new TypeError("Failed to construct 'URLSearchParams': Sequence initializer must only contain pair elements");
+        list.push([String(p[0]), String(p[1])]);
+      }
+    } else if (typeof init === 'object') {
+      for (const k of Object.keys(init)) list.push([k, String(init[k])]);
+    } else {
+      parseQuery(String(init), list);
+    }
+  }
+  append(k, v) { URLS.get(this).list.push([String(k), String(v)]); syncURL(this); }
+  delete(k, v) {
+    const s = URLS.get(this);
+    s.list = s.list.filter(([a, b]) => !(a === String(k) && (v === undefined || b === String(v))));
+    syncURL(this);
+  }
+  get(k) { const e = URLS.get(this).list.find(([a]) => a === String(k)); return e ? e[1] : null; }
+  getAll(k) { return URLS.get(this).list.filter(([a]) => a === String(k)).map((e) => e[1]); }
+  has(k, v) { return URLS.get(this).list.some(([a, b]) => a === String(k) && (v === undefined || b === String(v))); }
+  set(k, v) {
+    k = String(k); v = String(v);
+    const s = URLS.get(this);
+    const i = s.list.findIndex(([a]) => a === k);
+    if (i < 0) s.list.push([k, v]);
+    else { s.list[i][1] = v; s.list = s.list.filter(([a], j) => a !== k || j === i); }
+    syncURL(this);
+  }
+  sort() { URLS.get(this).list.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)); syncURL(this); }
+  forEach(cb, thisArg) { for (const [k, v] of URLS.get(this).list) cb.call(thisArg, v, k, this); }
+  keys() { return URLS.get(this).list.map((e) => e[0]).values(); }
+  values() { return URLS.get(this).list.map((e) => e[1]).values(); }
+  entries() { return URLS.get(this).list.map((e) => [e[0], e[1]]).values(); }
+  [Symbol.iterator]() { return this.entries(); }
+  get size() { return URLS.get(this).list.length; }
+  toString() { return URLS.get(this).list.map(([k, v]) => N.formEncode(k) + '=' + N.formEncode(v)).join('&'); }
+}
