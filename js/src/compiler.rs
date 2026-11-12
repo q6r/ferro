@@ -2027,3 +2027,51 @@ impl Compiler {
         Ok(())
     }
 
+    /// Abre o escopo de uma iteração de for-in/for-of e atribui o valor do topo.
+    fn bind_for_head(&mut self, left: &ForHead) -> CResult<bool> {
+        match left {
+            ForHead::Var(VarKind::Var, p) => {
+                self.pattern(p, Bind::Store)?;
+                Ok(false)
+            }
+            ForHead::Var(kind, p) => {
+                let mut names = Vec::new();
+                bound_names(p, &mut names);
+                self.push_scope(ScopeKind::Block, key_of(left));
+                let decl = if *kind == VarKind::Let { Decl::Let } else { Decl::Const };
+                for n in names {
+                    self.declare(n, decl, false, false);
+                }
+                // o valor está na pilha; o ambiente novo não mexe nela
+                self.open_env();
+                self.pattern(p, Bind::Init)?;
+                Ok(true)
+            }
+            ForHead::Pattern(p) => {
+                self.pattern(p, Bind::Store)?;
+                Ok(false)
+            }
+        }
+    }
+
+    fn for_in(&mut self, left: &ForHead, right: &Expr, body: &Stmt) -> CResult<()> {
+        let labels = self.take_labels();
+        self.expr(right)?;
+        self.emit(Op::ForIn);
+        let top = self.here();
+        let next = self.emit(Op::ForInNext(0));
+        self.push_loop(labels, LoopKind::ForIn);
+        // o laço registrou a profundidade de ambiente de fora da iteração
+        let scoped = self.bind_for_head(left)?;
+        self.stmt(body)?;
+        if scoped {
+            self.pop_scope();
+        }
+        let cont = self.here();
+        self.emit(Op::Jump(top as u32));
+        self.pop_loop(cont, None);
+        self.patch(next);
+        self.emit(Op::Pop);
+        Ok(())
+    }
+
