@@ -67,3 +67,64 @@ struct Args {
     extra_tabs: Vec<String>,
 }
 
+fn parse_args() -> Result<Args, String> {
+    let mut a = Args {
+        target: None,
+        out: None,
+        width: 1280.0,
+        height: 800.0,
+        max_h: 12000.0,
+        images: true,
+        js: true,
+        wait_ms: 5000.0,
+        dump_dom: false,
+        dump_boxes: false,
+        capture: None,
+        theme: None,
+        layout: None,
+        typed: None,
+        find: None,
+        select_all: false,
+        scroll: None,
+        extra_tabs: Vec::new(),
+    };
+    let mut it = std::env::args().skip(1);
+    while let Some(arg) = it.next() {
+        let mut num = |name: &str| -> Result<f32, String> {
+            it.next()
+                .and_then(|v| v.parse().ok())
+                .filter(|v: &f32| *v > 0.0)
+                .ok_or(format!("{name} espera um número positivo"))
+        };
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("{HELP}");
+                std::process::exit(0);
+            }
+            "-w" | "--largura" => a.width = num("--largura")?,
+            "--altura" => a.height = num("--altura")?,
+            "--max" => a.max_h = num("--max")?,
+            "-o" | "--saida" => a.out = Some(PathBuf::from(it.next().ok_or("--saida espera um arquivo")?)),
+            "--sem-imagens" => a.images = false,
+            "--sem-js" => a.js = false,
+            "--espera" => a.wait_ms = num("--espera")?,
+            "--dom" => a.dump_dom = true,
+            "--caixas" => a.dump_boxes = true,
+            "--captura" => a.capture = Some(PathBuf::from(it.next().ok_or("--captura espera um arquivo")?)),
+            "--tema" => a.theme = Some(it.next().ok_or("--tema espera um nome")?),
+            "--digitar" => a.typed = Some(it.next().ok_or("--digitar espera um texto")?),
+            "--buscar" => a.find = Some(it.next().ok_or("--buscar espera um texto")?),
+            "--selecionar-tudo" => a.select_all = true,
+            "--rolar" => a.scroll = Some(num("--rolar")?),
+            "--layout" => a.layout = Some(it.next().ok_or("--layout espera lateral ou capsulas")?),
+            "--abas" => {
+                let list = it.next().ok_or("--abas espera URLs separadas por vírgula")?;
+                a.extra_tabs = list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            }
+            s if s.starts_with('-') => return Err(format!("opção desconhecida: {s}")),
+            s => a.target = Some(s.to_string()),
+        }
+    }
+    Ok(a)
+}
+
