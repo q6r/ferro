@@ -1187,3 +1187,57 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
     parts
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::html;
+
+    const CTX: MediaContext = MediaContext {
+        width: 1280.0,
+        height: 800.0,
+    };
+
+    #[test]
+    fn regras_e_declaracoes() {
+        let s = parse_stylesheet(
+            "/* c */ h1, .a > p { color: red; margin: 0 auto !important } @media print { p { color: blue } }",
+            &CTX,
+        );
+        assert_eq!(s.rules.len(), 1);
+        assert_eq!(s.rules[0].selectors.len(), 2);
+        assert_eq!(s.rules[0].declarations[1].name, "margin");
+        assert!(s.rules[0].declarations[1].important);
+    }
+
+    #[test]
+    fn media_queries() {
+        assert!(media_matches("screen and (min-width: 768px)", &CTX));
+        assert!(!media_matches("(max-width: 600px)", &CTX));
+        assert!(media_matches("(width >= 1000px)", &CTX));
+        assert!(!media_matches("print", &CTX));
+    }
+
+    #[test]
+    fn especificidade() {
+        let s = &parse_selector_list("#a .b p:first-child").unwrap()[0];
+        assert_eq!(s.specificity(), (1, 2, 1));
+    }
+
+    #[test]
+    fn casamento_de_seletores() {
+        let doc = html::parse(
+            r#"<div id="x" class="c1 c2"><ul><li>a</li><li class="z">b</li></ul></div><p lang="pt-BR">t</p>"#,
+        );
+        let lis = doc.find_all("li");
+        let p = doc.find_first("p").unwrap();
+        let sel = |s: &str| parse_selector_list(s).unwrap().remove(0);
+        assert!(matches(&doc, lis[1], &sel("#x.c1 li.z")));
+        assert!(matches(&doc, lis[0], &sel("ul > li:first-child")));
+        assert!(matches(&doc, lis[1], &sel("li + li")));
+        assert!(!matches(&doc, lis[0], &sel("li:nth-child(2n)")));
+        assert!(matches(&doc, lis[1], &sel("li:not(:first-child)")));
+        assert!(matches(&doc, p, &sel("div ~ p[lang|=pt]")));
+        assert!(!matches(&doc, p, &sel("a:hover")));
+        assert!(matches(&doc, lis[0], &sel(".c1 :is(li, span)")));
+    }
+
