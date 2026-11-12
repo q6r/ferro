@@ -712,3 +712,76 @@ const NAMED_COLORS: &[(&str, u32)] = &[
     ("buttonface", 0xefefef), ("buttontext", 0x000000), ("graytext", 0x808080),
 ];
 
+pub fn parse_color(v: &str, current: Color) -> Option<Color> {
+    let v = v.trim().to_ascii_lowercase();
+    if v == "transparent" {
+        return Some(Color::TRANSPARENT);
+    }
+    if v == "currentcolor" {
+        return Some(current);
+    }
+    if let Some(hex) = v.strip_prefix('#') {
+        let d: Vec<u8> = hex
+            .chars()
+            .map(|c| c.to_digit(16).map(|x| x as u8))
+            .collect::<Option<Vec<u8>>>()?;
+        return match d.len() {
+            3 | 4 => Some(Color {
+                r: d[0] * 17,
+                g: d[1] * 17,
+                b: d[2] * 17,
+                a: if d.len() == 4 { d[3] * 17 } else { 255 },
+            }),
+            6 | 8 => Some(Color {
+                r: d[0] * 16 + d[1],
+                g: d[2] * 16 + d[3],
+                b: d[4] * 16 + d[5],
+                a: if d.len() == 8 { d[6] * 16 + d[7] } else { 255 },
+            }),
+            _ => None,
+        };
+    }
+    // light-dark(clara, escura): o motor usa o esquema claro
+    if let Some(inner) = v.strip_prefix("light-dark(").and_then(|s| s.strip_suffix(')')) {
+        return parse_color(css::split_top_level(inner, ',').first()?, current);
+    }
+    if let Some(open) = v.find('(') {
+        let func = &v[..open];
+        let inner = v[open + 1..].trim_end_matches(')');
+        let parts: Vec<&str> = inner
+            .split(|c: char| c == ',' || c == '/' || c.is_whitespace())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parts.len() < 3 {
+            return None;
+        }
+        let alpha = match parts.get(3) {
+            Some(a) => (number_or_percent(a, 1.0)? * 255.0).round().clamp(0.0, 255.0) as u8,
+            None => 255,
+        };
+        return match func {
+            "rgb" | "rgba" => {
+                let ch = |s: &str| number_or_percent(s, 255.0).map(|x| x.round().clamp(0.0, 255.0) as u8);
+                Some(Color {
+                    r: ch(parts[0])?,
+                    g: ch(parts[1])?,
+                    b: ch(parts[2])?,
+                    a: alpha,
+                })
+            }
+            "hsl" | "hsla" => {
+                let h: f32 = parts[0].trim_end_matches("deg").parse().ok()?;
+                let s = number_or_percent(parts[1], 1.0)?.clamp(0.0, 1.0);
+                let l = number_or_percent(parts[2], 1.0)?.clamp(0.0, 1.0);
+                let (r, g, b) = hsl_to_rgb(h, s, l);
+                Some(Color { r, g, b, a: alpha })
+            }
+            _ => None,
+        };
+    }
+    NAMED_COLORS
+        .iter()
+        .find(|(n, _)| *n == v)
+        .map(|(_, c)| Color::rgb((c >> 16) as u8, (c >> 8) as u8, *c as u8))
+}
+
