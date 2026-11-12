@@ -123,3 +123,79 @@ pub struct Playback {
     pub pipeline: player::Pipeline,
 }
 
+impl Playback {
+    fn new() -> Playback {
+        Playback {
+            source: None,
+            paused: true,
+            seeking: false,
+            ended: false,
+            waiting: false,
+            ready_state: 0,
+            rate: 1.0,
+            volume: 1.0,
+            muted: false,
+            base: 0.0,
+            since: Instant::now(),
+            last_timeupdate: Instant::now(),
+            width: 0,
+            height: 0,
+            pipeline: player::Pipeline::new(),
+        }
+    }
+
+    /// Tempo atual da mídia.
+    pub fn current_time(&self) -> f64 {
+        if self.paused || self.waiting || self.seeking || self.ended {
+            self.base
+        } else {
+            self.base + self.since.elapsed().as_secs_f64() * self.rate
+        }
+    }
+
+    /// Recomeça o relógio em `t` (troca de velocidade).
+    pub fn seek_base(&mut self, t: f64) {
+        self.base = t;
+        self.since = Instant::now();
+    }
+
+    fn freeze(&mut self) {
+        self.base = self.current_time();
+        self.since = Instant::now();
+    }
+}
+
+/// Tudo o que é mídia numa página.
+#[derive(Default)]
+pub struct Media {
+    seq: u32,
+    pub sources: HashMap<u32, MediaSource>,
+    pub buffers: HashMap<u32, SourceBuffer>,
+    pub players: HashMap<NodeId, Playback>,
+    /// Pasta para gravar o que chega por appendBuffer (FERRO_MIDIA_DUMP).
+    dump: Option<std::path::PathBuf>,
+    /// Elementos com quadro novo desde a última consulta.
+    pub new_frames: std::collections::HashSet<NodeId>,
+    /// Destino dos quadros (a interface), passado aos pipelines.
+    pub frame_sink: Option<player::FrameSink>,
+}
+
+impl Media {
+    pub fn new() -> Media {
+        Media {
+            dump: std::env::var_os("FERRO_MIDIA_DUMP").map(Into::into),
+            ..Media::default()
+        }
+    }
+
+    fn next(&mut self) -> u32 {
+        self.seq += 1;
+        self.seq
+    }
+
+    pub fn new_source(&mut self) -> u32 {
+        let id = self.next();
+        self.sources.insert(id, MediaSource { duration: f64::NAN, buffers: Vec::new(), ended: false });
+        id
+    }
+
