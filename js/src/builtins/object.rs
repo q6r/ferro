@@ -56,3 +56,58 @@ pub fn install(r: &Realm) {
     );
 }
 
+fn object_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Some(nt) = &a.new_target
+        && !nt.ptr_eq(&a.callee)
+    {
+        let def = vm.realm.object_proto.clone();
+        let proto = vm.proto_from_ctor(Some(nt), &def)?;
+        return Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Ordinary))));
+    }
+    let v = a.arg(0);
+    if v.is_nullish() {
+        return Ok(Value::Object(vm.new_object()));
+    }
+    Ok(Value::Object(vm.to_object(&v)?))
+}
+
+fn arg_obj(vm: &mut Vm, a: &CallArgs, i: usize) -> Result<ObjRef, Value> {
+    vm.to_object(&a.arg(i))
+}
+
+/// Chaves de texto próprias e enumeráveis.
+pub fn enumerable_keys(vm: &mut Vm, o: &ObjRef) -> Result<Vec<PropKey>, Value> {
+    let mut out = Vec::new();
+    for k in vm.own_keys(o)? {
+        if matches!(k, PropKey::Str(_)) && vm.is_enumerable_own(o, &k)? {
+            out.push(k);
+        }
+    }
+    Ok(out)
+}
+
+fn keys(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let ks: Vec<Value> = enumerable_keys(vm, &o)?.iter().map(|k| k.to_value()).collect();
+    Ok(vm.array_value(ks))
+}
+
+fn values(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let mut out = Vec::new();
+    for k in enumerable_keys(vm, &o)? {
+        out.push(vm.get_obj(&o, &k)?);
+    }
+    Ok(vm.array_value(out))
+}
+
+fn entries(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let mut out = Vec::new();
+    for k in enumerable_keys(vm, &o)? {
+        let v = vm.get_obj(&o, &k)?;
+        out.push(vm.array_value(vec![k.to_value(), v]));
+    }
+    Ok(vm.array_value(out))
+}
+
