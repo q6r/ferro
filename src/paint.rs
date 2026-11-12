@@ -428,3 +428,137 @@ impl Canvas {
         }
     }
 
+    /// Desenha `items` transformados por `m` em torno de `origin`: pinta o
+    /// trecho à parte (sobre preto e sobre branco, para recuperar o alfa) e
+    /// aplica a matriz com amostragem bilinear.
+    fn paint_transformed(&mut self, items: &[DisplayItem], fonts: &Fonts, t: Transform, m: [f32; 6], origin: (f32, f32), clip: Clip) {
+        // limites do trecho (documento)
+        let mut b: Option<Rect> = None;
+        let mut add = |r: Rect| {
+            if r.w <= 0.0 || r.h <= 0.0 {
+                return;
+            }
+            b = Some(match b {
+                None => r,
+                Some(o) => {
+                    let x0 = o.x.min(r.x);
+                    let y0 = o.y.min(r.y);
+                    Rect { x: x0, y: y0, w: (o.x + o.w).max(r.x + r.w) - x0, h: (o.y + o.h).max(r.y + r.h) - y0 }
+                }
+            });
+        };
+        for it in items {
+            match it {
+                DisplayItem::Rect { rect, .. }
+                | DisplayItem::RoundRect { rect, .. }
+                | DisplayItem::Image { rect, .. }
+                | DisplayItem::RoundBorder { rect, .. }
+                | DisplayItem::Gradient { rect, .. }
+                | DisplayItem::BgImage { rect, .. }
+                | DisplayItem::Video { rect, .. }
+                | DisplayItem::Canvas { rect, .. } => add(*rect),
+                DisplayItem::Shadow { rect, blur, .. } => {
+                    add(Rect { x: rect.x - blur, y: rect.y - blur, w: rect.w + 2.0 * blur, h: rect.h + 2.0 * blur })
+                }
+                DisplayItem::Text { x, baseline, text, font, size, .. } => {
+                    let w = fonts.measure(*font, *size, text);
+                    add(Rect { x: *x, y: baseline - size * 1.1, w: w + 2.0, h: size * 1.5 });
+                }
+                _ => {}
+            }
+        }
+        let Some(bounds) = b else { return };
+        let s = t.scale;
+        let (w, h) = ((bounds.w * s).ceil() as usize + 2, (bounds.h * s).ceil() as usize + 2);
+        let det = m[0] * m[3] - m[1] * m[2];
+        if w * h > 4096 * 4096 || det.abs() < 1e-6 {
+            // grande demais ou achatado: pinta sem transformar (ou some, se achatado)
+            if det.abs() >= 1e-6 {
+                self.paint_list(items, fonts, t, None);
+            }
+            return;
+        }
+        let off = Transform { scale: s, dx: -bounds.x * s + 1.0, dy: -bounds.y * s + 1.0 };
+        let render = |bg: Color| {
+            let mut c = Canvas::new(w, h, bg);
+            c.videos = self.videos.clone();
+            c.paint_list(items, fonts, off, None);
+            c.pixels
+        };
+        let black = render(Color::BLACK);
+        let white = render(Color::WHITE);
+        // documento: p' = origin + M·(p - origin) + (e, f); inversa para amostrar
+        let (ox, oy) = origin;
+        let inv = [m[3] / det, -m[1] / det, -m[2] / det, m[0] / det];
+        let fwd = |x: f32, y: f32| {
+            let (dx, dy) = (x - ox, y - oy);
+            (ox + m[0] * dx + m[2] * dy + m[4], oy + m[1] * dx + m[3] * dy + m[5])
+        };
+        // caixa de destino (dispositivo)
+        let corners = [
+            fwd(bounds.x, bounds.y),
+            fwd(bounds.x + bounds.w, bounds.y),
+            fwd(bounds.x, bounds.y + bounds.h),
+            fwd(bounds.x + bounds.w, bounds.y + bounds.h),
+        ];
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (cx, cy) in corners {
+            let (dx, dy) = (cx * s + t.dx, cy * s + t.dy);
+            x0 = x0.min(dx);
+            y0 = y0.min(dy);
+            x1 = x1.max(dx);
+            y1 = y1.max(dy);
+        }
+        let area = clip
+            .intersect(Clip { x0: 0, y0: 0, x1: self.width as i32, y1: self.height as i32 })
+            .intersect(Clip { x0: x0.floor() as i32, y0: y0.floor() as i32, x1: x1.ceil() as i32 + 1, y1: y1.ceil() as i32 + 1 });
+        if area.is_empty() {
+            return;
+        }
+        let sample = |buf: &[u32], fx: f32, fy: f32| -> Option<[f32; 3]> {
+            if fx < -1.0 || fy < -1.0 || fx > w as f32 || fy > h as f32 {
+                return None;
+            }
+            let (ix, iy) = (fx.floor(), fy.floor());
+            let (tx, ty) = (fx - ix, fy - iy);
+            let at = |x: f32, y: f32| -> [f32; 3] {
+                let (x, y) = ((x as isize).clamp(0, w as isize - 1) as usize, (y as isize).clamp(0, h as isize - 1) as usize);
+                let p = buf[y * w + x];
+                [((p >> 16) & 255) as f32, ((p >> 8) & 255) as f32, (p & 255) as f32]
+            };
+            let (a, b2, c, d) = (at(ix, iy), at(ix + 1.0, iy), at(ix, iy + 1.0), at(ix + 1.0, iy + 1.0));
+            let mut out = [0.0f32; 3];
+            for k in 0..3 {
+                let top = a[k] + (b2[k] - a[k]) * tx;
+                let bot = c[k] + (d[k] - c[k]) * tx;
+                out[k] = top + (bot - top) * ty;
+            }
+            Some(out)
+        };
+        for py in area.y0..area.y1 {
+            for px in area.x0..area.x1 {
+                // dispositivo → documento → antes da transformação → fora da tela
+                let (dx, dy) = ((px as f32 + 0.5 - t.dx) / s - ox - m[4], (py as f32 + 0.5 - t.dy) / s - oy - m[5]);
+                let (ux, uy) = (ox + inv[0] * dx + inv[2] * dy, oy + inv[1] * dx + inv[3] * dy);
+                let (fx, fy) = ((ux - bounds.x) * s + 1.0 - 0.5, (uy - bounds.y) * s + 1.0 - 0.5);
+                let (Some(bk), Some(wh)) = (sample(&black, fx, fy), sample(&white, fx, fy)) else { continue };
+                // alfa = 1 - (branco - preto); cor (pré-multiplicada) = preto
+                let alpha = 1.0 - ((wh[0] - bk[0]) + (wh[1] - bk[1]) + (wh[2] - bk[2])) / (3.0 * 255.0);
+                if alpha <= 0.002 {
+                    continue;
+                }
+                let alpha = alpha.min(1.0);
+                let i = py as usize * self.width + px as usize;
+                let dst = self.pixels[i];
+                let (dr, dg, db) = (((dst >> 16) & 255) as f32, ((dst >> 8) & 255) as f32, (dst & 255) as f32);
+                let r = (bk[0] + dr * (1.0 - alpha)).round().clamp(0.0, 255.0) as u32;
+                let g = (bk[1] + dg * (1.0 - alpha)).round().clamp(0.0, 255.0) as u32;
+                let bl = (bk[2] + db * (1.0 - alpha)).round().clamp(0.0, 255.0) as u32;
+                self.pixels[i] = r << 16 | g << 8 | bl;
+            }
+        }
+    }
+
+    // ---------------------------------------------------- primitivas públicas
+    // (coordenadas em pixels do dispositivo)
+
