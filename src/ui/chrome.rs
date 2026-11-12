@@ -56,3 +56,81 @@ impl App {
         scrollbar
     }
 
+    fn draw_page(&self, p: &mut Painter, t: &Theme, area: Rect, hits: &mut Hits) -> Option<(Rect, f32)> {
+        let tab = self.tab();
+        match tab.kind() {
+            Kind::NewTab => {
+                pages::new_tab(p, t, area, hits, self.hover, &jiff::Zoned::now(), self.palette_open);
+                None
+            }
+            Kind::Settings(sec) => {
+                pages::settings(p, t, self.theme, self.layout, area, sec, hits, self.hover);
+                None
+            }
+            Kind::Web => {
+                if let Some(err) = &tab.error {
+                    pages::error(p, t, area, tab.url().as_str(), err, hits, self.hover);
+                    return None;
+                }
+                let Some(frame) = &tab.frame else {
+                    p.rect(area, t.ntp_bg);
+                    return None;
+                };
+                p.rect(area, frame.background);
+                let scroll = self.effective_scroll(self.active);
+                let s = p.scale;
+                let sc = s * self.zoom;
+                let tr = Transform {
+                    scale: sc,
+                    dx: area.x * s,
+                    dy: area.y * s - scroll * sc,
+                };
+                let clip = Rect {
+                    x: area.x * s,
+                    y: area.y * s,
+                    w: area.w * s,
+                    h: area.h * s,
+                };
+                p.canvas.videos = frame.videos.clone();
+                p.canvas.paused = frame.paused.clone();
+                p.canvas.fixed_shift = scroll * sc;
+                p.canvas.paint_list(&frame.items, p.fonts, tr, Some(clip));
+                p.canvas.fixed_shift = 0.0;
+                self.draw_page_marks(p, area, scroll);
+                // na tela cheia não há barra de rolagem
+                if self.fullscreen.is_some() {
+                    return None;
+                }
+
+                // barra de rolagem
+                let view_h = area.h / self.zoom;
+                if frame.height <= view_h + 1.0 {
+                    return None;
+                }
+                let max = frame.height - view_h;
+                let track = rect(area.x + area.w - 13.0, area.y + 8.0, 10.0, area.h - 16.0);
+                let th = (track.h * view_h / frame.height).max(36.0);
+                let ty = track.y + (track.h - th) * (scroll / max);
+                let active =
+                    matches!(self.hover, Some(Hit::ScrollThumb | Hit::ScrollTrack)) || self.drag_scroll.is_some();
+                let thumb = if active {
+                    rect(track.x + 1.0, ty, 8.0, th)
+                } else {
+                    rect(track.x + 3.5, ty, 5.0, th)
+                };
+                let gray = Color {
+                    r: 128,
+                    g: 128,
+                    b: 128,
+                    a: if active { 210 } else { 140 },
+                };
+                p.rrect(thumb, thumb.w / 2.0, gray);
+                hits.push((track, Hit::ScrollTrack));
+                hits.push((rect(track.x, ty, track.w, th), Hit::ScrollThumb));
+                Some((track, th))
+            }
+        }
+    }
+
+    // ----------------------------------------------------- moldura
+
