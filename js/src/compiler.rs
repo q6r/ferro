@@ -2314,3 +2314,79 @@ impl Compiler {
         Ok(())
     }
 
+    fn emit_return(&mut self) -> CResult<()> {
+        let needs = self
+            .fr()
+            .ctl
+            .iter()
+            .any(|c| matches!(c, Ctl::Finally(..) | Ctl::Loop { kind: LoopKind::ForOf | LoopKind::ForAwait, .. }));
+        if needs {
+            let tmp = self.alloc_reg();
+            self.emit(Op::SetReg(tmp));
+            self.unwind(0, None)?;
+            self.emit(Op::GetReg(tmp));
+            self.free_reg(tmp);
+        }
+        self.emit(Op::Return);
+        Ok(())
+    }
+
+    fn jump_out(&mut self, label: Option<&Name>, is_continue: bool, line: u32) -> CResult<()> {
+        let ctl = &self.fr().ctl;
+        let mut target = None;
+        for i in (0..ctl.len()).rev() {
+            match &ctl[i] {
+                Ctl::Loop { labels, .. } => {
+                    if label.is_none_or(|l| labels.contains(l)) {
+                        target = Some(i);
+                        break;
+                    }
+                }
+                Ctl::Block { labels, is_switch, .. } if !is_continue => {
+                    let ok = match label {
+                        Some(l) => labels.contains(l),
+                        None => *is_switch,
+                    };
+                    if ok {
+                        target = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(t) = target else {
+            return syntax(
+                match (label, is_continue) {
+                    (Some(l), _) => format!("rótulo '{l}' não encontrado"),
+                    (None, true) => "'continue' fora de laço".into(),
+                    (None, false) => "'break' fora de laço ou switch".into(),
+                },
+                line,
+            );
+        };
+        if is_continue && !matches!(self.fr().ctl[t], Ctl::Loop { .. }) {
+            return syntax("'continue' para um rótulo que não é laço", line);
+        }
+        let env = match &self.fr().ctl[t] {
+            Ctl::Loop { env_depth, .. } | Ctl::Block { env_depth, .. } => *env_depth,
+            _ => 0,
+        };
+        self.unwind(t + 1, Some(env))?;
+        let j = self.emit(Op::Jump(0));
+        match &mut self.f().ctl[t] {
+            Ctl::Loop { breaks, continues, .. } => {
+                if is_continue {
+                    continues.push(j);
+                } else {
+                    breaks.push(j);
+                }
+            }
+            Ctl::Block { breaks, .. } => breaks.push(j),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------- padrões
+
