@@ -1469,3 +1469,72 @@ fn get_client_rects(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(vm.array_value(items))
 }
 
+fn is_root_el(vm: &Vm, n: NodeId) -> bool {
+    read(vm, |h| h.page.doc.tag(n) == Some("html") && h.page.doc.node(n).parent == Some(Document::ROOT))
+}
+
+fn page_height(vm: &mut Vm) -> f32 {
+    let h = host(vm);
+    super::ensure_layout(&h);
+    let hb = h.borrow();
+    hb.layout.as_ref().map_or(hb.height, |l| l.height.max(hb.height))
+}
+
+fn offset_width(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.w.round()) as f64))
+}
+
+fn offset_height(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.h.round()) as f64))
+}
+
+fn offset_top(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.y.round()) as f64))
+}
+
+fn offset_left(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.x.round()) as f64))
+}
+
+fn offset_parent(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if rect_of(vm, n).is_none() {
+        return Ok(Value::Null);
+    }
+    let body = read(vm, |h| h.page.doc.find_first("body"));
+    Ok(if body == Some(n) { Value::Null } else { wrap_opt(vm, body) })
+}
+
+/// Informações de rolagem do elemento (se ele rola por dentro).
+fn scroller_of(vm: &mut Vm, n: NodeId) -> Option<crate::layout::Scroller> {
+    let h = host(vm);
+    super::ensure_layout(&h);
+    let hb = h.borrow();
+    let mut sc = hb.layout.as_ref()?.scrollers.iter().find(|s| s.node == n).copied()?;
+    if let Some(&(x, y)) = hb.scroll_offsets.get(&n) {
+        sc.x = x.clamp(0.0, sc.max_x);
+        sc.y = y.clamp(0.0, sc.max_y);
+    }
+    Some(sc)
+}
+
+fn is_page_scroller(vm: &Vm, n: NodeId) -> bool {
+    let body = read(vm, |h| h.page.doc.find_first("body"));
+    is_root_el(vm, n) || Some(n) == body
+}
+
+fn client_width(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if is_root_el(vm, n) {
+        return Ok(Value::Number(viewport_size(vm).0 as f64));
+    }
+    if let Some(sc) = scroller_of(vm, n) {
+        return Ok(Value::Number(sc.rect.w.round() as f64));
+    }
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.w.round()) as f64))
+}
+
