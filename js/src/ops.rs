@@ -1025,3 +1025,77 @@ impl Vm {
         }
     }
 
+    pub fn set_global(&mut self, name: &JsStr, v: Value, strict: bool) -> Result<(), Value> {
+        if let Some(cell) = self.lex.get(name).cloned() {
+            let (empty, is_const) = {
+                let b = cell.borrow();
+                (matches!(b.value, Value::Empty), b.is_const)
+            };
+            if empty {
+                return Err(self.reference_error(format!("Cannot access '{name}' before initialization")));
+            }
+            if is_const {
+                return Err(self.type_error("Assignment to constant variable."));
+            }
+            cell.borrow_mut().value = v;
+            return Ok(());
+        }
+        let g = self.realm.global.clone();
+        let key = PropKey::Str(name.clone());
+        if strict && !self.has_property(&g, &key)? {
+            return Err(self.reference_error(format!("{name} is not defined")));
+        }
+        self.put(&Value::Object(g), key, v, strict)
+    }
+
+    // -------------------------------------------------------- operadores
+
+    pub fn add(&mut self, a: &Value, b: &Value) -> Result<Value, Value> {
+        let pa = self.to_primitive(a, Hint::Default)?;
+        let pb = self.to_primitive(b, Hint::Default)?;
+        if matches!(pa, Value::String(_)) || matches!(pb, Value::String(_)) {
+            let sa = self.to_string(&pa)?;
+            let sb = self.to_string(&pb)?;
+            return Ok(Value::String(sa.concat(&sb)));
+        }
+        self.arith(Arith::Add, &pa, &pb)
+    }
+
+    /// Comparação abstrata `a < b` (None = indefinido, por NaN).
+    pub fn less_than(&mut self, a: &Value, b: &Value, left_first: bool) -> Result<Option<bool>, Value> {
+        let (pa, pb) = if left_first {
+            let pa = self.to_primitive(a, Hint::Number)?;
+            let pb = self.to_primitive(b, Hint::Number)?;
+            (pa, pb)
+        } else {
+            let pb = self.to_primitive(b, Hint::Number)?;
+            let pa = self.to_primitive(a, Hint::Number)?;
+            (pa, pb)
+        };
+        if let (Value::String(x), Value::String(y)) = (&pa, &pb) {
+            return Ok(Some(x.units() < y.units()));
+        }
+        // BigInt contra string/número: comparação matemática exata
+        let as_big = |v: &Value| match v {
+            Value::String(s) => crate::bigint::BigInt::parse_js(&s.to_rust()).map(|b| Value::BigInt(std::rc::Rc::new(b))),
+            other => Some(other.clone()),
+        };
+        if matches!(pa, Value::BigInt(_)) || matches!(pb, Value::BigInt(_)) {
+            let (Some(xa), Some(xb)) = (as_big(&pa), as_big(&pb)) else { return Ok(None) };
+            let xa = self.to_numeric(&xa)?;
+            let xb = self.to_numeric(&xb)?;
+            return Ok(match (&xa, &xb) {
+                (Value::BigInt(a), Value::BigInt(b)) => Some(a.cmp(b) == std::cmp::Ordering::Less),
+                (Value::BigInt(a), Value::Number(n)) => a.cmp_f64(*n).map(|o| o == std::cmp::Ordering::Less),
+                (Value::Number(n), Value::BigInt(b)) => b.cmp_f64(*n).map(|o| o == std::cmp::Ordering::Greater),
+                _ => None,
+            });
+        }
+        let x = self.to_number(&pa)?;
+        let y = self.to_number(&pb)?;
+        if x.is_nan() || y.is_nan() {
+            return Ok(None);
+        }
+        Ok(Some(x < y))
+    }
+
