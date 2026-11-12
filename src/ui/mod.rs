@@ -220,3 +220,46 @@ impl Tab {
         }
     }
 
+    fn icon(&self) -> Icon {
+        if self.loading {
+            return Icon::Reload;
+        }
+        match self.kind() {
+            Kind::NewTab => Icon::Home,
+            Kind::Settings(_) => Icon::Settings,
+            Kind::Web if self.error.is_some() => Icon::Warning,
+            Kind::Web => Icon::Globe,
+        }
+    }
+}
+
+enum Action {
+    Open(Url),
+    Tab(usize),
+}
+
+struct Suggestion {
+    icon: Icon,
+    text: String,
+    detail: String,
+    hint: &'static str,
+    group: &'static str,
+    action: Action,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum FullscreenBy {
+    Page,
+    User,
+}
+
+/// Onde fica cada parte da interface, em pixels lógicos.
+struct Geo {
+    rail: Option<Rect>,
+    panel: Option<Rect>,
+    tabs_row: Option<Rect>,
+    bar: Rect,
+    capsule: Rect,
+    content: Rect,
+}
+
