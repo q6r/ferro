@@ -731,3 +731,56 @@ impl Parser {
         Ok(Stmt::For { init, test, update, body })
     }
 
+    fn parse_try(&mut self) -> PResult<Stmt> {
+        self.advance()?;
+        let block = self.parse_block()?;
+        let mut param = None;
+        let mut handler = None;
+        if self.eat_kw("catch")? {
+            if self.eat("(")? {
+                param = Some(self.parse_binding_target()?);
+                self.expect(")")?;
+            }
+            handler = Some(self.parse_block()?);
+        }
+        let finalizer = if self.eat_kw("finally")? { Some(self.parse_block()?) } else { None };
+        if handler.is_none() && finalizer.is_none() {
+            return self.err("try sem catch nem finally");
+        }
+        Ok(Stmt::Try {
+            block,
+            param,
+            handler,
+            finalizer,
+        })
+    }
+
+    fn parse_switch(&mut self) -> PResult<Stmt> {
+        self.advance()?;
+        self.expect("(")?;
+        let disc = self.parse_expression(false)?;
+        self.expect(")")?;
+        self.expect("{")?;
+        let mut cases = Vec::new();
+        while !self.eat("}")? {
+            let test = if self.eat_kw("default")? {
+                None
+            } else {
+                self.expect_kw("case")?;
+                Some(self.parse_expression(false)?)
+            };
+            self.expect(":")?;
+            let mut body = Vec::new();
+            while !self.is("}") && !self.is_kw("case") && !self.is_kw("default") {
+                if self.tok.tok == Tok::Eof {
+                    return self.err("switch sem '}'");
+                }
+                body.push(self.parse_statement()?);
+            }
+            cases.push(Case { test, body });
+        }
+        Ok(Stmt::Switch(disc, cases))
+    }
+
+    // ----------------------------------------------------------- padrões
+
