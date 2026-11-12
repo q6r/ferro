@@ -46,3 +46,53 @@ fn eval(s: &mut Session, code: &str) -> String {
     }
 }
 
+#[test]
+fn clique_link_e_eventos() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0">
+            <a id=l href="https://exemplo.com/x" style="display:block;height:50px">ir</a>
+            <div id=d style="height:50px" onclick="this.textContent='clicado'">d</div>
+            <a id=p href="/y" style="display:block;height:50px"><span>não</span></a>
+            <script>
+              window.log = [];
+              document.getElementById('p').addEventListener('click', e => { log.push('p'); e.preventDefault(); });
+              document.addEventListener('mousedown', e => log.push('down:' + e.target.id));
+            </script></body>"#,
+        );
+        // link comum: o clique vira navegação
+        let nav = s.click(10.0, 20.0);
+        assert_eq!(nav.map(|u| u.url.to_string()), Some("https://exemplo.com/x".into()));
+        // div com onclick inline: muda o DOM, sem navegar
+        assert!(s.click(10.0, 70.0).is_none());
+        assert_eq!(eval(&mut s, "document.getElementById('d').textContent"), "clicado");
+        // link com preventDefault: não navega (o alvo é o <span> dentro dele)
+        assert!(s.click(5.0, 106.0).is_none());
+        assert_eq!(eval(&mut s, "log.join()"), "down:l,down:d,down:,p");
+        // o alvo do último clique foi o <span> (sem id)
+        assert_eq!(eval(&mut s, "document.elementFromPoint(5, 106).localName"), "span");
+    });
+}
+
+#[test]
+fn location_e_formulario() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<form id=f action="/busca"><input name=q value="a b"><button id=b>ir</button></form>
+            <script>location.hash = 'sec';</script>"#,
+        );
+        // só o fragmento: não recarrega
+        assert!(s.take_navigation().is_none());
+        assert_eq!(eval(&mut s, "location.href"), "https://teste.ferro/pagina#sec");
+        eval(&mut s, "document.getElementById('b').click()");
+        assert_eq!(eval(&mut s, "1"), "1");
+        let nav = s.take_navigation().map(|u| u.url.to_string());
+        assert_eq!(nav, Some("https://teste.ferro/busca?q=a+b".into()));
+        eval(&mut s, "location.href = '/outra'");
+        assert_eq!(s.take_navigation().map(|u| u.url.to_string()), Some("https://teste.ferro/outra".into()));
+        eval(&mut s, "history.pushState({}, '', '/spa/1')");
+        assert_eq!(eval(&mut s, "location.pathname"), "/spa/1");
+        assert!(s.take_navigation().is_none());
+    });
+}
+
