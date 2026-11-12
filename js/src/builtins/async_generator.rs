@@ -203,3 +203,55 @@ fn run(vm: &mut Vm, g: &ObjRef, mut frame: Box<Frame>) {
     }
 }
 
+fn continue_after_await(vm: &mut Vm, a: &CallArgs, mode: u8) {
+    let Value::Object(g) = native_data(&a.callee) else { return };
+    let frame = {
+        let mut b = g.borrow_mut();
+        let Kind::AsyncGenerator(d) = &mut b.kind else { return };
+        d.frame.take()
+    };
+    if let Some(mut frame) = frame {
+        frame.stack.push(a.arg(0));
+        frame.stack.push(Value::Number(mode as f64));
+        run(vm, &g, frame);
+    }
+}
+
+fn await_fulfilled(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    continue_after_await(vm, a, RESUME_NEXT);
+    Ok(Value::Undefined)
+}
+
+fn await_rejected(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    continue_after_await(vm, a, RESUME_THROW);
+    Ok(Value::Undefined)
+}
+
+impl Vm {
+    /// Iterador para `for await`: Symbol.asyncIterator, ou o síncrono embrulhado.
+    pub fn get_async_iterator(&mut self, v: &Value) -> Result<ObjRef, Value> {
+        let key = PropKey::Sym(self.realm.sym_async_iterator.clone());
+        let m = self.get(v, &key)?;
+        if m.is_nullish() {
+            let rec = self.get_iterator(v)?;
+            if let Kind::IterRecord { sync_wrapped, .. } = &mut rec.borrow_mut().kind {
+                *sync_wrapped = true;
+            }
+            return Ok(rec);
+        }
+        let it = self.call(&m, v.clone(), Vec::new())?;
+        if !matches!(it, Value::Object(_)) {
+            return Err(self.type_error("Result of the Symbol.asyncIterator method is not an object"));
+        }
+        let next = self.get_str(&it, "next")?;
+        Ok(ObjRef::new(Object::new(
+            None,
+            Kind::IterRecord {
+                iter: it,
+                next,
+                done: false,
+                sync_wrapped: false,
+            },
+        )))
+    }
+
