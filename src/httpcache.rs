@@ -237,3 +237,55 @@ fn write_disk(key: &str, e: &Entry) {
     }
 }
 
+fn decode_disk(key: &str, data: &[u8]) -> Option<Entry> {
+    let mut lines = Vec::new();
+    let mut pos = 0;
+    loop {
+        let nl = data[pos..].iter().position(|&b| b == b'\n')? + pos;
+        let line = std::str::from_utf8(&data[pos..nl]).ok()?;
+        pos = nl + 1;
+        if line.is_empty() && lines.len() >= 2 {
+            break;
+        }
+        lines.push(line.to_string());
+    }
+    if lines.first()? != key {
+        return None;
+    }
+    let (status, fresh) = lines.get(1)?.split_once(' ')?;
+    let headers = lines[2..]
+        .iter()
+        .filter_map(|l| l.split_once(": ").map(|(k, v)| (k.to_string(), v.to_string())))
+        .collect();
+    Some(Entry {
+        status: status.parse().ok()?,
+        headers,
+        body: Arc::new(data[pos..].to_vec()),
+        fresh_until: fresh.parse().ok()?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regras_de_validade() {
+        let h = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect::<Vec<_>>();
+        assert!(freshness(&h(&[("cache-control", "no-store")]), &[], "").is_none());
+        assert_eq!(freshness(&h(&[("cache-control", "no-cache")]), &[], ""), Some(0));
+        assert!(freshness(&h(&[("cache-control", "public, max-age=3600")]), &[], "").unwrap() > now() + 3500);
+        assert!(freshness(&h(&[]), &[], "text/html").is_none());
+        assert_eq!(freshness(&h(&[("etag", "\"x\"")]), &[], ""), Some(0));
+        let url = Url::parse("https://cache.teste/a.js").unwrap();
+        let res = Response {
+            url: url.clone(),
+            status: 200,
+            content_type: Some("text/javascript".into()),
+            body: b"1+1".to_vec(),
+            headers: h(&[("cache-control", "max-age=60"), ("content-type", "text/javascript")]),
+        };
+        store(&url, &res);
+        assert!(matches!(lookup(&url), Lookup::Fresh(r) if r.body == b"1+1"));
+    }
+}
