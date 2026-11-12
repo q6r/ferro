@@ -410,3 +410,48 @@ pub fn parse(input: &str) -> Document {
     b.doc
 }
 
+struct TreeBuilder {
+    doc: Document,
+    stack: Vec<NodeId>,
+    html: Option<NodeId>,
+    head: Option<NodeId>,
+    body: Option<NodeId>,
+    /// A quebra de linha logo após <pre>/<textarea> é ignorada.
+    skip_newline: bool,
+}
+
+impl TreeBuilder {
+    fn current(&self) -> NodeId {
+        self.stack.last().copied().unwrap_or(Document::ROOT)
+    }
+
+    fn tag_at(&self, idx: usize) -> &str {
+        self.doc.tag(self.stack[idx]).unwrap_or("")
+    }
+
+    fn new_element(&mut self, name: &str, attrs: Vec<(String, String)>) -> NodeId {
+        self.doc.create(NodeData::Element(ElementData {
+            tag: name.to_string(),
+            attrs,
+        }))
+    }
+
+    fn ensure_html(&mut self) {
+        if self.html.is_none() {
+            let h = self.new_element("html", Vec::new());
+            self.doc.append(Document::ROOT, h);
+            self.stack.push(h);
+            self.html = Some(h);
+        }
+    }
+
+    fn ensure_head(&mut self) {
+        self.ensure_html();
+        if self.head.is_none() {
+            let h = self.new_element("head", Vec::new());
+            self.doc.append(self.html.unwrap(), h);
+            self.stack.push(h);
+            self.head = Some(h);
+        }
+    }
+
