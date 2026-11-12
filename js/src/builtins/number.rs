@@ -95,3 +95,48 @@ pub fn install(r: &Realm) {
     r.global_value("Math", Value::Object(math));
 }
 
+fn number_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = if a.args.is_empty() {
+        0.0
+    } else {
+        match vm.to_numeric(&a.args[0])? {
+            Value::BigInt(b) => b.to_f64(),
+            v => vm.to_number(&v)?,
+        }
+    };
+    match &a.new_target {
+        None => Ok(Value::Number(n)),
+        Some(nt) => {
+            let def = vm.realm.number_proto.clone();
+            let proto = vm.proto_from_ctor(Some(nt), &def)?;
+            Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Number(n)))))
+        }
+    }
+}
+
+fn this_number(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<f64, Value> {
+    match &a.this {
+        Value::Number(n) => Ok(*n),
+        Value::Object(o) => match &o.borrow().kind {
+            Kind::Number(n) => Ok(*n),
+            _ => Err(vm.type_error(format!("Number.prototype.{what} requires that 'this' be a Number"))),
+        },
+        _ => Err(vm.type_error(format!("Number.prototype.{what} requires that 'this' be a Number"))),
+    }
+}
+
+fn num_arg(a: &CallArgs) -> Option<f64> {
+    match a.arg(0) {
+        Value::Number(n) => Some(n),
+        _ => None,
+    }
+}
+
+fn is_finite(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(num_arg(a).is_some_and(|n| n.is_finite())))
+}
+
+fn is_integer(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(num_arg(a).is_some_and(|n| n.is_finite() && n.trunc() == n)))
+}
+
