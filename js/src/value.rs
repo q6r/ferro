@@ -326,3 +326,78 @@ impl PropMap {
         true
     }
 
+    pub fn contains(&self, k: &PropKey) -> bool {
+        self.find(k).is_some()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &(PropKey, Property)> {
+        self.entries.iter()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Chaves na ordem do spec: índices inteiros crescentes, depois strings
+    /// na ordem de inserção, depois símbolos.
+    pub fn ordered_keys(&self) -> Vec<PropKey> {
+        let mut ints: Vec<(u32, PropKey)> = Vec::new();
+        let mut strs = Vec::new();
+        let mut syms = Vec::new();
+        for (k, _) in &self.entries {
+            match k {
+                PropKey::Str(s) => match s.as_index() {
+                    Some(i) => ints.push((i, k.clone())),
+                    None => strs.push(k.clone()),
+                },
+                PropKey::Sym(_) => syms.push(k.clone()),
+            }
+        }
+        ints.sort_by_key(|(i, _)| *i);
+        ints.into_iter().map(|(_, k)| k).chain(strs).chain(syms).collect()
+    }
+}
+
+pub type NativeFn = fn(&mut Vm, &mut CallArgs) -> Result<Value, Value>;
+
+/// O que uma função nativa recebe.
+pub struct CallArgs {
+    pub this: Value,
+    pub args: Vec<Value>,
+    /// Some(...) quando chamada com `new`.
+    pub new_target: Option<ObjRef>,
+    pub callee: ObjRef,
+}
+
+impl CallArgs {
+    pub fn arg(&self, i: usize) -> Value {
+        self.args.get(i).cloned().unwrap_or(Value::Undefined)
+    }
+}
+
+pub struct Native {
+    pub f: NativeFn,
+    pub ctor: bool,
+    /// Dados extras (ex.: funções resolve/reject de uma Promise).
+    pub data: Value,
+}
+
+#[derive(Clone)]
+pub struct Closure {
+    pub code: Rc<Code>,
+    pub env: Option<Env>,
+    /// Arrow: o `this` e o `new.target` de onde foi criada.
+    pub this: Option<Value>,
+    pub new_target: Option<Value>,
+    /// Objeto "casa" do método (para `super`).
+    pub home: Option<ObjRef>,
+    /// Classe: função que inicializa os campos da instância.
+    pub fields: Option<ObjRef>,
+    /// Uso do coletor de ciclos.
+    pub gc: std::cell::Cell<u64>,
+}
+
