@@ -651,3 +651,46 @@ fn to_utc_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     })
 }
 
+fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&super::intl::date_to_locale(vm, t, &a.arg(0), &a.arg(1), "any", "all")?))
+}
+
+fn to_locale_date_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&super::intl::date_to_locale(vm, t, &a.arg(0), &a.arg(1), "date", "date")?))
+}
+
+fn to_locale_time_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&super::intl::date_to_locale(vm, t, &a.arg(0), &a.arg(1), "time", "time")?))
+}
+
+fn to_primitive(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(o) = &a.this else {
+        return Err(vm.type_error("Date.prototype[Symbol.toPrimitive] called on non-object"));
+    };
+    let hint = vm.to_rust_string(&a.arg(0))?;
+    let order = match hint.as_str() {
+        "string" | "default" => ["toString", "valueOf"],
+        "number" => ["valueOf", "toString"],
+        _ => return Err(vm.type_error("Invalid hint")),
+    };
+    for name in order {
+        let f = vm.get_obj(o, &PropKey::str(name))?;
+        if f.is_callable() {
+            let r = vm.call(&f, a.this.clone(), Vec::new())?;
+            if !matches!(r, Value::Object(_)) {
+                return Ok(r);
+            }
+        }
+    }
+    Err(vm.type_error("Cannot convert object to primitive value"))
+}
+
+fn set_time(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    this_time(vm, a)?;
+    let t = vm.to_number(&a.arg(0))?;
+    Ok(set_this_time(a, t))
+}
+
