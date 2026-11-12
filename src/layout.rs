@@ -589,6 +589,7 @@ pub fn layout<'a>(
         anchors: Vec::new(),
         abs_bottom: 0.0,
         cb_heights: vec![Some(viewport_h)],
+        flex_min_h: None,
         z_stack: vec![0],
         scrollers: Vec::new(),
         in_fixed: 0,
@@ -736,6 +737,10 @@ struct Ctx<'a> {
     abs_bottom: f32,
     /// Altura definida (do conteúdo) de cada bloco em montagem, para `height: N%`.
     cb_heights: Vec<Option<f32>>,
+    /// `min-height` (do conteúdo) do contêiner flex que vai ser montado: a
+    /// linha única de um flex em linha e o tamanho principal de um flex em
+    /// coluna respeitam o mínimo antes de alinhar (consumido no começo).
+    flex_min_h: Option<f32>,
     /// z-index dos contextos de empilhamento abertos.
     z_stack: Vec<i32>,
     scrollers: Vec<Scroller>,
@@ -896,6 +901,7 @@ fn set_rect(it: &mut DisplayItem, top: Option<f32>, h: f32) {
 /// Raio dos cantos, resolvido contra a caixa.
 fn radius_of(s: &ComputedStyle, r: Rect) -> f32 {
     let m = r.w.min(r.h);
+    let m = m.max(0.0);
     s.border_radius.resolve(m).unwrap_or(0.0).clamp(0.0, m / 2.0)
 }
 
@@ -1694,7 +1700,10 @@ impl<'a> Ctx<'a> {
                     self.layout_inline(b, content_x, content_y, w, &inh)
                 }
             }
-            d if d.is_flex() => self.layout_flex(b, content_x, content_y, w, definite_h, &inh),
+            d if d.is_flex() => {
+                self.flex_min_h = if definite_h.is_none() { fixed(s.min_height) } else { None };
+                self.layout_flex(b, content_x, content_y, w, definite_h, &inh)
+            }
             d if d.is_grid() => self.layout_grid(b, content_x, content_y, w, &inh),
             Display::Table => self.layout_table(b, content_x, content_y, w, &inh),
             _ if has_inflow_blocks(b) => self.layout_block_children(b, content_x, content_y, w, &inh),
@@ -2298,6 +2307,7 @@ impl<'a> Ctx<'a> {
         definite_h: Option<f32>,
         inh: &Inherited,
     ) -> (f32, Option<f32>) {
+        let min_h = self.flex_min_h.take();
         let mut kids: Vec<&'a LayoutBox> = Vec::new();
         for c in &b.children {
             if c.is_out_of_flow() {
@@ -2311,8 +2321,10 @@ impl<'a> Ctx<'a> {
             return (0.0, None);
         }
         if b.style.flex_direction.is_column() {
+            self.flex_min_h = min_h;
             self.flex_column(b, &kids, x, y, w, definite_h, inh)
         } else {
+            self.flex_min_h = min_h;
             self.flex_row(b, &kids, x, y, w, definite_h, inh)
         }
     }
@@ -2382,6 +2394,7 @@ impl<'a> Ctx<'a> {
         definite_h: Option<f32>,
         inh: &Inherited,
     ) -> (f32, Option<f32>) {
+        let min_h = self.flex_min_h.take();
         let s = &b.style;
         let gap = s.column_gap.resolve_or_zero(w);
         let row_gap = s.row_gap.resolve_or_zero(w);
@@ -2479,6 +2492,9 @@ impl<'a> Ctx<'a> {
             let mut line_cross = placed.iter().map(|p| p.2).fold(0.0f32, f32::max);
             if single_line && let Some(h) = definite_h {
                 line_cross = h;
+            } else if single_line && let Some(m) = min_h {
+                // sem altura definida: a linha única cresce até o min-height
+                line_cross = line_cross.max(m);
             }
             // alinhamento no eixo cruzado
             for k in 0..n {
@@ -2522,6 +2538,7 @@ impl<'a> Ctx<'a> {
         definite_h: Option<f32>,
         inh: &Inherited,
     ) -> (f32, Option<f32>) {
+        let min_h = self.flex_min_h.take();
         let s = &b.style;
         let gap = s.row_gap.resolve_or_zero(w);
         let mut cur = y;
@@ -2586,7 +2603,9 @@ impl<'a> Ctx<'a> {
             placed.push((m, r, c));
         }
         let mut content_h = cur - y;
-        if let Some(h) = definite_h
+        // sem altura definida, o min-height é o tamanho principal para
+        // crescer e distribuir (justify-content)
+        if let Some(h) = definite_h.or(min_h)
             && h > content_h
         {
             let free = h - content_h;
@@ -3225,9 +3244,19 @@ impl<'a> Ctx<'a> {
                 let top = if f.valign == VAlign::Middle { baseline - f.mid - h / 2.0 } else { baseline - base };
                 let r = Rect { x, y: top, w: f.w, h: *h };
                 if let AtomicPaint::Image(image) = paint {
+                    // fundo atrás (PNG transparente) e cantos arredondados (avatares)
+                    let radius = radius_of(s, r);
+                    if s.visible && !s.background.is_transparent() {
+                        self.items.push(if radius > 0.0 {
+                            DisplayItem::RoundRect { rect: r, radius, color: s.background }
+                        } else {
+                            DisplayItem::Rect { rect: r, color: s.background }
+                        });
+                    }
                     self.items.push(DisplayItem::Image {
                         rect: r,
                         image: image.clone(),
+                        radius,
                     });
                     return;
                 }
@@ -3422,7 +3451,7 @@ impl<'a> Ctx<'a> {
         // como auto, senão um campo com width:100% mediria 100% de "infinito"
         let pct = matches!(s.width, Len::Percent(_) | Len::Calc(..));
         let w = if pct && avail >= 1.0e6 { None } else { s.width.resolve(avail) }.or_else(|| attr_px("width"));
-        let h = px(s.height).or_else(|| attr_px("height"));
+        let h = px(s.height).or_else(|| attr_px("height")).map(|v| v.max(0.0));
         let font = self.fonts.for_style(s);
         let text_w = |t: &str| self.fonts.measure(font, fs, t);
         // controles de formulário: o CSS dá o tamanho do conteúdo (ou da borda,
@@ -4048,7 +4077,7 @@ impl<'a> LineBuilder<'a> {
                 let (bt, bb) = (style.border(TOP), style.border(BOTTOM));
                 let (pt, pb) = (px(style.padding[TOP]), px(style.padding[BOTTOM]));
                 let ch = (h - bt - bb - pt - pb).max(0.0);
-                (bt + pt + (ch + m.ascent - m.descent) / 2.0).clamp(0.0, h)
+                (bt + pt + (ch + m.ascent - m.descent) / 2.0).clamp(0.0, h.max(0.0))
             }
             _ => h,
         };

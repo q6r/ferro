@@ -44,6 +44,8 @@ pub enum DisplayItem {
     Image {
         rect: Rect,
         image: Arc<ImageData>,
+        /// Raio dos cantos (border-radius; 0 = reto).
+        radius: f32,
     },
     /// Borda de largura única com cantos arredondados.
     RoundBorder {
@@ -323,7 +325,9 @@ impl Canvas {
                     }
                     self.text_clip(fonts, x * t.scale + t.dx, b, text, *font, s, *color, clip);
                 }
-                DisplayItem::Image { rect, image } => self.image_clip(image, t.rect(*rect), clip),
+                DisplayItem::Image { rect, image, radius } => {
+                    self.image_tinted(image, t.rect(*rect), clip, None, radius * t.scale)
+                }
                 DisplayItem::RoundBorder {
                     rect,
                     radius,
@@ -961,7 +965,7 @@ impl Canvas {
         while y < area.y1 as f32 && count < 4000 {
             let mut x = x0;
             while x < area.x1 as f32 && count < 4000 {
-                self.image_tinted(img, Rect { x, y, w: tile.w, h: tile.h }, area, tint);
+                self.image_tinted(img, Rect { x, y, w: tile.w, h: tile.h }, area, tint, 0.0);
                 count += 1;
                 if !repeat.0 {
                     break;
@@ -976,12 +980,13 @@ impl Canvas {
     }
 
     fn image_clip(&mut self, img: &ImageData, r: Rect, clip: Clip) {
-        self.image_tinted(img, r, clip, None);
+        self.image_tinted(img, r, clip, None, 0.0);
     }
 
     /// Imagem escalada: bilinear para ampliar, média de amostras para reduzir.
-    /// Com `tint`, usa só o alfa da imagem e pinta com essa cor.
-    fn image_tinted(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>) {
+    /// Com `tint`, usa só o alfa da imagem e pinta com essa cor. Com `radius`,
+    /// recorta os cantos arredondados (borda suave).
+    fn image_tinted(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>, radius: f32) {
         if img.width == 0 || img.height == 0 || r.w < 0.5 || r.h < 0.5 {
             return;
         }
@@ -1004,8 +1009,18 @@ impl Canvas {
         // número de amostras por eixo ao reduzir
         let nx = sx.ceil().clamp(1.0, 4.0) as usize;
         let ny = sy.ceil().clamp(1.0, 4.0) as usize;
+        let radius = radius.min(r.w / 2.0).min(r.h / 2.0);
         for y in c.y0..c.y1 {
             for x in c.x0..c.x1 {
+                // cobertura do canto arredondado (1 no miolo)
+                let cov = if radius > 0.0 {
+                    (0.5 - rr_sdf(x as f32 + 0.5, y as f32 + 0.5, r, radius)).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                if cov <= 0.0 {
+                    continue;
+                }
                 let mut acc = [0.0f32; 4];
                 for j in 0..ny {
                     for i in 0..nx {
@@ -1037,7 +1052,7 @@ impl Canvas {
                         a: (acc[3] / n) as u8,
                     },
                 };
-                self.blend(x, y, col, 255);
+                self.blend(x, y, col, (cov * 255.0) as u32);
             }
         }
     }

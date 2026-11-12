@@ -1622,6 +1622,17 @@ impl Cascade<'_> {
         };
         let v = lower.as_str();
         let len = |v: &str| parse_len(v, &u);
+        // larguras e alturas: negativo escrito é inválido; o de um calc() vira 0
+        let size = |v: &str| -> Option<Len> {
+            if v.trim_start().starts_with('-') {
+                return None;
+            }
+            parse_len(v, &u).map(|l| match l {
+                Len::Px(p) => Len::Px(p.max(0.0)),
+                Len::Percent(p) => Len::Percent(p.max(0.0)),
+                other => other,
+            })
+        };
         match d.name.as_str() {
             "display" => {
                 let first = v.split_whitespace().next().unwrap_or("");
@@ -1903,7 +1914,7 @@ impl Cascade<'_> {
                 }
             }
             "min-width" => {
-                if let Some(l) = len(v) {
+                if let Some(l) = size(v) {
                     s.min_width = l
                 }
             }
@@ -2075,25 +2086,25 @@ impl Cascade<'_> {
             }
             "clip-path" => s.clipped = v.starts_with("inset(50%") || v.starts_with("inset(100%"),
             "width" => {
-                if let Some(l) = len(v) {
+                if let Some(l) = size(v) {
                     s.width = l
                 }
             }
             "height" => {
-                if let Some(l) = len(v) {
+                if let Some(l) = size(v) {
                     s.height = l
                 }
             }
             "min-height" => {
-                if let Some(l) = len(v) {
+                if let Some(l) = size(v) {
                     s.min_height = l
                 }
             }
             "max-width" => {
-                s.max_width = if v == "none" { Len::Auto } else { len(v).unwrap_or(s.max_width) }
+                s.max_width = if v == "none" { Len::Auto } else { size(v).unwrap_or(s.max_width) }
             }
             "max-height" => {
-                s.max_height = if v == "none" { Len::Auto } else { len(v).unwrap_or(s.max_height) }
+                s.max_height = if v == "none" { Len::Auto } else { size(v).unwrap_or(s.max_height) }
             }
             "aspect-ratio" => {
                 // "16 / 9", "1.5", "auto 4 / 3"

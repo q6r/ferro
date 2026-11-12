@@ -31,7 +31,7 @@ Opções do modo PNG:
       --caixas            imprime a árvore de caixas
 
 JavaScript (motor próprio, Ferro JS):
-  ferro --js arquivo.js               executa um script
+  ferro --js arquivo.js               executa um script ('-' lê da entrada padrão)
   ferro --js                          abre o console interativo (REPL)
 
 Captura da interface (sem abrir janela):
@@ -195,7 +195,14 @@ fn run_js(file: Option<String>) -> i32 {
     ferro::jshost::setup(&mut js);
     match file {
         Some(path) => {
-            let src = match std::fs::read_to_string(&path) {
+            // "-": o script vem da entrada padrão (executores de testes)
+            let read = if path == "-" {
+                let mut s = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map(|_| s)
+            } else {
+                std::fs::read_to_string(&path)
+            };
+            let src = match read {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("erro: não consegui ler {path}: {e}");
