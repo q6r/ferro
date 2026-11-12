@@ -86,3 +86,57 @@ pub enum PropKeyExpr {
     Private(Name),
 }
 
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Ident(Name),
+    Object {
+        props: Vec<(PropKeyExpr, Pattern)>,
+        rest: Option<Box<Pattern>>,
+    },
+    Array {
+        elems: Vec<Option<Pattern>>,
+        rest: Option<Box<Pattern>>,
+    },
+    /// Valor padrão: `x = 1`.
+    Default(Box<Pattern>, Box<Expr>),
+    /// Alvo de atribuição qualquer (`obj.x`, `a[i]`) em desestruturação.
+    Target(Box<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UnOp {
+    Neg,
+    Plus,
+    Not,
+    BitNot,
+    Typeof,
+    Void,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Exp,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    UShr,
+    Eq,
+    Ne,
+    StrictEq,
+    StrictNe,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    In,
+    InstanceOf,
+}
+
