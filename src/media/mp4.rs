@@ -48,3 +48,63 @@ pub struct Sample {
     pub data: Arc<[u8]>,
 }
 
+/// Leitor incremental.
+#[derive(Default)]
+pub struct Demuxer {
+    pending: Vec<u8>,
+    pub tracks: Vec<Track>,
+    /// `moof` lido, esperando o `mdat` (bytes do moof, posição no fluxo).
+    moof: Option<Vec<u8>>,
+}
+
+fn be16(b: &[u8], i: usize) -> u16 {
+    b.get(i..i + 2).map_or(0, |s| u16::from_be_bytes([s[0], s[1]]))
+}
+
+fn be32(b: &[u8], i: usize) -> u32 {
+    b.get(i..i + 4).map_or(0, |s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+fn be64(b: &[u8], i: usize) -> u64 {
+    b.get(i..i + 8).map_or(0, |s| u64::from_be_bytes(s.try_into().unwrap()))
+}
+
+/// Caixas filhas de um trecho: (tipo, conteúdo sem o cabeçalho).
+fn boxes(b: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 8 <= b.len() {
+        let size32 = be32(b, i) as usize;
+        let ty: [u8; 4] = b[i + 4..i + 8].try_into().unwrap();
+        let (size, hdr) = match size32 {
+            0 => (b.len() - i, 8),
+            1 => (be64(b, i + 8) as usize, 16),
+            s => (s, 8),
+        };
+        if size < hdr || i + size > b.len() {
+            break;
+        }
+        out.push((ty, &b[i + hdr..i + size]));
+        i += size;
+    }
+    out
+}
+
+fn child<'a>(b: &'a [u8], ty: &[u8; 4]) -> Option<&'a [u8]> {
+    boxes(b).into_iter().find(|(t, _)| t == ty).map(|(_, c)| c)
+}
+
+/// Tamanho (variável) de um descritor MPEG-4 (esds).
+fn desc_len(b: &[u8], i: &mut usize) -> usize {
+    let mut n = 0usize;
+    for _ in 0..4 {
+        let Some(&c) = b.get(*i) else { break };
+        *i += 1;
+        n = (n << 7) | (c & 0x7f) as usize;
+        if c & 0x80 == 0 {
+            break;
+        }
+    }
+    n
+}
+
