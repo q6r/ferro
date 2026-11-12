@@ -425,3 +425,85 @@ impl Media {
         }
     }
 
+    /// Uma volta: atualiza o estado de cada player e devolve os eventos.
+    pub fn tick(&mut self) -> Vec<(NodeId, &'static str)> {
+        self.advance_pipelines();
+        let mut events = Vec::new();
+        let ids: Vec<NodeId> = self.players.keys().copied().collect();
+        for el in ids {
+            let Some(source) = self.players[&el].source else { continue };
+            let meta = self.has_metadata(source);
+            let ranges = self.source_buffered(source);
+            let (duration, ended_stream) = self
+                .sources
+                .get(&source)
+                .map_or((f64::NAN, false), |s| (s.duration, s.ended));
+            let size = self.video_size(source);
+            let p = self.players.get_mut(&el).unwrap();
+            let t = p.current_time();
+            let has = |x: f64| ranges.iter().any(|&(s, e)| x >= s - 0.05 && x < e);
+            let near_end = duration.is_finite() && t >= duration - 0.25;
+            let rs = if !meta {
+                0
+            } else if has(t) && (has(t + 0.5) || near_end || ended_stream) {
+                4
+            } else if has(t) {
+                2
+            } else {
+                1
+            };
+            let old = p.ready_state;
+            if old < 1 && rs >= 1 {
+                p.width = size.0;
+                p.height = size.1;
+                if duration.is_finite() {
+                    events.push((el, "durationchange"));
+                }
+                events.push((el, "loadedmetadata"));
+                if size.0 > 0 {
+                    events.push((el, "resize"));
+                }
+            }
+            if old < 2 && rs >= 2 {
+                events.push((el, "loadeddata"));
+            }
+            if old < 3 && rs >= 3 {
+                events.push((el, "canplay"));
+            }
+            if old < 4 && rs >= 4 {
+                events.push((el, "canplaythrough"));
+            }
+            p.ready_state = rs;
+            if p.seeking && rs >= 2 {
+                p.seeking = false;
+                p.since = Instant::now();
+                events.push((el, "timeupdate"));
+                events.push((el, "seeked"));
+            }
+            if !p.paused && !p.ended {
+                if p.waiting && rs >= 3 {
+                    p.waiting = false;
+                    p.since = Instant::now();
+                    events.push((el, "playing"));
+                } else if !p.waiting && rs < 3 && !(ended_stream && near_end) {
+                    p.freeze();
+                    p.waiting = true;
+                    events.push((el, "waiting"));
+                }
+                if ended_stream && duration.is_finite() && p.current_time() >= duration - 0.05 {
+                    p.freeze();
+                    p.base = duration;
+                    p.ended = true;
+                    p.paused = true;
+                    events.push((el, "timeupdate"));
+                    events.push((el, "pause"));
+                    events.push((el, "ended"));
+                } else if p.last_timeupdate.elapsed().as_millis() >= 250 && !p.waiting {
+                    p.last_timeupdate = Instant::now();
+                    events.push((el, "timeupdate"));
+                }
+            }
+        }
+        events
+    }
+
