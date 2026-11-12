@@ -3904,3 +3904,37 @@ impl<'a> LineBuilder<'a> {
         self.can_merge = true;
     }
 
+    fn push_box(
+        &mut self,
+        w: f32,
+        h: f32,
+        paint: AtomicPaint,
+        label: Option<(String, Color)>,
+        style: &Rc<ComputedStyle>,
+        inh: &Inherited,
+    ) {
+        let mut sp = self.pending_space;
+        let wrap = !matches!(style.white_space, WhiteSpace::Pre | WhiteSpace::NoWrap)
+            || (self.soft_break && sp > 0.0);
+        self.soft_break = false;
+        if wrap && !self.cur.is_empty() && self.x + sp + w > self.avail {
+            self.break_line(false);
+            sp = 0.0;
+        }
+        self.x += sp;
+        self.pending_space = 0.0;
+        self.after_space = false;
+        self.cur.push(Frag {
+            x: self.x,
+            w,
+            font: 0,
+            style: style.clone(),
+            inh: inh.clone(),
+            kind: FragKind::Box { h, paint, label },
+            valign: style.vertical_align,
+            mid: self.container.font_size * 0.3,
+        });
+        self.x += w;
+        self.can_merge = false;
+    }
+
