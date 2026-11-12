@@ -561,3 +561,66 @@ fn stroke_polys(polys: Vec<Poly>, st: &StrokeStyle) -> Vec<Poly> {
     out
 }
 
+/// A imagem de um canvas.
+pub struct Bitmap {
+    pub w: usize,
+    pub h: usize,
+    /// RGBA pré-multiplicado.
+    px: Vec<u8>,
+    /// Recorte atual (cobertura 0..255 por pixel); None = sem recorte.
+    clip: Option<Vec<u8>>,
+    clip_stack: Vec<Option<Vec<u8>>>,
+}
+
+impl Bitmap {
+    pub fn new(w: usize, h: usize) -> Bitmap {
+        let (w, h) = (w.min(16384), h.min(16384));
+        Bitmap { w, h, px: vec![0; w * h * 4], clip: None, clip_stack: Vec::new() }
+    }
+
+    /// Muda o tamanho (o conteúdo é apagado, como mandam os navegadores).
+    pub fn resize(&mut self, w: usize, h: usize) {
+        *self = Bitmap::new(w, h);
+    }
+
+    pub fn save(&mut self) {
+        self.clip_stack.push(self.clip.clone());
+    }
+
+    pub fn restore(&mut self) {
+        if let Some(c) = self.clip_stack.pop() {
+            self.clip = c;
+        }
+    }
+
+    /// Volta ao estado inicial do contexto (sem recorte).
+    pub fn reset_state(&mut self) {
+        self.clip = None;
+        self.clip_stack.clear();
+    }
+
+    fn bounds(&self, polys: &[Poly], pad: f32) -> Option<(i32, i32, usize, usize)> {
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for (pts, _) in polys {
+            for &(x, y) in pts {
+                if x.is_finite() && y.is_finite() {
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        if x0 > x1 {
+            return None;
+        }
+        let bx = ((x0 - pad).floor() as i32).max(0);
+        let by = ((y0 - pad).floor() as i32).max(0);
+        let ex = ((x1 + pad).ceil() as i32).min(self.w as i32);
+        let ey = ((y1 + pad).ceil() as i32).min(self.h as i32);
+        if ex <= bx || ey <= by {
+            return None;
+        }
+        Some((bx, by, (ex - bx) as usize, (ey - by) as usize))
+    }
+
