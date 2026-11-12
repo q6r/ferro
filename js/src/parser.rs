@@ -335,3 +335,73 @@ impl Parser {
 
     // ------------------------------------------------------------ tokens
 
+    fn advance(&mut self) -> PResult<Token> {
+        let next = self.lx.next_token()?;
+        let old = std::mem::replace(&mut self.tok, next);
+        self.prev_end = old.end;
+        self.prev_line = old.line;
+        Ok(old)
+    }
+
+    fn line(&self) -> u32 {
+        self.tok.line
+    }
+
+    fn err<T>(&self, msg: impl Into<String>) -> PResult<T> {
+        Err(ParseError {
+            msg: msg.into(),
+            line: self.tok.line,
+            eof: self.tok.tok == Tok::Eof,
+        })
+    }
+
+    fn unexpected<T>(&self) -> PResult<T> {
+        let what = match &self.tok.tok {
+            Tok::Eof => "fim do código".to_string(),
+            Tok::Ident(n) => format!("'{n}'"),
+            Tok::Punct(p) => format!("'{p}'"),
+            Tok::Num(n) => format!("número {n}"),
+            Tok::Str(_) => "string".to_string(),
+            Tok::Template { .. } => "template".to_string(),
+            Tok::Regex { .. } => "expressão regular".to_string(),
+            Tok::Private(n) => format!("'#{n}'"),
+            Tok::BigInt(_) => "BigInt".to_string(),
+        };
+        self.err(format!("token inesperado: {what}"))
+    }
+
+    fn is(&self, p: &str) -> bool {
+        matches!(&self.tok.tok, Tok::Punct(x) if *x == p)
+    }
+
+    fn is_kw(&self, k: &str) -> bool {
+        matches!(&self.tok.tok, Tok::Ident(n) if &**n == k) && !self.tok.escaped
+    }
+
+    fn eat(&mut self, p: &str) -> PResult<bool> {
+        if self.is(p) {
+            self.advance()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn eat_kw(&mut self, k: &str) -> PResult<bool> {
+        if self.is_kw(k) {
+            self.advance()?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn expect(&mut self, p: &str) -> PResult<()> {
+        if self.is(p) {
+            self.advance()?;
+            Ok(())
+        } else {
+            self.err(format!("esperava '{p}'"))
+        }
+    }
+
