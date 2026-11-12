@@ -1202,3 +1202,36 @@ impl Vm {
         )))
     }
 
+    /// Próximo valor do iterador (None quando acaba).
+    pub fn iter_step(&mut self, rec: &ObjRef) -> Result<Option<Value>, Value> {
+        let (iter, next) = match &rec.borrow().kind {
+            Kind::IterRecord { iter, next, done, .. } => {
+                if *done {
+                    return Ok(None);
+                }
+                (iter.clone(), next.clone())
+            }
+            _ => return Ok(None),
+        };
+        if let (Value::Object(it), Value::Object(nx)) = (&iter, &next)
+            && nx.ptr_eq(&self.realm.array_iter_next)
+            && let Some(r) = self.array_iter_fast(it)
+        {
+            if r.is_none() {
+                set_done(rec);
+            }
+            return Ok(r);
+        }
+        let res = self.call(&next, iter, Vec::new())?;
+        if !matches!(res, Value::Object(_)) {
+            let d = self.describe(&res);
+            return Err(self.type_error(format!("Iterator result {d} is not an object")));
+        }
+        let done = self.get_str(&res, "done")?;
+        if truthy(&done) {
+            set_done(rec);
+            return Ok(None);
+        }
+        Ok(Some(self.get_str(&res, "value")?))
+    }
+
