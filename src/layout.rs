@@ -1342,6 +1342,13 @@ impl<'a> Ctx<'a> {
             w: (seg.x1 - seg.x0).max(0.0),
             h: m.ascent + m.descent + pt + pb + bt + bb,
         };
+        self.paint_decor(s, r, [bt, br, bb, bl]);
+    }
+
+    /// Fundo (cor e degradê) e bordas de `r`; `b` são as larguras das bordas
+    /// (topo, direita, baixo, esquerda).
+    fn paint_decor(&mut self, s: &ComputedStyle, r: Rect, b: [f32; 4]) {
+        let [bt, br, bb, bl] = b;
         let radius = radius_of(s, r);
         if !s.background.is_transparent() && s.mask_image.is_none() {
             self.items.push(if radius > 0.0 {
@@ -3216,8 +3223,8 @@ impl<'a> Ctx<'a> {
                 }
             }
             FragKind::InlineBlock { .. } => {}
-            FragKind::Box { h, paint, label } => {
-                let top = if f.valign == VAlign::Middle { baseline - f.mid - h / 2.0 } else { baseline - h };
+            FragKind::Box { h, base, paint, label } => {
+                let top = if f.valign == VAlign::Middle { baseline - f.mid - h / 2.0 } else { baseline - base };
                 let r = Rect { x, y: top, w: f.w, h: *h };
                 if let AtomicPaint::Image(image) = paint {
                     self.items.push(DisplayItem::Image {
@@ -3235,15 +3242,18 @@ impl<'a> Ctx<'a> {
                     return;
                 }
                 let focused = f.inh.elem.is_some() && FOCUSED.with(|c| c.get()) == f.inh.elem;
+                if matches!(paint, AtomicPaint::Control | AtomicPaint::TextArea | AtomicPaint::Button) {
+                    if s.visible {
+                        self.paint_control(s, r, paint, label, focused);
+                    }
+                    return;
+                }
                 let (fill, stroke) = match paint {
-                    AtomicPaint::Invisible | AtomicPaint::Image(_) | AtomicPaint::Video(_) | AtomicPaint::Canvas(_) => return,
-                    AtomicPaint::Control if focused => (Color::WHITE, Color::rgb(0x1a, 0x73, 0xe8)),
                     AtomicPaint::Placeholder => (Color::rgb(0xe8, 0xe8, 0xe8), Color::rgb(0xc8, 0xc8, 0xc8)),
-                    AtomicPaint::Control | AtomicPaint::Check(_) => (Color::WHITE, Color::rgb(0x76, 0x76, 0x76)),
-                    AtomicPaint::Button => (Color::rgb(0xef, 0xef, 0xef), Color::rgb(0x76, 0x76, 0x76)),
+                    AtomicPaint::Check(_) => (Color::WHITE, Color::rgb(0x76, 0x76, 0x76)),
+                    _ => return,
                 };
-                // campo focado: borda de 2 px (anel de foco)
-                let bw = if focused && matches!(paint, AtomicPaint::Control) { 2.0 } else { 1.0 };
+                let bw = 1.0;
                 self.items.push(DisplayItem::Rect { rect: r, color: stroke });
                 self.items.push(DisplayItem::Rect {
                     rect: Rect { x: r.x + bw, y: r.y + bw, w: (r.w - 2.0 * bw).max(0.0), h: (r.h - 2.0 * bw).max(0.0) },
@@ -3255,37 +3265,83 @@ impl<'a> Ctx<'a> {
                         color: Color::rgb(0x00, 0x75, 0xff),
                     });
                 }
-                if let Some((text, color)) = label {
-                    let font = self.fonts.for_style(s);
-                    let m = self.fonts.line_metrics(font, s.font_size);
-                    let text_x = if matches!(paint, AtomicPaint::Button) {
-                        r.x + (r.w - self.fonts.measure(font, s.font_size, text)) / 2.0
-                    } else {
-                        r.x + 4.0
-                    };
-                    self.items.push(DisplayItem::PushClip(r));
-                    self.items.push(DisplayItem::Text {
-                        x: text_x,
-                        baseline: r.y + (r.h + m.ascent - m.descent) / 2.0,
-                        text: text.clone(),
-                        font,
-                        size: s.font_size,
-                        color: *color,
-                    });
-                    self.items.push(DisplayItem::PopClip);
-                }
-                // cursor de texto no fim do que foi digitado
-                if focused && matches!(paint, AtomicPaint::Control) {
-                    let font = self.fonts.for_style(s);
-                    let typed = label.as_ref().filter(|(_, c)| *c == s.color).map(|(t, _)| t.as_str()).unwrap_or("");
-                    let cx = (r.x + 4.0 + self.fonts.measure(font, s.font_size, typed)).min(r.x + r.w - 3.0);
-                    let ch = (s.font_size * 1.2).min(r.h - 4.0);
-                    self.items.push(DisplayItem::Rect {
-                        rect: Rect { x: cx, y: r.y + (r.h - ch) / 2.0, w: 1.5, h: ch },
-                        color: s.color,
-                    });
+            }
+        }
+    }
+
+    /// `<input>`, `<select>`, `<textarea>`, botões de `<input>`: fundo, borda e
+    /// cantos do CSS (a aparência padrão vem do ua.css); o texto fica na área de
+    /// conteúdo, dentro do padding.
+    fn paint_control(&mut self, s: &ComputedStyle, r: Rect, paint: &AtomicPaint, label: &Option<(String, Color)>, focused: bool) {
+        let b = [s.border(TOP), s.border(RIGHT), s.border(BOTTOM), s.border(LEFT)];
+        self.paint_decor(s, r, b);
+        // anel de foco só em campos com borda (os sem borda costumam ter o
+        // contorno desenhado pelo próprio site, num elemento em volta)
+        if focused && matches!(paint, AtomicPaint::Control | AtomicPaint::TextArea) && b.iter().sum::<f32>() > 0.0 {
+            let blue = Color::rgb(0x1a, 0x73, 0xe8);
+            let radius = radius_of(s, r);
+            if radius > 0.0 {
+                self.items.push(DisplayItem::RoundBorder { rect: r, radius, width: 2.0, color: blue });
+            } else {
+                for rect in [
+                    Rect { x: r.x, y: r.y, w: r.w, h: 2.0 },
+                    Rect { x: r.x, y: r.y + r.h - 2.0, w: r.w, h: 2.0 },
+                    Rect { x: r.x, y: r.y, w: 2.0, h: r.h },
+                    Rect { x: r.x + r.w - 2.0, y: r.y, w: 2.0, h: r.h },
+                ] {
+                    self.items.push(DisplayItem::Rect { rect, color: blue });
                 }
             }
+        }
+        let (pt, pr, pb, pl) = (px(s.padding[TOP]), px(s.padding[RIGHT]), px(s.padding[BOTTOM]), px(s.padding[LEFT]));
+        let inner = Rect {
+            x: r.x + b[3],
+            y: r.y + b[0],
+            w: (r.w - b[1] - b[3]).max(0.0),
+            h: (r.h - b[0] - b[2]).max(0.0),
+        };
+        let content = Rect {
+            x: inner.x + pl,
+            y: inner.y + pt,
+            w: (inner.w - pl - pr).max(0.0),
+            h: (inner.h - pt - pb).max(0.0),
+        };
+        let font = self.fonts.for_style(s);
+        let m = self.fonts.line_metrics(font, s.font_size);
+        // textarea: o texto começa no topo; nos outros, no meio
+        let tall = matches!(paint, AtomicPaint::TextArea);
+        let baseline = if tall {
+            content.y + m.ascent
+        } else {
+            content.y + (content.h + m.ascent - m.descent) / 2.0
+        };
+        if let Some((text, color)) = label {
+            let text_x = if matches!(paint, AtomicPaint::Button) {
+                content.x + (content.w - self.fonts.measure(font, s.font_size, text)) / 2.0
+            } else {
+                content.x
+            };
+            self.items.push(DisplayItem::PushClip(inner));
+            self.items.push(DisplayItem::Text {
+                x: text_x,
+                baseline,
+                text: text.clone(),
+                font,
+                size: s.font_size,
+                color: *color,
+            });
+            self.items.push(DisplayItem::PopClip);
+        }
+        // cursor de texto no fim do que foi digitado
+        if focused && matches!(paint, AtomicPaint::Control | AtomicPaint::TextArea) {
+            let typed = label.as_ref().filter(|(_, c)| *c == s.color).map(|(t, _)| t.as_str()).unwrap_or("");
+            let cx = (content.x + self.fonts.measure(font, s.font_size, typed)).min(inner.x + inner.w - 2.0);
+            let ch = (s.font_size * 1.2).min(inner.h - 2.0).max(1.0);
+            let cy = if tall { baseline - m.ascent } else { inner.y + (inner.h - ch) / 2.0 };
+            self.items.push(DisplayItem::Rect {
+                rect: Rect { x: cx, y: cy, w: 1.5, h: ch },
+                color: s.color,
+            });
         }
     }
 
@@ -3368,7 +3424,29 @@ impl<'a> Ctx<'a> {
         let h = px(s.height).or_else(|| attr_px("height"));
         let font = self.fonts.for_style(s);
         let text_w = |t: &str| self.fonts.measure(font, fs, t);
-        let control_h = (fs * 1.25 + 6.0).round();
+        // controles de formulário: o CSS dá o tamanho do conteúdo (ou da borda,
+        // com box-sizing: border-box); padding e borda vêm do estilo
+        let extra_w = px(s.padding[LEFT]).unwrap_or(0.0) + px(s.padding[RIGHT]).unwrap_or(0.0) + s.border(LEFT) + s.border(RIGHT);
+        let extra_h = px(s.padding[TOP]).unwrap_or(0.0) + px(s.padding[BOTTOM]).unwrap_or(0.0) + s.border(TOP) + s.border(BOTTOM);
+        let line = s.line_height_px((fs * 1.2).round());
+        let max_w = s.max_width.resolve(avail);
+        let outer_w = |given: Option<f32>, content: f32| {
+            let v = match given {
+                Some(v) if s.border_box => v.max(extra_w),
+                Some(v) => v + extra_w,
+                None => content + extra_w,
+            };
+            match max_w {
+                Some(m) if s.border_box => v.min(m.max(extra_w)),
+                Some(m) => v.min(m + extra_w),
+                None => v,
+            }
+        };
+        let outer_h = |given: Option<f32>, content: f32| match given {
+            Some(v) if s.border_box => v.max(extra_h),
+            Some(v) => v + extra_h,
+            None => content + extra_h,
+        };
         let mut own = inh.clone();
         if !b.generated {
             own.elem = Some(n);
@@ -3444,8 +3522,8 @@ impl<'a> Ctx<'a> {
                             }
                             .to_string()
                         });
-                        let bw = w.unwrap_or(text_w(&label) + 16.0);
-                        push(out, bw, h.unwrap_or(control_h), AtomicPaint::Button, Some((label, s.color)));
+                        let (bw, bh) = (outer_w(w, text_w(&label)), outer_h(h, line));
+                        push(out, bw, bh, AtomicPaint::Button, Some((label, s.color)));
                     }
                     "image" => push(out, w.unwrap_or(20.0), h.unwrap_or(20.0), AtomicPaint::Placeholder, None),
                     _ => {
@@ -3455,8 +3533,8 @@ impl<'a> Ctx<'a> {
                             None => el.attr("placeholder").map(|p| (p.to_string(), gray)),
                         };
                         let size: f32 = el.attr("size").and_then(|v| v.parse().ok()).unwrap_or(20.0);
-                        let bw = w.unwrap_or(size * fs * 0.55 + 8.0);
-                        push(out, bw, h.unwrap_or(control_h), AtomicPaint::Control, label);
+                        let (bw, bh) = (outer_w(w, size * fs * 0.55), outer_h(h, line));
+                        push(out, bw, bh, AtomicPaint::Control, label);
                     }
                 }
             }
@@ -3471,8 +3549,9 @@ impl<'a> Ctx<'a> {
                 let label = chosen
                     .map(|o| self.doc.text_content(o).split_whitespace().collect::<Vec<_>>().join(" "))
                     .unwrap_or_default();
-                let bw = w.unwrap_or(text_w(&label) + 28.0);
-                push(out, bw, h.unwrap_or(control_h), AtomicPaint::Control, Some((format!("{label}  ▾"), s.color)));
+                let shown = format!("{label}  ▾");
+                let (bw, bh) = (outer_w(w, text_w(&shown) + 4.0), outer_h(h, line));
+                push(out, bw, bh, AtomicPaint::Control, Some((shown, s.color)));
             }
             "textarea" => {
                 let cols: f32 = el.attr("cols").and_then(|v| v.parse().ok()).unwrap_or(20.0);
@@ -3483,13 +3562,8 @@ impl<'a> Ctx<'a> {
                 } else {
                     Some((text.trim().to_string(), s.color))
                 };
-                push(
-                    out,
-                    w.unwrap_or(cols * fs * 0.55 + 8.0),
-                    h.unwrap_or(rows * fs * 1.2 + 8.0),
-                    AtomicPaint::Control,
-                    label,
-                );
+                let (bw, bh) = (outer_w(w, cols * fs * 0.55), outer_h(h, rows * line));
+                push(out, bw, bh, AtomicPaint::TextArea, label);
             }
             "audio" => {
                 if el.attr("controls").is_some() {
@@ -3565,6 +3639,8 @@ enum AtomicPaint {
     Invisible,
     Placeholder,
     Control,
+    /// `<textarea>`: como `Control`, mas o texto começa no topo.
+    TextArea,
     Button,
     Check(bool),
 }
@@ -3573,6 +3649,9 @@ enum FragKind {
     Text(String),
     Box {
         h: f32,
+        /// Do topo da caixa até a linha de base (texto dos campos; a borda de
+        /// baixo nas imagens).
+        base: f32,
         paint: AtomicPaint,
         label: Option<(String, Color)>,
     },
@@ -3945,13 +4024,25 @@ impl<'a> LineBuilder<'a> {
         self.x += sp;
         self.pending_space = 0.0;
         self.after_space = false;
+        // campos e botões alinham pela linha de base do texto de dentro (como
+        // no Chrome); o resto, pela borda de baixo
+        let base = match paint {
+            AtomicPaint::Control | AtomicPaint::Button => {
+                let m = self.fonts.line_metrics(self.fonts.for_style(style), style.font_size);
+                let (bt, bb) = (style.border(TOP), style.border(BOTTOM));
+                let (pt, pb) = (px(style.padding[TOP]), px(style.padding[BOTTOM]));
+                let ch = (h - bt - bb - pt - pb).max(0.0);
+                (bt + pt + (ch + m.ascent - m.descent) / 2.0).clamp(0.0, h)
+            }
+            _ => h,
+        };
         self.cur.push(Frag {
             x: self.x,
             w,
             font: 0,
             style: style.clone(),
             inh: inh.clone(),
-            kind: FragKind::Box { h, paint, label },
+            kind: FragKind::Box { h, base, paint, label },
             valign: style.vertical_align,
             mid: self.container.font_size * 0.3,
         });
@@ -3985,7 +4076,10 @@ impl<'a> LineBuilder<'a> {
                     above = above.max(h / 2.0 + f.mid);
                     below = below.max(h / 2.0 - f.mid);
                 }
-                FragKind::Box { h, .. } => above = above.max(*h),
+                FragKind::Box { h, base, .. } => {
+                    above = above.max(*base);
+                    below = below.max(h - base);
+                }
                 FragKind::InlineBlock { h, base, .. } => {
                     above = above.max(*base);
                     below = below.max(h - base);
