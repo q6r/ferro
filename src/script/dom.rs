@@ -1088,3 +1088,45 @@ fn has_attributes(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Bool(read(vm, |h| h.page.doc.element(n).is_some_and(|e| !e.attrs.is_empty()))))
 }
 
+fn toggle_attribute(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let name = attr_name(vm, a, 0)?;
+    let has = attr_of(vm, n, &name).is_some();
+    let want = if a.args.len() > 1 { ferro_js::vm::truthy(&a.arg(1)) } else { !has };
+    if want && !has {
+        set_attr_checked(vm, n, &name, "")?;
+    } else if !want && has {
+        let old = attr_of(vm, n, &name);
+        write(vm, |h| h.page.doc.remove_attr(n, &name));
+        attr_changed(vm, n, &name, old);
+    }
+    Ok(Value::Bool(want))
+}
+
+fn get_attribute_names(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let names: Vec<Value> = read(vm, |h| {
+        h.page.doc.element(n).map(|e| e.attrs.iter().map(|(k, _)| s(k)).collect()).unwrap_or_default()
+    });
+    Ok(vm.array_value(names))
+}
+
+fn attributes(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let attrs = read(vm, |h| h.page.doc.element(n).map(|e| e.attrs.clone()).unwrap_or_default());
+    let mut items = Vec::new();
+    for (k, v) in attrs {
+        let o = vm.new_object();
+        for (key, val) in [("name", &k), ("localName", &k), ("nodeName", &k), ("value", &v), ("nodeValue", &v)] {
+            vm.define_data(&o, ferro_js::value::PropKey::str(key), s(val));
+        }
+        vm.define_data(&o, ferro_js::value::PropKey::str("specified"), Value::Bool(true));
+        items.push(Value::Object(o));
+    }
+    let arr = vm.new_array(items);
+    if let Some(p) = read(vm, |h| h.protos.get("NamedNodeMap").cloned()) {
+        arr.borrow_mut().proto = Some(p);
+    }
+    Ok(Value::Object(arr))
+}
+
