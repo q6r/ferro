@@ -1509,3 +1509,65 @@ impl App {
 
     // ------------------------------------------------------------ teclado
 
+    fn on_key(&mut self, ev: &KeyEvent, el: &ActiveEventLoop) {
+        let ctrl = self.mods.control_key();
+        let shift = self.mods.shift_key();
+        let alt = self.mods.alt_key();
+
+        if ctrl && !alt {
+            if let Key::Character(c) = &ev.logical_key {
+                match c.to_lowercase().as_str() {
+                    "t" => return self.new_tab(None, true),
+                    "w" => return self.close_tab(self.active, el),
+                    "l" => return self.open_palette(true),
+                    "k" => return self.open_palette(false),
+                    "b" => return self.toggle_panel(),
+                    "r" => return self.reload(),
+                    "f" => return self.open_find(),
+                    "=" | "+" => return self.set_zoom(self.zoom * 1.1),
+                    "-" => return self.set_zoom(self.zoom / 1.1),
+                    "0" => return self.set_zoom(1.0),
+                    d if d.len() == 1 && d.as_bytes()[0].is_ascii_digit() && d != "0" => {
+                        let n = (d.as_bytes()[0] - b'0') as usize;
+                        let i = if n == 9 { self.tabs.len() - 1 } else { n - 1 };
+                        return self.activate(i);
+                    }
+                    _ => {}
+                }
+            }
+            if ev.logical_key == Key::Named(NamedKey::Tab) {
+                let n = self.tabs.len();
+                let i = if shift { (self.active + n - 1) % n } else { (self.active + 1) % n };
+                return self.activate(i);
+            }
+        }
+        match &ev.logical_key {
+            Key::Named(NamedKey::F11) => return self.toggle_fullscreen(FullscreenBy::User),
+            Key::Named(NamedKey::Escape) if self.fullscreen.is_some() && !self.palette_open => {
+                return self.set_fullscreen(None);
+            }
+            Key::Named(NamedKey::F3) => return self.find_step(shift),
+            Key::Named(NamedKey::F5) => return self.reload(),
+            Key::Named(NamedKey::F6) => return self.open_palette(true),
+            Key::Named(NamedKey::ArrowLeft) if alt => return self.go(-1),
+            Key::Named(NamedKey::ArrowRight) if alt => return self.go(1),
+            Key::Character(c) if alt && c.eq_ignore_ascii_case("d") => return self.open_palette(true),
+            _ => {}
+        }
+
+        if self.menu.is_some() {
+            if ev.logical_key == Key::Named(NamedKey::Escape) {
+                self.menu = None;
+                self.request_redraw();
+            }
+        } else if self.select.is_some() {
+            self.select_key(ev);
+        } else if self.palette_open {
+            self.palette_key(ev, ctrl, shift, alt);
+        } else if self.tools.find_open {
+            self.find_key(ev, ctrl, shift, alt);
+        } else {
+            self.page_key(ev, ctrl, shift, alt);
+        }
+    }
+
