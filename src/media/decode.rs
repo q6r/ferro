@@ -41,3 +41,49 @@ impl Frame {
     }
 }
 
+/// YUV 4:2:0 (faixa limitada, BT.709) → RGBA.
+#[allow(clippy::too_many_arguments)]
+pub fn yuv420_to_rgba(w: usize, h: usize, y: &[u8], ys: usize, u: &[u8], v: &[u8], cs: usize) -> Vec<u8> {
+    let mut out = vec![0u8; w * h * 4];
+    for row in 0..h {
+        let yr = &y[row * ys..row * ys + w];
+        let ur = &u[(row / 2) * cs..];
+        let vr = &v[(row / 2) * cs..];
+        let o = &mut out[row * w * 4..(row + 1) * w * 4];
+        for col in 0..w {
+            let yy = (yr[col] as i32 - 16) * 298;
+            let cb = ur[col / 2] as i32 - 128;
+            let cr = vr[col / 2] as i32 - 128;
+            // coeficientes BT.709 em ponto fixo (×256)
+            let r = (yy + 459 * cr + 128) >> 8;
+            let g = (yy - 55 * cb - 136 * cr + 128) >> 8;
+            let b = (yy + 541 * cb + 128) >> 8;
+            let px = &mut o[col * 4..col * 4 + 4];
+            px[0] = r.clamp(0, 255) as u8;
+            px[1] = g.clamp(0, 255) as u8;
+            px[2] = b.clamp(0, 255) as u8;
+            px[3] = 255;
+        }
+    }
+    out
+}
+
+// ------------------------------------------------------------------ AV1
+
+mod av1 {
+    use super::*;
+    use rav1d::include::dav1d::data::Dav1dData;
+    use rav1d::include::dav1d::dav1d::{Dav1dContext, Dav1dSettings};
+    use rav1d::include::dav1d::headers::DAV1D_PIXEL_LAYOUT_I420;
+    use rav1d::include::dav1d::picture::Dav1dPicture;
+    use rav1d::src::lib as d;
+
+    pub struct Av1 {
+        ctx: Option<Dav1dContext>,
+    }
+
+    // o contexto só é usado pela thread que decodifica
+    unsafe impl Send for Av1 {}
+
+    const EAGAIN: i32 = -11;
+
