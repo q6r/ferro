@@ -1396,3 +1396,69 @@ impl Compiler {
         }
     }
 
+    /// Inicializa a declaração `name` mais próxima na função atual.
+    fn init(&mut self, name: &str) {
+        let mut hops = 0;
+        let mut target: Option<(Loc, Decl)> = None;
+        {
+            let f = self.f();
+            for sc in f.scopes.iter_mut().rev() {
+                if let Some(i) = sc.last(name) {
+                    let v = &mut sc.vars[i];
+                    if v.decl != Decl::Hidden || name != "this" {
+                        v.ready = true;
+                    }
+                    target = Some((v.loc, v.decl));
+                    break;
+                }
+                if sc.has_env {
+                    hops += 1;
+                }
+            }
+        }
+        let n = self.konst(name);
+        match target {
+            Some((Loc::Reg(r), _)) => {
+                self.emit(Op::SetReg(r));
+            }
+            Some((Loc::Env(s), _)) => {
+                self.emit(Op::SetEnv(hops, s));
+            }
+            Some((Loc::Global, Decl::Let | Decl::Const | Decl::Class)) => {
+                self.emit(Op::InitLex(n));
+            }
+            _ => {
+                self.emit(Op::SetGlobal(n));
+            }
+        }
+    }
+
+    /// Guarda na variável `var` da função (Anexo B: função declarada em bloco).
+    fn store_function_var(&mut self, name: &str) {
+        let f = self.fr();
+        let Some(fs) = f.scopes.first() else { return };
+        let Some(v) = fs
+            .first_where(name, |v| matches!(v.decl, Decl::Var | Decl::Func | Decl::Param))
+            .map(|i| &fs.vars[i])
+        else {
+            self.emit(Op::Pop);
+            return;
+        };
+        let loc = v.loc;
+        let hops = f.scopes[1..].iter().filter(|s| s.has_env).count() as u32;
+        match loc {
+            Loc::Reg(r) => {
+                self.emit(Op::SetReg(r));
+            }
+            Loc::Env(s) => {
+                self.emit(Op::SetEnv(hops, s));
+            }
+            Loc::Global => {
+                let n = self.konst(name);
+                self.emit(Op::SetGlobal(n));
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- script
+
