@@ -1927,3 +1927,47 @@ impl Compiler {
         Ok(())
     }
 
+    fn var_decls(&mut self, kind: VarKind, decls: &[VarDecl], line: u32) -> CResult<()> {
+        for d in decls {
+            match (&d.init, kind) {
+                (Some(e), _) => {
+                    self.expr_named(e, pattern_name(&d.target))?;
+                    self.pattern(&d.target, if kind == VarKind::Var { Bind::Store } else { Bind::Init })?;
+                }
+                (None, VarKind::Var) => {}
+                (None, VarKind::Let) => {
+                    self.emit(Op::Undef);
+                    self.pattern(&d.target, Bind::Init)?;
+                }
+                (None, VarKind::Const) => return syntax("const precisa de valor inicial", line),
+            }
+        }
+        Ok(())
+    }
+
+    fn push_loop(&mut self, labels: Vec<Name>, kind: LoopKind) {
+        let env_depth = self.fr().env_depth;
+        self.f().ctl.push(Ctl::Loop {
+            labels,
+            breaks: Vec::new(),
+            continues: Vec::new(),
+            env_depth,
+            kind,
+        });
+    }
+
+    /// Fecha o laço: `continue` vai para `cont`, `break` (e `exit`) para cá.
+    fn pop_loop(&mut self, cont: usize, exit: Option<usize>) {
+        if let Some(Ctl::Loop { breaks, continues, .. }) = self.f().ctl.pop() {
+            for c in continues {
+                self.patch_to(c, cont);
+            }
+            for b in breaks {
+                self.patch(b);
+            }
+        }
+        if let Some(e) = exit {
+            self.patch(e);
+        }
+    }
+
