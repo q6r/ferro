@@ -445,3 +445,76 @@ impl MapKey {
     }
 }
 
+/// Dados de Map e Set: entradas em ordem de inserção (com buracos ao apagar,
+/// para os iteradores em andamento continuarem certos).
+/// Chave fraca: objeto (sem segurar) ou símbolo (seguro; símbolos não somem).
+#[derive(Clone)]
+pub enum WeakKey {
+    Obj(std::rc::Weak<RefCell<Object>>),
+    Sym(Sym),
+}
+
+impl WeakKey {
+    pub fn of(v: &Value) -> Option<(usize, WeakKey)> {
+        match v {
+            Value::Object(o) => Some((o.id(), WeakKey::Obj(Rc::downgrade(&o.0)))),
+            Value::Symbol(s) => Some((Rc::as_ptr(&s.0) as *const u8 as usize, WeakKey::Sym(s.clone()))),
+            _ => None,
+        }
+    }
+
+    pub fn alive(&self) -> bool {
+        match self {
+            WeakKey::Obj(w) => w.strong_count() > 0,
+            WeakKey::Sym(_) => true,
+        }
+    }
+
+    pub fn get(&self) -> Option<Value> {
+        match self {
+            WeakKey::Obj(w) => w.upgrade().map(|o| Value::Object(ObjRef(o))),
+            WeakKey::Sym(s) => Some(Value::Symbol(s.clone())),
+        }
+    }
+}
+
+/// Entradas de WeakMap/WeakSet, pelo endereço da chave. A chave morta não
+/// reaparece (o endereço só é reaproveitado depois que a entrada sai).
+#[derive(Default)]
+pub struct WeakColl {
+    pub map: crate::fxhash::FxHashMap<usize, (WeakKey, Value)>,
+    swept: usize,
+}
+
+impl WeakColl {
+    pub fn get(&self, k: &Value) -> Option<Value> {
+        let (id, _) = WeakKey::of(k)?;
+        let (key, v) = self.map.get(&id)?;
+        key.alive().then(|| v.clone())
+    }
+
+    pub fn has(&self, k: &Value) -> bool {
+        self.get(k).is_some()
+    }
+
+    pub fn set(&mut self, k: &Value, v: Value) -> bool {
+        let Some((id, key)) = WeakKey::of(k) else { return false };
+        if self.map.len() >= (2 * self.swept).max(64) {
+            self.sweep();
+        }
+        self.map.insert(id, (key, v));
+        true
+    }
+
+    pub fn delete(&mut self, k: &Value) -> bool {
+        let Some((id, _)) = WeakKey::of(k) else { return false };
+        self.map.remove(&id).is_some_and(|(key, _)| key.alive())
+    }
+
+    /// Tira as entradas cujas chaves já morreram.
+    pub fn sweep(&mut self) {
+        self.map.retain(|_, (k, _)| k.alive());
+        self.swept = self.map.len();
+    }
+}
+
