@@ -797,7 +797,7 @@ impl App {
     fn open_link(&mut self, href: &str, background: bool) {
         let Some(frame) = &self.tab().frame else { return };
         let Ok(url) = frame.base.join(href.trim()) else { return };
-        if !matches!(url.scheme(), "http" | "https" | "file" | "data") {
+        if !crate::net::allowed(self.tab().url().scheme(), &url) {
             return;
         }
         if background {
@@ -928,7 +928,7 @@ impl App {
                     }
                 }
                 Update::Navigate { nav, url, post } if nav == tab.nav => {
-                    if matches!(url.scheme(), "http" | "https" | "file" | "data") {
+                    if crate::net::allowed(tab.url().scheme(), &url) {
                         tab.pending_post = post;
                         go_to = Some(url);
                     }

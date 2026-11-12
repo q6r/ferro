@@ -280,7 +280,7 @@ fn page_from_response(net: &Net, res: net::Response) -> Loaded {
         .find_first("title")
         .map(|t| doc.text_content(t).split_whitespace().collect::<Vec<_>>().join(" "))
         .unwrap_or_default();
-    let (css, sheet_texts) = fetch_stylesheets(&doc, &base, net);
+    let (css, sheet_texts) = fetch_stylesheets(&doc, &base, &net.for_document(&res.url));
     Loaded {
         url: res.url,
         base,

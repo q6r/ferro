@@ -49,6 +49,20 @@ impl Request {
 #[derive(Clone)]
 pub struct Net {
     agent: ureq::Agent,
+    /// Esquema do documento que faz os pedidos (None = o próprio navegador,
+    /// que pode tudo). Ver [`Net::for_document`].
+    page_scheme: Option<String>,
+}
+
+/// Uma página em `from_scheme` pode abrir ou buscar `to`? Página da web não lê
+/// nem abre arquivos locais (`file:`) nem as páginas internas (`ferro:`, com o
+/// histórico e os favoritos); só uma página do mesmo esquema pode.
+pub fn allowed(from_scheme: &str, to: &Url) -> bool {
+    match to.scheme() {
+        "http" | "https" | "data" => true,
+        s @ ("file" | "ferro") => s == from_scheme,
+        _ => false,
+    }
 }
 
 impl Default for Net {
@@ -72,11 +86,20 @@ impl Net {
             .allow_non_standard_methods(true)
             .user_agent(USER_AGENT)
             .build();
-        Net { agent: config.into() }
+        Net { agent: config.into(), page_scheme: None }
     }
 
     pub fn fetch(&self, url: &Url) -> Result<Response, String> {
         self.request(&Request::get(url))
+    }
+
+    /// Cópia para os pedidos de um documento (scripts, folhas, imagens,
+    /// iframes): segue a regra de [`allowed`].
+    pub fn for_document(&self, page: &Url) -> Net {
+        Net {
+            agent: self.agent.clone(),
+            page_scheme: Some(page.scheme().to_string()),
+        }
     }
 
     /// Uma requisição http(s), seguindo até 20 redirecionamentos.
@@ -141,6 +164,12 @@ impl Net {
 
     pub fn request(&self, req: &Request) -> Result<Response, String> {
         let url = &req.url;
+        if let Some(from) = &self.page_scheme
+            && matches!(url.scheme(), "file" | "ferro")
+            && !allowed(from, url)
+        {
+            return Err(format!("bloqueado: uma página {from}: não pode abrir {}:", url.scheme()));
+        }
         match url.scheme() {
             "http" | "https" if Self::cacheable(req) => self.cached(req),
             "http" | "https" => self.http(req),
@@ -307,6 +336,23 @@ pub fn decode_text(body: &[u8], content_type: Option<&str>, sniff_meta: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_nao_le_arquivos_nem_paginas_internas() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(allowed("https", &u("https://example.com/")));
+        assert!(allowed("https", &u("data:text/plain,oi")));
+        assert!(!allowed("https", &u("file:///C:/Windows/win.ini")));
+        assert!(!allowed("https", &u("ferro://historico")));
+        assert!(!allowed("file", &u("ferro://historico/limpar")));
+        assert!(allowed("file", &u("file:///C:/x.txt")));
+        assert!(allowed("ferro", &u("ferro://historico/limpar")));
+        assert!(!allowed("https", &u("javascript:alert(1)")));
+        // o mesmo vale para os pedidos feitos com a cópia da página
+        let net = Net::new().for_document(&u("https://example.com/"));
+        assert!(net.fetch(&u("ferro://historico")).err().is_some_and(|e| e.contains("bloqueado")));
+        assert!(net.fetch(&u("file:///C:/Windows/win.ini")).err().is_some_and(|e| e.contains("bloqueado")));
+    }
 
     #[test]
     fn data_url() {

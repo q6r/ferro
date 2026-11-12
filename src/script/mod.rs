@@ -357,6 +357,8 @@ impl Session {
         let (tx, rx) = mpsc::channel();
         let mut page = page;
         let sheet_cache = std::mem::take(&mut page.sheet_texts);
+        // pedidos da página seguem a origem dela (web não lê file: nem ferro:)
+        let net = net.for_document(&page.url);
         let host = Host {
             page,
             net,
