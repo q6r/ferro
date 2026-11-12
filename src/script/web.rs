@@ -105,3 +105,65 @@ fn btoa(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(s(&out))
 }
 
+fn atob(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?;
+    let clean: Vec<u8> = text.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let clean = if clean.len() % 4 == 0 {
+        let mut c = clean;
+        while c.last() == Some(&b'=') {
+            c.pop();
+        }
+        c
+    } else {
+        clean
+    };
+    let bad = || "Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.";
+    if clean.len() % 4 == 1 {
+        return Err(super::dom::dom_error(vm, "InvalidCharacterError", bad()));
+    }
+    let mut out = String::with_capacity(clean.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0);
+    for &c in &clean {
+        let v = match B64.iter().position(|&x| x == c) {
+            Some(v) => v as u32,
+            None => return Err(super::dom::dom_error(vm, "InvalidCharacterError", bad())),
+        };
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(char::from((acc >> bits) as u8));
+            acc &= (1 << bits) - 1;
+        }
+    }
+    Ok(s(&out))
+}
+
+// -------------------------------------------------------------------- rede
+
+/// Objeto com o resultado de uma requisição (o prelúdio monta o Response).
+pub(crate) fn response_value(vm: &mut Vm, res: Result<net::Response, String>) -> Value {
+    let o = vm.new_object();
+    match res {
+        Ok(r) => {
+            set(vm, &o, "status", Value::Number(r.status as f64));
+            set(vm, &o, "url", s(r.url.as_str()));
+            let headers: Vec<Value> = r
+                .headers
+                .iter()
+                .filter(|(k, _)| k != "set-cookie")
+                .map(|(k, v)| vm.array_value(vec![s(k), s(v)]))
+                .collect();
+            let h = vm.array_value(headers);
+            set(vm, &o, "headers", h);
+            let bytes = uint8_array(vm, &r.body).unwrap_or(Value::Null);
+            set(vm, &o, "body", bytes);
+            set(vm, &o, "contentType", r.content_type.as_deref().map_or(Value::Null, s));
+        }
+        Err(e) => {
+            set(vm, &o, "error", s(&e));
+        }
+    }
+    Value::Object(o)
+}
+
