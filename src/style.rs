@@ -2692,3 +2692,46 @@ mod tests {
     }
 }
 
+/// Deslocamento de `transform` (translate/translateX/Y/3d e matrix) ou da
+/// propriedade `translate`: [px x, % x, px y, % y]. Rotação e escala são ignoradas.
+/// Uma função de `transform` (comprimentos já em px; % fica para o layout).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TransformFn {
+    /// (px x, % x, px y, % y)
+    Translate(f32, f32, f32, f32),
+    Scale(f32, f32),
+    /// radianos
+    Rotate(f32),
+    Skew(f32, f32),
+    Matrix([f32; 6]),
+}
+
+/// Uma sombra (box-shadow / text-shadow).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shadow {
+    pub x: f32,
+    pub y: f32,
+    pub blur: f32,
+    pub spread: f32,
+    pub color: Color,
+}
+
+fn parse_angle(t: &str) -> Option<f32> {
+    let t = t.trim();
+    let num = |s: &str| s.trim().parse::<f32>().ok();
+    if let Some(v) = t.strip_suffix("deg") {
+        return num(v).map(f32::to_radians);
+    }
+    if let Some(v) = t.strip_suffix("grad") {
+        return num(v).map(|g| g * std::f32::consts::PI / 200.0);
+    }
+    if let Some(v) = t.strip_suffix("rad") {
+        return num(v);
+    }
+    if let Some(v) = t.strip_suffix("turn") {
+        return num(v).map(|x| x * std::f32::consts::TAU);
+    }
+    // "0" sem unidade
+    num(t).filter(|v| *v == 0.0)
+}
+
