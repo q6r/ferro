@@ -59,3 +59,75 @@ impl TextField {
         self.anchor = self.cursor;
     }
 
+    pub fn backspace(&mut self, word: bool) {
+        if !self.has_selection() && self.cursor > 0 {
+            self.anchor = if word { self.word_left() } else { self.cursor - 1 };
+        }
+        self.delete_selection();
+    }
+
+    pub fn delete(&mut self, word: bool) {
+        if !self.has_selection() && self.cursor < self.len() {
+            self.anchor = if word { self.word_right() } else { self.cursor + 1 };
+        }
+        self.delete_selection();
+    }
+
+    fn word_left(&self) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut i = self.cursor;
+        while i > 0 && !chars[i - 1].is_alphanumeric() {
+            i -= 1;
+        }
+        while i > 0 && chars[i - 1].is_alphanumeric() {
+            i -= 1;
+        }
+        i
+    }
+
+    fn word_right(&self) -> usize {
+        let chars: Vec<char> = self.text.chars().collect();
+        let mut i = self.cursor;
+        while i < chars.len() && !chars[i].is_alphanumeric() {
+            i += 1;
+        }
+        while i < chars.len() && chars[i].is_alphanumeric() {
+            i += 1;
+        }
+        i
+    }
+
+    fn move_to(&mut self, pos: usize, extend: bool) {
+        self.cursor = pos.min(self.len());
+        if !extend {
+            self.anchor = self.cursor;
+        }
+    }
+
+    pub fn left(&mut self, extend: bool, word: bool) {
+        if !extend && self.has_selection() {
+            let (a, _) = self.selection();
+            return self.move_to(a, false);
+        }
+        let pos = if word { self.word_left() } else { self.cursor.saturating_sub(1) };
+        self.move_to(pos, extend);
+    }
+
+    pub fn right(&mut self, extend: bool, word: bool) {
+        if !extend && self.has_selection() {
+            let (_, b) = self.selection();
+            return self.move_to(b, false);
+        }
+        let pos = if word { self.word_right() } else { self.cursor + 1 };
+        self.move_to(pos, extend);
+    }
+
+    pub fn home(&mut self, extend: bool) {
+        self.move_to(0, extend);
+    }
+
+    pub fn end(&mut self, extend: bool) {
+        let len = self.len();
+        self.move_to(len, extend);
+    }
+
