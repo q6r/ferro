@@ -1401,3 +1401,42 @@ impl Matcher<'_> {
         Some((c, pos - 1))
     }
 
+    fn single_ok(&self, m: Single, c: u32) -> bool {
+        match m {
+            Single::Char(x) => c == x || (self.icase && canon(c, self.unicode) == canon(x, self.unicode)),
+            Single::Any => self.prog.flags.dot_all || !(c <= 0xFFFF && is_line_term(c as u16)),
+            Single::Class(i) => self.prog.classes[i as usize].matches(c, self.icase, self.unicode),
+        }
+    }
+
+    /// Consome um caractere que casa `m` (para frente ou para trás).
+    fn step(&self, m: Single, pos: usize, back: bool) -> Option<usize> {
+        let (c, np) = if back { self.read_back(pos)? } else { self.read_fwd(pos)? };
+        if self.single_ok(m, c) { Some(np) } else { None }
+    }
+
+    fn is_word(&self, pos: usize) -> bool {
+        let Some(&c) = self.s.get(pos) else { return false };
+        let c = c as u32;
+        matches!(c, 0x30..=0x39 | 0x41..=0x5A | 0x5F | 0x61..=0x7A)
+            || (self.unicode && self.icase && (c == 0x17F || c == 0x212A))
+    }
+
+    fn set(&self, regs: &mut [usize], stack: &mut Vec<Bt>, r: u32, v: usize) {
+        let old = regs[r as usize];
+        if old != v {
+            stack.push(Bt::Restore { reg: r, val: old });
+            regs[r as usize] = v;
+        }
+    }
+
+    /// Roda o programa a partir de `pc` na posição `pos`. Devolve a posição final.
+    fn run(&mut self, pc0: u32, pos0: usize, regs: &mut [usize]) -> Option<usize> {
+        let mut stack = self.pool.pop().unwrap_or_default();
+        stack.clear();
+        let r = self.run_with(pc0, pos0, regs, &mut stack);
+        stack.clear();
+        self.pool.push(stack);
+        r
+    }
+
