@@ -656,3 +656,67 @@ pub fn layout<'a>(
     }
 }
 
+/// Tira as áreas de mouse da lista de pintura, cortando cada uma pelos
+/// recortes em vigor naquele ponto.
+fn extract_hits(items: &mut Vec<DisplayItem>) -> Vec<(NodeId, Rect, bool)> {
+    let mut saved: Vec<Option<Rect>> = Vec::new();
+    let mut clip: Option<Rect> = None;
+    let mut hits = Vec::new();
+    let mut fixed = 0u32;
+    for it in items.iter() {
+        match it {
+            DisplayItem::FixedStart => fixed += 1,
+            DisplayItem::FixedEnd => fixed = fixed.saturating_sub(1),
+            DisplayItem::PushClip(r) => {
+                saved.push(clip);
+                clip = Some(clip.map_or(*r, |c| c.intersect(r)));
+            }
+            DisplayItem::PopClip => clip = saved.pop().flatten(),
+            DisplayItem::Hit { rect, node } => {
+                let r = clip.map_or(*rect, |c| c.intersect(rect));
+                if r.w > 0.0 && r.h > 0.0 {
+                    hits.push((*node, r, fixed > 0));
+                }
+            }
+            _ => {}
+        }
+    }
+    if !hits.is_empty() {
+        items.retain(|it| !matches!(it, DisplayItem::Hit { .. }));
+    }
+    hits
+}
+
+/// Tira dos itens os trechos entre LayerStart/LayerEnd (aninhados ou não),
+/// devolvendo o resto; cada trecho vira uma camada em `out`.
+fn split_layers(items: Vec<DisplayItem>, base_z: i32, fixed: bool, out: &mut Vec<Layer>) -> Vec<DisplayItem> {
+    if !items.iter().any(|it| matches!(it, DisplayItem::LayerStart { .. })) {
+        return items
+            .into_iter()
+            .filter(|it| !matches!(it, DisplayItem::LayerEnd))
+            .collect();
+    }
+    // pilha de trechos abertos: (z, ordem, itens); a base é o fluxo
+    let mut stack: Vec<(i32, usize, Vec<DisplayItem>)> = vec![(base_z, 0, Vec::new())];
+    for it in items {
+        match it {
+            DisplayItem::LayerStart { z, order } => {
+                let parent_z = stack.last().map_or(base_z, |t| t.0);
+                stack.push((z.unwrap_or(parent_z), order, Vec::new()));
+            }
+            DisplayItem::LayerEnd => {
+                if stack.len() > 1 {
+                    let (z, order, items) = stack.pop().unwrap();
+                    out.push(Layer { z, order, items, fixed });
+                }
+            }
+            other => stack.last_mut().unwrap().2.push(other),
+        }
+    }
+    while stack.len() > 1 {
+        let (z, order, items) = stack.pop().unwrap();
+        out.push(Layer { z, order, items, fixed });
+    }
+    stack.pop().map(|t| t.2).unwrap_or_default()
+}
+
