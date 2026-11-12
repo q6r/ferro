@@ -45,3 +45,57 @@ pub(crate) enum Waiter {
     Import { res: Value, rej: Value },
 }
 
+#[derive(Default)]
+pub(crate) struct Modules {
+    pub recs: HashMap<Url, Rec>,
+    pub waiting: Vec<(Url, Waiter)>,
+    inline: usize,
+}
+
+fn read<T>(vm: &Vm, f: impl FnOnce(&Host) -> T) -> T {
+    let h = host(vm);
+    let b = h.borrow();
+    f(&b)
+}
+
+fn write<T>(vm: &Vm, f: impl FnOnce(&mut Host) -> T) -> T {
+    let h = host(vm);
+    let mut b = h.borrow_mut();
+    f(&mut b)
+}
+
+fn hook(vm: &mut Vm, name: &str, args: Vec<Value>) -> Value {
+    let f = read(vm, |h| h.hooks.get(name).cloned());
+    match f.map(|f| vm.call(&f, Value::Undefined, args)) {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => {
+            vm.report_uncaught(&e);
+            Value::Undefined
+        }
+        None => Value::Undefined,
+    }
+}
+
+/// Resolve um especificador (`./a.js`, `/x.js`, `https://...`) contra a URL
+/// de quem importa. Especificadores "nus" (`lodash`) passam pelo import map.
+pub(crate) fn resolve(vm: &Vm, spec: &str, referrer: &Url) -> Option<Url> {
+    let spec = spec.trim();
+    if spec.starts_with("./") || spec.starts_with("../") || spec.starts_with('/') {
+        return referrer.join(spec).ok();
+    }
+    if let Ok(u) = Url::parse(spec) {
+        return Some(u);
+    }
+    // import map: { "imports": { "nome": "url", "prefixo/": "url/" } }
+    read(vm, |h| {
+        let map = &h.import_map;
+        if let Some(u) = map.get(spec) {
+            return Some(u.clone());
+        }
+        map.iter()
+            .filter(|(k, _)| k.ends_with('/') && spec.starts_with(k.as_str()))
+            .max_by_key(|(k, _)| k.len())
+            .and_then(|(k, base)| base.join(&spec[k.len()..]).ok())
+    })
+}
+
