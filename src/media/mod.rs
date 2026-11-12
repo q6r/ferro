@@ -199,3 +199,54 @@ impl Media {
         id
     }
 
+    pub fn add_buffer(&mut self, source: u32, mime: &str) -> Result<u32, String> {
+        if !is_type_supported(mime) {
+            return Err(format!("Failed to execute 'addSourceBuffer' on 'MediaSource': The type provided ('{mime}') is unsupported."));
+        }
+        let id = self.next();
+        self.buffers.insert(
+            id,
+            SourceBuffer {
+                source,
+                mime: mime.to_string(),
+                demux: Demuxer::new(),
+                samples: HashMap::new(),
+                timestamp_offset: 0.0,
+            },
+        );
+        if let Some(s) = self.sources.get_mut(&source) {
+            s.buffers.push(id);
+        }
+        Ok(id)
+    }
+
+    pub fn append(&mut self, id: u32, data: &[u8], offset: f64) -> Result<(), String> {
+        if let Some(dir) = &self.dump {
+            use std::io::Write;
+            let path = dir.join(format!("sb{id}.mp4"));
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = f.write_all(data);
+            }
+        }
+        let sb = self.buffers.get_mut(&id).ok_or("SourceBuffer removido")?;
+        sb.timestamp_offset = offset;
+        let samples = sb.demux.push(data)?;
+        for mut s in samples {
+            s.pts += offset;
+            s.dts += offset;
+            let shared = sb.samples.entry(s.track).or_default().clone();
+            let mut list = shared.lock().unwrap();
+            // substitui amostras no mesmo intervalo (reenvio do mesmo trecho)
+            if let Some(last) = list.last()
+                && s.dts <= last.dts
+            {
+                list.retain(|x| (x.dts - s.dts).abs() > 1e-6);
+                let pos = list.partition_point(|x| x.dts < s.dts);
+                list.insert(pos, s);
+            } else {
+                list.push(s);
+            }
+        }
+        Ok(())
+    }
+
