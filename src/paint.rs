@@ -830,3 +830,75 @@ impl Canvas {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn text_clip(
+        &mut self,
+        fonts: &Fonts,
+        x: f32,
+        baseline: f32,
+        text: &str,
+        font: FontId,
+        size: f32,
+        color: Color,
+        clip: Clip,
+    ) {
+        if color.a == 0 || clip.is_empty() {
+            return;
+        }
+        let mut pen = x;
+        let base = baseline.round() as i32;
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if pen > clip.x1 as f32 {
+                break;
+            }
+            let emoji = chars.peek() == Some(&'\u{FE0F}');
+            if let Some(cg) = fonts.color_glyph(font, ch, size, emoji) {
+                // emoji colorido: pinta as cores dele (a transparência do texto vale)
+                let m = cg.metrics;
+                let gx = pen.round() as i32 + m.xmin;
+                let gy = base - m.height as i32 - m.ymin;
+                for row in 0..m.height {
+                    let py = gy + row as i32;
+                    if py < clip.y0 || py >= clip.y1 {
+                        continue;
+                    }
+                    for col in 0..m.width {
+                        let px = gx + col as i32;
+                        if px < clip.x0 || px >= clip.x1 {
+                            continue;
+                        }
+                        let p = &cg.rgba[(row * m.width + col) * 4..(row * m.width + col) * 4 + 4];
+                        let a = p[3] as u32 * color.a as u32 / 255;
+                        if a > 0 {
+                            self.blend(px, py, Color::rgb(p[0], p[1], p[2]), a);
+                        }
+                    }
+                }
+            } else if !ch.is_whitespace()
+                && let Some(g) = fonts.glyph(font, ch, size)
+            {
+                let m = g.metrics;
+                let gx = pen.round() as i32 + m.xmin;
+                let gy = base - m.height as i32 - m.ymin;
+                for row in 0..m.height {
+                    let py = gy + row as i32;
+                    if py < clip.y0 || py >= clip.y1 {
+                        continue;
+                    }
+                    for col in 0..m.width {
+                        let px = gx + col as i32;
+                        if px < clip.x0 || px >= clip.x1 {
+                            continue;
+                        }
+                        let cov = g.coverage[row * m.width + col];
+                        if cov > 0 {
+                            self.blend(px, py, color, cov as u32);
+                        }
+                    }
+                }
+            }
+            pen += fonts.advance(font, ch, size);
+        }
+    }
+
