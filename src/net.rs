@@ -79,3 +79,63 @@ impl Net {
         self.request(&Request::get(url))
     }
 
+    /// Uma requisição http(s), seguindo até 20 redirecionamentos.
+    fn http(&self, req: &Request) -> Result<Response, String> {
+        use ureq::ResponseExt;
+        let mut method = req.method.to_ascii_uppercase();
+        let mut url = req.url.clone();
+        let mut body = req.body.clone();
+        for _ in 0..20 {
+            let mut b = ureq::http::Request::builder().method(method.as_str()).uri(url.as_str());
+            for (k, v) in &req.headers {
+                b = b.header(k.as_str(), v.as_str());
+            }
+            if req.cookies {
+                let c = crate::cookies::header_for(&url);
+                if !c.is_empty() {
+                    b = b.header("Cookie", c);
+                }
+            }
+            let r = b.body(body.clone().unwrap_or_default()).map_err(|e| e.to_string())?;
+            let mut res = self.agent.run(r).map_err(|e| e.to_string())?;
+            let final_url = Url::parse(&res.get_uri().to_string()).unwrap_or_else(|_| url.clone());
+            let status = res.status().as_u16();
+            let headers: Vec<(String, String)> = res
+                .headers()
+                .iter()
+                .filter_map(|(k, v)| Some((k.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_string())))
+                .collect();
+            if req.cookies {
+                for (_, v) in headers.iter().filter(|(k, _)| k == "set-cookie") {
+                    crate::cookies::store_from_header(&final_url, v);
+                }
+            }
+            let location = headers.iter().find(|(k, _)| k == "location").map(|(_, v)| v.clone());
+            if matches!(status, 301 | 302 | 303 | 307 | 308)
+                && let Some(next) = location.and_then(|l| final_url.join(l.trim()).ok())
+            {
+                if status == 303 || (matches!(status, 301 | 302) && method == "POST") {
+                    method = "GET".into();
+                    body = None;
+                }
+                url = next;
+                continue;
+            }
+            let content_type = headers.iter().find(|(k, _)| k == "content-type").map(|(_, v)| v.clone());
+            let body = res
+                .body_mut()
+                .with_config()
+                .limit(50 * 1024 * 1024)
+                .read_to_vec()
+                .map_err(|e| e.to_string())?;
+            return Ok(Response {
+                url: final_url,
+                status,
+                content_type,
+                body,
+                headers,
+            });
+        }
+        Err("redirecionamentos demais".into())
+    }
+
