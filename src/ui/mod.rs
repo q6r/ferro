@@ -377,3 +377,69 @@ pub fn run(initial: Option<Url>, capture: Option<Capture>) -> Result<(), String>
 
 // ---------------------------------------------------------- configuração
 
+fn config_path() -> Option<PathBuf> {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    Some(base.join("Ferro").join("config.txt"))
+}
+
+fn load_config() -> (usize, LayoutMode) {
+    let text = config_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    let get = |key: &str| text.lines().find_map(|l| l.strip_prefix(key).map(str::trim));
+    (
+        get("tema=").map_or(0, theme::by_id),
+        get("layout=").map_or(LayoutMode::Sidebar, LayoutMode::from_id),
+    )
+}
+
+fn save_config(theme: usize, layout: LayoutMode) {
+    if let Some(p) = config_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, format!("tema={}\nlayout={}\n", THEMES[theme].id, layout.id()));
+    }
+}
+
+// --------------------------------------------------------------- endereços
+
+/// Valor `key` do DOM para uma tecla do winit ("a", "Enter", "ArrowLeft"...).
+fn dom_key(k: &Key) -> Option<String> {
+    match k {
+        Key::Character(c) => Some(c.to_string()),
+        Key::Named(NamedKey::Space) => Some(" ".into()),
+        Key::Named(n) => {
+            let name = format!("{n:?}");
+            // os nomes do winit seguem a especificação de teclas do W3C
+            (!name.contains('(')).then_some(name)
+        }
+        _ => None,
+    }
+}
+
+fn looks_like_url(t: &str) -> bool {
+    if t.chars().any(char::is_whitespace) {
+        return false;
+    }
+    ["http://", "https://", "file:", "ferro:", "data:"]
+        .iter()
+        .any(|p| t.to_ascii_lowercase().starts_with(p))
+        || t.contains('.')
+        || t.starts_with("localhost")
+}
+
+fn resolve_url(t: &str) -> Option<Url> {
+    if let Ok(u) = Url::parse(t)
+        && matches!(u.scheme(), "http" | "https" | "file" | "ferro" | "data")
+    {
+        return Some(u);
+    }
+    Url::parse(&format!("https://{t}")).ok()
+}
+
+fn search_url(q: &str) -> Url {
+    let q: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+    Url::parse(&format!("https://html.duckduckgo.com/html/?q={q}")).unwrap()
+}
+
