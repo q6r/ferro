@@ -691,3 +691,64 @@ fn sym_split(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(out))
 }
 
+fn sym_match_all(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let r = a.this.clone();
+    let s = vm.to_string(&a.arg(0))?;
+    let fl = rx_flags(vm, &r)?;
+    let src = match regexp_parts(&r) {
+        Some((s, _, _)) => s,
+        None => {
+            let sv = vm.get_str(&r, "source")?;
+            vm.to_string(&sv)?
+        }
+    };
+    let matcher = create(vm, src, JsStr::new(&fl), None)?;
+    let li = last_index(vm, &r)?;
+    set_last_index(vm, &matcher, li)?;
+    let Value::Object(m) = matcher else { return Ok(Value::Undefined) };
+    let it = ObjRef::new(Object::new(
+        Some(vm.realm.regexp_string_iter_proto.clone()),
+        Kind::RegExpStringIter {
+            rx: m,
+            s,
+            global: fl.contains('g'),
+            unicode: fl.contains('u') || fl.contains('v'),
+            done: false,
+        },
+    ));
+    Ok(Value::Object(it))
+}
+
+fn string_iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(it) = &a.this else {
+        return Err(vm.type_error("next method called on incompatible receiver"));
+    };
+    let (rx, s, global, unicode, done) = match &it.borrow().kind {
+        Kind::RegExpStringIter { rx, s, global, unicode, done } => (rx.clone(), s.clone(), *global, *unicode, *done),
+        _ => return Err(vm.type_error("next method called on incompatible receiver")),
+    };
+    let set_done = |it: &ObjRef| {
+        if let Kind::RegExpStringIter { done, .. } = &mut it.borrow_mut().kind {
+            *done = true;
+        }
+    };
+    if done {
+        return Ok(iter_result(vm, Value::Undefined, true));
+    }
+    let rv = Value::Object(rx);
+    let res = regexp_exec(vm, &rv, &s)?;
+    if matches!(res, Value::Null) {
+        set_done(it);
+        return Ok(iter_result(vm, Value::Undefined, true));
+    }
+    if !global {
+        set_done(it);
+        return Ok(iter_result(vm, res, false));
+    }
+    let m0 = vm.get_index(&res, &Value::Number(0.0))?;
+    if vm.to_string(&m0)?.is_empty() {
+        let li = last_index(vm, &rv)?;
+        set_last_index(vm, &rv, advance(&s, li, unicode))?;
+    }
+    Ok(iter_result(vm, res, false))
+}
