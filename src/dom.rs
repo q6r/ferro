@@ -31,3 +31,55 @@ pub enum NodeData {
     Comment(String),
 }
 
+#[derive(Debug, Clone)]
+pub struct ElementData {
+    pub tag: String,
+    pub attrs: Vec<(String, String)>,
+}
+
+impl ElementData {
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.attrs
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    pub fn id(&self) -> Option<&str> {
+        self.attr("id")
+    }
+
+    pub fn classes(&self) -> impl Iterator<Item = &str> {
+        self.attr("class").unwrap_or("").split_ascii_whitespace()
+    }
+
+    pub fn has_class(&self, class: &str) -> bool {
+        self.classes().any(|c| c == class)
+    }
+}
+
+#[derive(Debug)]
+pub struct Node {
+    pub parent: Option<NodeId>,
+    pub children: Vec<NodeId>,
+    pub data: NodeData,
+}
+
+#[derive(Debug)]
+pub struct Document {
+    pub nodes: Vec<Node>,
+    /// Shadow DOM: hospedeiro → raiz da sombra (um fragmento).
+    pub shadow_roots: std::collections::HashMap<NodeId, NodeId>,
+    /// Raiz da sombra → hospedeiro.
+    pub shadow_hosts: std::collections::HashMap<NodeId, NodeId>,
+}
+
+impl Default for Document {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Document {
+    pub const ROOT: NodeId = 0;
+
