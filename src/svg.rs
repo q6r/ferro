@@ -101,3 +101,71 @@ fn parse_paint(v: &str) -> Option<Paint> {
     }
 }
 
+/// Números de uma lista SVG ("1.5-2e3,4 .5.5" → 1.5, -2000, 4, 0.5, 0.5).
+fn numbers(s: &str) -> Vec<f32> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_digit() || c == b'-' || c == b'+' || c == b'.' {
+            let start = i;
+            i += 1;
+            let mut seen_dot = c == b'.';
+            while i < b.len() {
+                let d = b[i];
+                if d.is_ascii_digit() {
+                    i += 1;
+                } else if d == b'.' && !seen_dot {
+                    seen_dot = true;
+                    i += 1;
+                } else if (d == b'e' || d == b'E') && i + 1 < b.len() {
+                    i += 1;
+                    if b[i] == b'-' || b[i] == b'+' {
+                        i += 1;
+                    }
+                } else {
+                    break;
+                }
+            }
+            if let Ok(v) = s[start..i].parse() {
+                out.push(v);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn parse_transform(s: &str) -> Matrix {
+    let mut m = Matrix::ID;
+    let mut rest = s;
+    while let Some(open) = rest.find('(') {
+        let name = rest[..open].trim().trim_start_matches(',').trim();
+        let Some(close) = rest[open..].find(')') else { break };
+        let args = numbers(&rest[open + 1..open + close]);
+        let t = match (name, args.as_slice()) {
+            ("matrix", [a, b, c, d, e, f]) => Matrix([*a, *b, *c, *d, *e, *f]),
+            ("translate", [x]) => Matrix([1.0, 0.0, 0.0, 1.0, *x, 0.0]),
+            ("translate", [x, y]) => Matrix([1.0, 0.0, 0.0, 1.0, *x, *y]),
+            ("scale", [x]) => Matrix([*x, 0.0, 0.0, *x, 0.0, 0.0]),
+            ("scale", [x, y]) => Matrix([*x, 0.0, 0.0, *y, 0.0, 0.0]),
+            ("rotate", [a, rest @ ..]) => {
+                let (sn, cs) = a.to_radians().sin_cos();
+                let r = Matrix([cs, sn, -sn, cs, 0.0, 0.0]);
+                match rest {
+                    [cx, cy] => Matrix([1.0, 0.0, 0.0, 1.0, *cx, *cy])
+                        .mul(r)
+                        .mul(Matrix([1.0, 0.0, 0.0, 1.0, -cx, -cy])),
+                    _ => r,
+                }
+            }
+            _ => Matrix::ID,
+        };
+        m = m.mul(t);
+        rest = &rest[open + close + 1..];
+    }
+    m
+}
+
