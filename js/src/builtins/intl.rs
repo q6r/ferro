@@ -1610,3 +1610,67 @@ fn relative_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     intl_obj(vm, &a.new_target, &a.callee, IntlObj::RelativeTime { locale, numeric_auto, style })
 }
 
+fn relative_format(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (locale, auto) = with_intl(vm, &a.this, |x| match x {
+        IntlObj::RelativeTime { locale, numeric_auto, .. } => Some((locale.clone(), *numeric_auto)),
+        _ => None,
+    })?;
+    let v = vm.to_number(&a.arg(0))?;
+    if !v.is_finite() {
+        return Err(vm.range_error("Invalid time value"));
+    }
+    let unit_raw = vm.to_rust_string(&a.arg(1))?;
+    let unit = unit_raw.strip_suffix('s').unwrap_or(&unit_raw).to_string();
+    if !UNITS.contains(&unit.as_str()) {
+        return Err(vm.range_error(format!("Invalid unit argument for format() '{unit_raw}'")));
+    }
+    let d = data_for(&locale);
+    if auto {
+        if v == 0.0 && unit == "second" {
+            return Ok(Value::str(match d.lang {
+                "pt" => "agora",
+                "es" => "ahora",
+                "fr" => "maintenant",
+                "de" => "jetzt",
+                "it" => "ora",
+                _ => "now",
+            }));
+        }
+        if let Some((_, prev, this, next)) = d.rel_auto.iter().find(|r| r.0 == unit)
+            && (v == -1.0 || v == 0.0 || v == 1.0)
+        {
+            return Ok(Value::str(if v < 0.0 {
+                prev
+            } else if v == 0.0 {
+                this
+            } else {
+                next
+            }));
+        }
+    }
+    let n = v.abs();
+    let (_, one, other) = d.rel_units.iter().find(|r| r.0 == unit).copied().unwrap_or(("", "", ""));
+    let word = if plural_cardinal(d.lang, n) == "one" && n == 1.0 { one } else { other };
+    let word = if d.lang == "de" && v > 0.0 { word.trim_end_matches('n').replace("Tage", "Tagen") } else { word.to_string() };
+    let num_opts = NumOpts {
+        locale: locale.clone(),
+        style: "decimal".into(),
+        currency: None,
+        currency_display: "symbol".into(),
+        unit: None,
+        unit_display: "short".into(),
+        min_int: 1,
+        min_frac: 0,
+        max_frac: 3,
+        max_sig: None,
+        min_sig: None,
+        grouping: true,
+        notation: "standard".into(),
+        compact_display: "short".into(),
+        sign_display: "never".into(),
+    };
+    let ns = format_number(&num_opts, n);
+    let pattern = if v < 0.0 || (v == 0.0 && v.is_sign_negative()) { d.rel_past } else { d.rel_future };
+    Ok(Value::str(&pattern.replace("{n}", &ns).replace("{u}", &word)))
+}
+
