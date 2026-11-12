@@ -1995,3 +1995,93 @@ impl<'a> Ctx<'a> {
 
     // -------------------------------------------------------- posicionados
 
+    /// Posiciona uma caixa absoluta/fixa no seu bloco contêiner (CSS 2.1 §10.3.7).
+    fn layout_absolute(&mut self, p: Pending<'a>, cb: Rect) {
+        let b = p.b;
+        let s = &b.style;
+        let cb = if s.position == Position::Fixed { self.viewport } else { cb };
+        let (left, right) = (s.left.resolve(cb.w), s.right.resolve(cb.w));
+        let (top, bottom) = (s.top.resolve(cb.h), s.bottom.resolve(cb.h));
+        let border = [s.border(TOP), s.border(RIGHT), s.border(BOTTOM), s.border(LEFT)];
+        let padding = s.padding.map(|l| l.resolve_or_zero(cb.w).max(0.0));
+        let hx = padding[LEFT] + padding[RIGHT] + border[LEFT] + border[RIGHT];
+        let vx = padding[TOP] + padding[BOTTOM] + border[TOP] + border[BOTTOM];
+        let m = |l: Len| l.resolve(cb.w).unwrap_or(0.0);
+        let (mt, mr, mb, ml) = (m(s.margin[TOP]), m(s.margin[RIGHT]), m(s.margin[BOTTOM]), m(s.margin[LEFT]));
+        let content = |w: f32| if s.border_box { (w - hx).max(0.0) } else { w };
+
+        let mut width = match (s.width.resolve(cb.w), left, right) {
+            (Some(w), ..) => content(w),
+            (None, Some(l), Some(r)) => (cb.w - l - r - ml - mr - hx).max(0.0),
+            _ => {
+                // encolhe para caber no conteúdo
+                let avail = (cb.w - left.unwrap_or(0.0) - right.unwrap_or(0.0) - ml - mr - hx).max(0.0);
+                let (mn, mx) = self.intrinsic(b);
+                (mx - hx).min(avail).max(mn - hx).max(0.0)
+            }
+        };
+        if let Some(maxw) = s.max_width.resolve(cb.w) {
+            width = width.min(content(maxw));
+        }
+        if let Some(minw) = s.min_width.resolve(cb.w) {
+            width = width.max(content(minw));
+        }
+        let bw = width + hx;
+        let x = match (left, right) {
+            (Some(l), _) => cb.x + l,
+            (None, Some(r)) => cb.x + cb.w - r - bw - ml - mr,
+            _ => p.x,
+        };
+        let forced_h = match (s.height.resolve(cb.h), top, bottom) {
+            (Some(h), ..) => Some(if s.border_box { (h - vx).max(0.0) } else { h }),
+            (None, Some(t), Some(bo)) => Some((cb.h - t - bo - mt - mb - vx).max(0.0)),
+            _ => None,
+        };
+        let y0 = match top {
+            Some(t) => cb.y + t + mt,
+            None => p.y + mt,
+        };
+        let bm = BoxModel {
+            margin: [mt, mr, mb, ml],
+            border,
+            padding,
+            content_w: width,
+        };
+        let order = p.order;
+        let mark = self.mark();
+        let opts = Opts {
+            forced_h,
+            bfc: true,
+            ..Opts::default()
+        };
+        let is_fixed = s.position == Position::Fixed;
+        if is_fixed {
+            self.in_fixed += 1;
+        }
+        let r = self.layout_block(b, &bm, x, y0, &p.inh, opts);
+        if is_fixed {
+            self.in_fixed -= 1;
+        }
+        let mut top_final = y0;
+        if top.is_none()
+            && let Some(bo) = bottom
+        {
+            let target = cb.y + cb.h - bo - mb - r.height;
+            self.shift_between(&mark, None, 0.0, target - y0);
+            top_final = target;
+        }
+        // absolutos também estendem a página (os fixos não: ficam na janela)
+        if s.position != Position::Fixed {
+            self.abs_bottom = self.abs_bottom.max(top_final + r.height + mb);
+        }
+        let items = self.items.split_off(mark.items);
+        self.layers.push(Layer {
+            z: s.z_index.unwrap_or_else(|| self.z_stack.last().copied().unwrap_or(0)),
+            order,
+            items,
+            fixed: is_fixed || self.in_fixed > 0,
+        });
+    }
+
+    // ------------------------------------------------- tamanhos intrínsecos
+
