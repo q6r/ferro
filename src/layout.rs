@@ -317,3 +317,48 @@ fn wrap_inline_children(doc: &Document, b: &mut LayoutBox) {
     b.children = out;
 }
 
+/// Filhos de um contêiner flex/grid viram itens: texto solto ganha um bloco
+/// anônimo e elementos em linha viram blocos ("blockification").
+fn make_flex_items(doc: &Document, b: &mut LayoutBox) {
+    let anon = anonymous_style(&b.style);
+    let mut out = Vec::new();
+    let mut run: Vec<LayoutBox> = Vec::new();
+    let flush = |run: &mut Vec<LayoutBox>, out: &mut Vec<LayoutBox>| {
+        if run.is_empty() {
+            return;
+        }
+        let children = std::mem::take(run);
+        if !only_whitespace(doc, &children) {
+            out.push(LayoutBox::new(BoxKind::Anonymous, anon.clone(), children));
+        }
+    };
+    for child in std::mem::take(&mut b.children) {
+        match child.kind {
+            BoxKind::Text(_) => run.push(child),
+            BoxKind::Inline(n) => {
+                flush(&mut run, &mut out);
+                let mut c = child;
+                c.kind = BoxKind::Block(n);
+                wrap_inline_children(doc, &mut c);
+                out.push(c);
+            }
+            BoxKind::Atomic(_) => {
+                flush(&mut run, &mut out);
+                out.push(LayoutBox::new(BoxKind::Anonymous, anon.clone(), vec![child]));
+            }
+            BoxKind::InlineBlock(n) => {
+                flush(&mut run, &mut out);
+                let mut c = child;
+                c.kind = BoxKind::Block(n);
+                out.push(c);
+            }
+            BoxKind::Block(_) | BoxKind::Anonymous => {
+                flush(&mut run, &mut out);
+                out.push(child);
+            }
+        }
+    }
+    flush(&mut run, &mut out);
+    b.children = out;
+}
+
