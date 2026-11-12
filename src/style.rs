@@ -1003,3 +1003,69 @@ impl Buckets {
         }
     }
 
+    /// Regras que podem casar com o elemento (cada uma uma vez só).
+    fn candidates(&self, el: &crate::dom::ElementData, out: &mut Vec<u32>) {
+        out.clear();
+        if let Some(id) = el.id()
+            && let Some(v) = self.by_id.get(id)
+        {
+            out.extend(v);
+        }
+        // cada regra está num balde só; classe repetida ("a a") não repete regra
+        for (i, class) in el.classes().enumerate() {
+            if let Some(v) = self.by_class.get(class)
+                && !el.classes().take(i).any(|c| c == class)
+            {
+                out.extend(v);
+            }
+        }
+        if let Some(v) = self.by_tag.get(el.tag.as_str()) {
+            out.extend(v);
+        }
+        if !self.by_attr.is_empty() {
+            for (name, _) in &el.attrs {
+                if let Some(v) = self.by_attr.get(name.as_str()) {
+                    out.extend(v);
+                }
+            }
+        }
+        out.extend(&self.universal);
+    }
+}
+
+/// Todas as regras das folhas, indexadas. Fica guardado entre um cálculo e
+/// outro enquanto as folhas forem as mesmas.
+struct RuleIndex {
+    sheets: Vec<(Rc<Stylesheet>, Origin)>,
+    entries: Vec<Entry>,
+    normal: Buckets,
+    pseudo: Buckets,
+}
+
+thread_local! {
+    static INDEX_CACHE: std::cell::RefCell<Option<Rc<RuleIndex>>> = const { std::cell::RefCell::new(None) };
+}
+
+impl RuleIndex {
+    /// O índice dessas folhas (reaproveita o último se forem as mesmas).
+    fn for_sheets(sheets: &[(Rc<Stylesheet>, Origin)]) -> Rc<RuleIndex> {
+        INDEX_CACHE.with(|c| {
+            if let Some(ix) = c.borrow().as_ref()
+                && ix.sheets.len() == sheets.len()
+                && ix.sheets.iter().zip(sheets).all(|(a, b)| Rc::ptr_eq(&a.0, &b.0) && a.1 == b.1)
+            {
+                return ix.clone();
+            }
+            let ix = Rc::new(RuleIndex::build(sheets));
+            if std::env::var_os("FERRO_TEMPOS").is_some() {
+                eprintln!(
+                    "[ferro] índice de regras: {} seletores ({} testados em todo elemento)",
+                    ix.entries.len(),
+                    ix.normal.universal.len()
+                );
+            }
+            *c.borrow_mut() = Some(ix.clone());
+            ix
+        })
+    }
+
