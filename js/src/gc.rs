@@ -161,3 +161,110 @@ impl Graph {
         }
     }
 
+    /// Referências fortes de um objeto (e os efêmeros, se for WeakMap/WeakSet).
+    fn object(&mut self, me: u32, o: &Object, out: &mut Vec<u32>) {
+        if let Some(p) = &o.proto {
+            self.objref(p, out);
+        }
+        for (_, prop) in o.props.iter() {
+            match &prop.slot {
+                Slot::Data { value, .. } => self.value(value, out),
+                Slot::Accessor { get, set } => {
+                    for x in [get, set].into_iter().flatten() {
+                        self.objref(x, out);
+                    }
+                }
+            }
+        }
+        match &o.kind {
+            Kind::Array(items) => items.iter().for_each(|x| self.value(x, out)),
+            Kind::Function(Func::Closure(c)) => {
+                let i = self.clo(c);
+                out.push(i);
+            }
+            Kind::Function(Func::Native(n)) => self.value(&n.data, out),
+            Kind::Function(Func::Bound { target, this, args }) => {
+                self.objref(target, out);
+                self.value(this, out);
+                args.iter().for_each(|x| self.value(x, out));
+            }
+            Kind::Map(c) | Kind::Set(c) => {
+                for (k, val) in c.entries.iter().flatten() {
+                    self.value(k, out);
+                    self.value(val, out);
+                }
+                for k in c.index.keys() {
+                    if let MapKey::Object(o) = k {
+                        self.objref(o, out);
+                    }
+                }
+            }
+            Kind::WeakMap(c) | Kind::WeakSet(c) => {
+                self.weak_colls.push(me);
+                for (key, val) in c.map.values() {
+                    let Value::Object(v) = val else { continue };
+                    let Some(vi) = self.obj(v) else { continue };
+                    let ki = match key {
+                        WeakKey::Obj(w) => match w.upgrade() {
+                            None => Some(u32::MAX),
+                            Some(k) => k.try_borrow().ok().and_then(|b| self.idx(b.gc.get())),
+                        },
+                        WeakKey::Sym(_) => None,
+                    };
+                    self.ephemerons.push((me, ki, vi));
+                }
+            }
+            Kind::ArrayIter { target, .. } => self.value(target, out),
+            Kind::MapIter { target, .. } => self.objref(target, out),
+            Kind::ForIn { target: Some(t), .. } => self.objref(t, out),
+            Kind::IterRecord { iter, next, .. } => {
+                self.value(iter, out);
+                self.value(next, out);
+            }
+            Kind::RegExpStringIter { rx, .. } => self.objref(rx, out),
+            Kind::Generator(g) => {
+                if let Some(f) = &g.frame {
+                    self.frame(f, out);
+                }
+            }
+            Kind::Promise(p) => {
+                if let PState::Fulfilled(x) | PState::Rejected(x) = &p.state {
+                    self.value(x, out);
+                }
+                for r in p.fulfill.iter().chain(&p.reject) {
+                    self.value(&r.handler, out);
+                    if let Some(c) = &r.cap {
+                        self.value(&c.promise, out);
+                        self.value(&c.resolve, out);
+                        self.value(&c.reject, out);
+                    }
+                }
+            }
+            Kind::PromiseResolver { promise, .. } => self.objref(promise, out),
+            Kind::Async(a) => {
+                if let Some(f) = &a.frame {
+                    self.frame(f, out);
+                }
+                self.objref(&a.promise, out);
+            }
+            Kind::Proxy { target, handler } => {
+                for x in [target, handler].into_iter().flatten() {
+                    self.objref(x, out);
+                }
+            }
+            Kind::TypedArray(t) | Kind::DataView(t) => self.objref(&t.buffer, out),
+            Kind::AsyncGenerator(a) => {
+                if let Some(f) = &a.frame {
+                    self.frame(f, out);
+                }
+                for r in &a.queue {
+                    self.value(&r.value, out);
+                    self.value(&r.cap.promise, out);
+                    self.value(&r.cap.resolve, out);
+                    self.value(&r.cap.reject, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
