@@ -342,3 +342,71 @@ fn decode_one(s: &str) -> Option<(String, usize)> {
 
 // -------------------------------------------------------- construtor de árvore
 
+const VOID: &[&str] = &[
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+    "source", "track", "wbr", "keygen",
+];
+
+const HEAD_CONTENT: &[&str] = &["title", "meta", "link", "style", "script", "base", "template"];
+
+/// Tags de início que fecham um <p> aberto.
+const CLOSES_P: &[&str] = &[
+    "address", "article", "aside", "blockquote", "center", "details", "dialog", "dir", "div",
+    "dl", "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5",
+    "h6", "header", "hgroup", "hr", "main", "menu", "nav", "ol", "p", "pre", "section",
+    "summary", "table", "ul", "li", "dd", "dt", "listing",
+];
+
+/// Elementos que delimitam o "escopo" na busca por tags abertas.
+const SCOPE_BOUNDARY: &[&str] = &[
+    "html", "table", "td", "th", "caption", "marquee", "object", "applet", "template", "button",
+];
+
+/// Analisa `input` como o conteúdo de um elemento `<context>` (innerHTML) e
+/// cria os nós (soltos) em `doc`. Devolve os nós de primeiro nível.
+pub fn parse_fragment(input: &str, context: &str, doc: &mut Document) -> Vec<NodeId> {
+    let (wrapped, path): (String, &[&str]) = match context {
+        "table" => (format!("<table>{input}</table>"), &["table"]),
+        "tbody" | "thead" | "tfoot" => (format!("<table><tbody>{input}</tbody></table>"), &["table", "tbody"]),
+        "tr" => (format!("<table><tbody><tr>{input}</tr></tbody></table>"), &["table", "tbody", "tr"]),
+        "select" => (format!("<select>{input}</select>"), &["select"]),
+        "ul" | "ol" => (format!("<ul>{input}</ul>"), &["ul"]),
+        _ => (format!("<body>{input}"), &[]),
+    };
+    let tmp = parse(&wrapped);
+    let Some(mut container) = tmp.find_first("body") else { return Vec::new() };
+    for tag in path {
+        match tmp.node(container).children.iter().copied().find(|&c| tmp.tag(c) == Some(tag)) {
+            Some(c) => container = c,
+            None => break,
+        }
+    }
+    tmp.node(container).children.iter().map(|&c| copy_into(&tmp, c, doc)).collect()
+}
+
+/// Copia a subárvore `id` de `src` para `dst` (a cópia fica solta).
+pub fn copy_into(src: &Document, id: NodeId, dst: &mut Document) -> NodeId {
+    let n = dst.create(src.node(id).data.clone());
+    for &c in &src.node(id).children {
+        let k = copy_into(src, c, dst);
+        dst.append(n, k);
+    }
+    n
+}
+
+pub fn parse(input: &str) -> Document {
+    let mut b = TreeBuilder {
+        doc: Document::new(),
+        stack: Vec::new(),
+        html: None,
+        head: None,
+        body: None,
+        skip_newline: false,
+    };
+    for t in tokenize(input) {
+        b.process(t);
+    }
+    b.ensure_body();
+    b.doc
+}
+
