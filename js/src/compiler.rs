@@ -1504,3 +1504,55 @@ impl Compiler {
         Ok(Rc::new(self.finish(st, JsStr::empty(), 0, 0, 1, FnKind::Normal, false, false, "".into(), 1)))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &self,
+        st: FnState,
+        name: JsStr,
+        nparams: u32,
+        length: u32,
+        var_end: u32,
+        kind: FnKind,
+        is_async: bool,
+        is_generator: bool,
+        source: Rc<str>,
+        line: u32,
+    ) -> Code {
+        let ntpl = st.templates.len();
+        let mut lines = st.lines;
+        let mut call_names = st.call_names;
+        let ops = if std::env::var_os("FERRO_SEM_PEEPHOLE").is_some() {
+            st.ops
+        } else {
+            peephole(st.ops, &mut lines, &mut call_names)
+        };
+        let needs_args = ops.iter().any(|o| matches!(o, Op::RestArgs(_) | Op::Arguments));
+        Code {
+            name,
+            ops,
+            consts: st.consts,
+            functions: st.functions,
+            lines,
+            nregs: st.max_regs,
+            nparams,
+            var_end,
+            needs_args,
+            length,
+            kind,
+            is_async,
+            is_generator,
+            strict: st.strict,
+            is_script: st.is_script,
+            source,
+            file: self.file.clone(),
+            line,
+            templates: st.templates,
+            template_cache: RefCell::new(vec![None; ntpl]),
+            call_names,
+            global_cache: RefCell::new(Vec::new()),
+            gobj_cache: RefCell::new(Vec::new()),
+        }
+    }
+
+    // ------------------------------------------------------------ funções
+
