@@ -712,3 +712,71 @@ impl Session {
         }
     }
 
+    /// Estilo + layout do documento atual. Guarda os retângulos (para cliques
+    /// e `getBoundingClientRect`) e pede o que faltar (imagens, fontes).
+    pub fn render(&mut self) -> Page {
+        let t = Instant::now();
+        let mut page = render_host(&self.host);
+        // quadros: descobre os novos, redesenha os que mudaram de tamanho
+        self.discover_frames();
+        self.paint_frames(false);
+        {
+            let hb = self.host.borrow();
+            for (&n, c) in &hb.frames {
+                if let Some(r) = frames::frame_box(&hb, n) {
+                    let fixed = hb.layout.as_ref().is_some_and(|l| l.fixed.contains(&n));
+                    page.scrollers.push(crate::layout::Scroller {
+                        node: n,
+                        rect: r,
+                        x: 0.0,
+                        y: c.scroll,
+                        max_x: 0.0,
+                        max_y: (c.height - c.size.1).max(0.0),
+                        fixed,
+                    });
+                }
+            }
+        }
+        self.render_cost = t.elapsed();
+        self.last_render = Some(Instant::now());
+        page
+    }
+
+    /// Há algo novo para desenhar e já passou tempo suficiente do último desenho?
+    pub fn wants_frame(&self) -> bool {
+        let hb = self.host.borrow();
+        if !(hb.dirty || hb.repaint || hb.layout.is_none()) {
+            return false;
+        }
+        // não redesenha mais que ~1 vez a cada 2× o custo do desenho (mín. 30 ms)
+        let gap = (self.render_cost * 2).max(Duration::from_millis(30));
+        self.last_render.is_none_or(|t| t.elapsed() >= gap)
+    }
+
+    /// Quanto o laço da aba pode dormir até ter trabalho de JS.
+    pub fn wakeup(&self) -> Option<Duration> {
+        let hb = self.host.borrow();
+        let mut best: Option<f64> = None;
+        let mut take = |ms: f64| best = Some(best.map_or(ms, |b: f64| b.min(ms)));
+        let now = self.js.vm.now_ms();
+        for t in &self.js.vm.timers {
+            take((t.due - now).max(0.0));
+        }
+        if !hb.raf.is_empty() {
+            take(16.0 - hb.last_raf.elapsed().as_secs_f64() * 1000.0);
+        }
+        if hb.in_flight > 0 {
+            take(8.0);
+        }
+        if hb.parser.is_some() {
+            take(4.0);
+        }
+        if hb.dirty || hb.repaint {
+            take(30.0);
+        }
+        if hb.media.active() {
+            take(10.0);
+        }
+        best.map(|ms| Duration::from_secs_f64(ms.max(0.0) / 1000.0))
+    }
+
