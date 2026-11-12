@@ -478,3 +478,86 @@ fn dashed(polys: Vec<Poly>, dash: &[f32], offset: f32) -> Vec<Poly> {
     out
 }
 
+/// Polígonos que cobrem o traço (preenchidos juntos com "nonzero").
+fn stroke_polys(polys: Vec<Poly>, st: &StrokeStyle) -> Vec<Poly> {
+    let hw = st.width / 2.0;
+    let polys = dashed(polys, &st.dash, st.dash_offset);
+    let mut out = Vec::new();
+    for (mut pts, closed) in polys {
+        pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-4 && (a.1 - b.1).abs() < 1e-4);
+        if closed && pts.len() > 2 && pts.first() == pts.last() {
+            pts.pop();
+        }
+        if pts.len() == 1 {
+            // caminho de um ponto só: com ponta redonda/quadrada vira um ponto
+            match st.cap {
+                Cap::Round => out.push(circle(pts[0], hw)),
+                Cap::Square => {
+                    let (x, y) = pts[0];
+                    out.push(oriented(vec![(x - hw, y - hw), (x + hw, y - hw), (x + hw, y + hw), (x - hw, y + hw)]));
+                }
+                Cap::Butt => {}
+            }
+            continue;
+        }
+        let n = pts.len();
+        let segs = if closed { n } else { n - 1 };
+        let normal = |a: (f32, f32), b: (f32, f32)| {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let l = (dx * dx + dy * dy).sqrt().max(1e-6);
+            ((-dy / l * hw, dx / l * hw), (dx / l, dy / l))
+        };
+        for i in 0..segs {
+            let a = pts[i];
+            let b = pts[(i + 1) % n];
+            let ((nx, ny), (ux, uy)) = normal(a, b);
+            let (mut a, mut b) = (a, b);
+            if !closed && st.cap == Cap::Square {
+                if i == 0 {
+                    a = (a.0 - ux * hw, a.1 - uy * hw);
+                }
+                if i == segs - 1 {
+                    b = (b.0 + ux * hw, b.1 + uy * hw);
+                }
+            }
+            out.push(oriented(vec![(a.0 + nx, a.1 + ny), (b.0 + nx, b.1 + ny), (b.0 - nx, b.1 - ny), (a.0 - nx, a.1 - ny)]));
+        }
+        // junções
+        let joins: Vec<usize> = if closed { (0..n).collect() } else { (1..n - 1).collect() };
+        for i in joins {
+            let p = pts[i];
+            let prev = pts[(i + n - 1) % n];
+            let next = pts[(i + 1) % n];
+            match st.join {
+                Join::Round => out.push(circle(p, hw)),
+                Join::Bevel | Join::Miter => {
+                    let ((n1x, n1y), (u1x, u1y)) = normal(prev, p);
+                    let ((n2x, n2y), (u2x, u2y)) = normal(p, next);
+                    // lado de fora da curva
+                    let cross = u1x * u2y - u1y * u2x;
+                    let s = if cross > 0.0 { -1.0 } else { 1.0 };
+                    let o1 = (p.0 + n1x * s, p.1 + n1y * s);
+                    let o2 = (p.0 + n2x * s, p.1 + n2y * s);
+                    let mut poly = vec![p, o1, o2];
+                    if st.join == Join::Miter {
+                        let cos = (u1x * u2x + u1y * u2y).clamp(-1.0, 1.0);
+                        let half = ((1.0 + cos) / 2.0).sqrt(); // cos(θ/2) do ângulo entre as normais
+                        if half > 1e-4 && 1.0 / half <= st.miter_limit {
+                            let (mx, my) = (o1.0 + o2.0 - 2.0 * p.0, o1.1 + o2.1 - 2.0 * p.1);
+                            let ml = (mx * mx + my * my).sqrt().max(1e-6);
+                            let len = hw / half;
+                            poly = vec![p, o1, (p.0 + mx / ml * len, p.1 + my / ml * len), o2];
+                        }
+                    }
+                    out.push(oriented(poly));
+                }
+            }
+        }
+        if !closed && st.cap == Cap::Round {
+            out.push(circle(pts[0], hw));
+            out.push(circle(pts[n - 1], hw));
+        }
+    }
+    out
+}
+
