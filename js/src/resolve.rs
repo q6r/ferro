@@ -298,3 +298,70 @@ impl Resolver {
         }
     }
 
+    fn class(&mut self, c: &ClassDef) {
+        self.strict.push(true);
+        let names = c.name.iter().cloned().collect();
+        self.push(key_of(c), names);
+        if let Some(s) = &c.superclass {
+            self.expr(s);
+        }
+        if let Some(f) = &c.constructor {
+            self.function(f, false);
+        }
+        for m in &c.members {
+            if let PropKeyExpr::Computed(e) = &m.key {
+                self.expr(e);
+            }
+            if !matches!(m.key, PropKeyExpr::Private(_))
+                && let Some(f) = &m.func
+            {
+                self.function(f, false);
+            }
+        }
+        // funções sintéticas de campos: instância e estáticos
+        for is_static in [false, true] {
+            let ms: Vec<&ClassMember> = c
+                .members
+                .iter()
+                .filter(|m| m.is_static == is_static)
+                .filter(|m| matches!(m.kind, MemberKind::Field(_) | MemberKind::StaticBlock(_)) || matches!(m.key, PropKeyExpr::Private(_)))
+                .collect();
+            if ms.is_empty() {
+                continue;
+            }
+            self.func += 1;
+            let mut names: Vec<Name> = Vec::new();
+            for m in &ms {
+                if let MemberKind::StaticBlock(b) = &m.kind {
+                    var_names(b, &mut names, false, false);
+                }
+            }
+            self.push(class_init_key(c, is_static), names);
+            for m in &ms {
+                match &m.kind {
+                    MemberKind::Field(Some(e)) => self.expr(e),
+                    MemberKind::StaticBlock(b) => self.block(b, slice_key(b)),
+                    _ => {}
+                }
+                if matches!(m.key, PropKeyExpr::Private(_))
+                    && let Some(f) = &m.func
+                {
+                    self.function(f, false);
+                }
+            }
+            self.pop();
+            self.func -= 1;
+        }
+        self.pop();
+        self.strict.pop();
+    }
+
+    fn elems(&mut self, es: &[ArrayElem]) {
+        for e in es {
+            match e {
+                ArrayElem::Expr(e) | ArrayElem::Spread(e) => self.expr(e),
+                ArrayElem::Hole => {}
+            }
+        }
+    }
+
