@@ -49,3 +49,39 @@ impl Entry {
     }
 }
 
+#[derive(Default)]
+struct Cache {
+    map: HashMap<String, Entry>,
+    order: VecDeque<String>,
+    bytes: usize,
+}
+
+static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// Pasta do cache em disco (dentro do perfil), se o perfil estiver ligado.
+fn disk_dir() -> Option<PathBuf> {
+    crate::dados::dir().map(|d| d.join("cache"))
+}
+
+fn disk_path(url: &str) -> Option<PathBuf> {
+    // FNV-1a de 64 bits do endereço
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in url.bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(disk_dir()?.join(format!("{h:016x}")))
+}
+
+/// O que a consulta achou.
+pub enum Lookup {
+    /// Pode usar sem perguntar.
+    Fresh(Response),
+    /// Vencida: estes cabeçalhos perguntam se ainda vale.
+    Stale(Vec<(String, String)>),
+    Miss,
+}
+
