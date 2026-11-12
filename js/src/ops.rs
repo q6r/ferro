@@ -631,7 +631,11 @@ impl Vm {
     pub fn set_index(&mut self, obj: &Value, key: &Value, v: Value, strict: bool) -> Result<(), Value> {
         if let (Value::Object(o), Value::Number(n)) = (obj, key) {
             let i = *n as usize;
-            if i as f64 == *n && matches!(o.borrow().kind, Kind::TypedArray(_)) {
+            let ta = match &o.borrow().kind {
+                Kind::TypedArray(t) => Some(t.immutable),
+                _ => None,
+            };
+            if i as f64 == *n && ta == Some(false) {
                 return self.typed_set(o, i, &v);
             }
             if i as f64 == *n {
@@ -719,6 +723,9 @@ impl Vm {
             };
             // [[Set]] de typed array com chave numérica
             if let Some(n) = numeric {
+                if cur.borrow().ta_immutable() {
+                    return Ok(false);
+                }
                 if let Value::Object(r) = receiver
                     && r.ptr_eq(&cur)
                 {
@@ -786,8 +793,8 @@ impl Vm {
     pub fn set_own(&mut self, obj: &ObjRef, key: PropKey, v: Value) -> Result<bool, Value> {
         let numeric = obj.borrow().ta_numeric(&key);
         if let Some(n) = numeric {
-            // typed array: só índices válidos podem ser definidos
-            if !self.ta_valid_index(obj, n) {
+            // typed array: só índices válidos (e de buffer mutável) podem ser definidos
+            if !self.ta_valid_index(obj, n) || obj.borrow().ta_immutable() {
                 return Ok(false);
             }
             self.typed_set_num(obj, n, &v)?;
@@ -873,7 +880,7 @@ impl Vm {
     pub fn define_data(&mut self, obj: &ObjRef, key: PropKey, v: Value) {
         let numeric = obj.borrow().ta_numeric(&key);
         if let Some(n) = numeric {
-            if self.ta_valid_index(obj, n) {
+            if self.ta_valid_index(obj, n) && !obj.borrow().ta_immutable() {
                 let _ = self.typed_set_num(obj, n, &v);
             }
             return;

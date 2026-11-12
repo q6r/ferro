@@ -239,6 +239,15 @@ fn from_hex(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     new_uint8(vm, &d.bytes)
 }
 
+/// ValidateUint8Array para escrita.
+fn this_uint8_write(vm: &mut Vm, a: &CallArgs, name: &str) -> Result<ObjRef, Value> {
+    let o = this_uint8(vm, a)?;
+    if o.borrow().ta_immutable() {
+        return Err(vm.type_error(format!("Cannot perform Uint8Array.prototype.{name} on an immutable ArrayBuffer")));
+    }
+    Ok(o)
+}
+
 /// ValidateUint8Array.
 fn this_uint8(vm: &mut Vm, a: &CallArgs) -> Result<ObjRef, Value> {
     if let Value::Object(o) = &a.this
@@ -316,7 +325,7 @@ fn write_decoded(vm: &mut Vm, data: &Bytes, off: usize, d: Decoded, what: &str) 
 }
 
 fn set_from_base64(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let o = this_uint8(vm, a)?;
+    let o = this_uint8_write(vm, a, "setFromBase64")?;
     let s = arg_string(vm, a)?;
     let opts = options(vm, &a.arg(1))?;
     let url = alphabet(vm, &opts)?;
@@ -327,7 +336,7 @@ fn set_from_base64(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn set_from_hex(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let o = this_uint8(vm, a)?;
+    let o = this_uint8_write(vm, a, "setFromHex")?;
     let s = arg_string(vm, a)?;
     let (data, off, len) = uint8_state(vm, &o, "setFromHex")?;
     let d = from_hex_str(s.units(), len);

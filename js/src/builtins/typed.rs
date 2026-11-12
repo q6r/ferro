@@ -27,10 +27,13 @@ pub fn install(r: &Realm) {
     r.getter(abp, "maxByteLength", ab_max_byte_length);
     r.getter(abp, "resizable", ab_resizable);
     r.getter(abp, "detached", ab_detached);
+    r.getter(abp, "immutable", ab_immutable);
     r.method(abp, "slice", 2, ab_slice);
     r.method(abp, "resize", 1, ab_resize);
     r.method(abp, "transfer", 0, ab_transfer);
     r.method(abp, "transferToFixedLength", 0, ab_transfer_fixed);
+    r.method(abp, "transferToImmutable", 0, ab_transfer_immutable);
+    r.method(abp, "sliceToImmutable", 2, ab_slice_immutable);
     r.tag(abp, "ArrayBuffer");
 
     // %TypedArray% (abstrato)
@@ -216,6 +219,19 @@ pub fn is_detached(buf: &ObjRef) -> bool {
     matches!(&buf.borrow().kind, Kind::ArrayBuffer(b) if b.detached)
 }
 
+/// IsImmutableBuffer.
+fn is_immutable(buf: &ObjRef) -> bool {
+    matches!(&buf.borrow().kind, Kind::ArrayBuffer(b) if b.immutable)
+}
+
+/// Buffer novo com esses bytes (`max`: redimensionável; `immutable`: só leitura).
+fn buffer_from(vm: &mut Vm, bytes: Vec<u8>, max: Option<usize>, immutable: bool) -> ObjRef {
+    let mut data = BufferData::new(bytes);
+    data.max = max;
+    data.immutable = immutable;
+    ObjRef::new(Object::new(Some(vm.realm.array_buffer_proto.clone()), Kind::ArrayBuffer(data)))
+}
+
 /// (bytes, desanexado, máximo) de um ArrayBuffer.
 fn buffer_info(o: &ObjRef) -> Option<(Bytes, bool, Option<usize>)> {
     match &o.borrow().kind {
@@ -292,6 +308,11 @@ fn ab_detached(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(detached))
 }
 
+fn ab_immutable(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, _, _) = this_buffer(vm, a, "immutable")?;
+    Ok(Value::Bool(is_immutable(&o)))
+}
+
 fn ab_resize(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let (o, _, _, max) = this_buffer(vm, a, "resize")?;
     let Some(max) = max else {
@@ -334,6 +355,9 @@ fn ab_slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     if nd {
         return Err(vm.type_error("Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer"));
     }
+    if is_immutable(&nb) {
+        return Err(vm.type_error("Cannot perform ArrayBuffer.prototype.slice on an immutable ArrayBuffer"));
+    }
     if nb.ptr_eq(&o) {
         return Err(vm.type_error("ArrayBuffer subclass returned this from species constructor"));
     }
@@ -352,14 +376,25 @@ fn ab_slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(nb))
 }
 
+/// Como fica o buffer resultante de ArrayBufferCopyAndDetach.
+#[derive(PartialEq)]
+enum Transfer {
+    PreserveResizability,
+    FixedLength,
+    Immutable,
+}
+
 /// ArrayBufferCopyAndDetach: os bytes passam para um buffer novo.
-fn copy_and_detach(vm: &mut Vm, a: &CallArgs, preserve: bool, name: &str) -> Result<Value, Value> {
+fn copy_and_detach(vm: &mut Vm, a: &CallArgs, mode: Transfer, name: &str) -> Result<Value, Value> {
     let (o, b, _, max) = this_buffer(vm, a, name)?;
     let new_len = if a.arg(0).is_undefined() { b.borrow().len() } else { to_index(vm, &a.arg(0), "array buffer length")? };
     if is_detached(&o) {
         return Err(vm.type_error(format!("Cannot perform ArrayBuffer.prototype.{name} on a detached ArrayBuffer")));
     }
-    let new_max = if preserve { max } else { None };
+    if is_immutable(&o) {
+        return Err(vm.type_error(format!("Cannot perform ArrayBuffer.prototype.{name} on an immutable ArrayBuffer")));
+    }
+    let new_max = if mode == Transfer::PreserveResizability { max } else { None };
     if new_max.is_some_and(|m| new_len > m) {
         return Err(vm.range_error("Invalid array buffer length"));
     }
@@ -371,17 +406,39 @@ fn copy_and_detach(vm: &mut Vm, a: &CallArgs, preserve: bool, name: &str) -> Res
     if let Kind::ArrayBuffer(d) = &mut o.borrow_mut().kind {
         d.detached = true;
     }
-    let mut data = BufferData::new(bytes);
-    data.max = new_max;
-    Ok(Value::Object(ObjRef::new(Object::new(Some(vm.realm.array_buffer_proto.clone()), Kind::ArrayBuffer(data)))))
+    Ok(Value::Object(buffer_from(vm, bytes, new_max, mode == Transfer::Immutable)))
 }
 
 fn ab_transfer(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    copy_and_detach(vm, a, true, "transfer")
+    copy_and_detach(vm, a, Transfer::PreserveResizability, "transfer")
 }
 
 fn ab_transfer_fixed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    copy_and_detach(vm, a, false, "transferToFixedLength")
+    copy_and_detach(vm, a, Transfer::FixedLength, "transferToFixedLength")
+}
+
+fn ab_transfer_immutable(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    copy_and_detach(vm, a, Transfer::Immutable, "transferToImmutable")
+}
+
+fn ab_slice_immutable(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    const DETACHED: &str = "Cannot perform ArrayBuffer.prototype.sliceToImmutable on a detached ArrayBuffer";
+    let (o, b, detached, _) = this_buffer(vm, a, "sliceToImmutable")?;
+    if detached {
+        return Err(vm.type_error(DETACHED));
+    }
+    let len = b.borrow().len();
+    let first = rel_index(vm, &a.arg(0), len, 0)?;
+    let fin = rel_index(vm, &a.arg(1), len, len)?;
+    // a conversão dos argumentos pode ter desanexado ou encolhido o buffer
+    if is_detached(&o) {
+        return Err(vm.type_error(DETACHED));
+    }
+    if b.borrow().len() < fin {
+        return Err(vm.range_error("Invalid array buffer length"));
+    }
+    let part = if first < fin { b.borrow()[first..fin].to_vec() } else { Vec::new() };
+    Ok(Value::Object(buffer_from(vm, part, None, true)))
 }
 
 // ------------------------------------------------------------ typed arrays
@@ -420,9 +477,9 @@ pub fn is_fixed_length(o: &ObjRef) -> bool {
 }
 
 fn make_view(kind: TaKind, buffer: ObjRef, offset: usize, length: usize, tracking: bool, proto: ObjRef) -> ObjRef {
-    let data = match &buffer.borrow().kind {
-        Kind::ArrayBuffer(b) => b.bytes.clone(),
-        _ => Bytes::default(),
+    let (data, immutable) = match &buffer.borrow().kind {
+        Kind::ArrayBuffer(b) => (b.bytes.clone(), b.immutable),
+        _ => (Bytes::default(), false),
     };
     ObjRef::new(Object::new(
         Some(proto),
@@ -433,6 +490,7 @@ fn make_view(kind: TaKind, buffer: ObjRef, offset: usize, length: usize, trackin
             offset,
             length,
             tracking,
+            immutable,
         })),
     ))
 }
@@ -608,6 +666,20 @@ fn this_ta(vm: &mut Vm, a: &CallArgs, name: &str) -> Result<(ObjRef, TaKind, usi
     validate(vm, &a.this, name)
 }
 
+/// ValidateTypedArray para escrita: buffer imutável também é erro.
+fn this_ta_write(vm: &mut Vm, a: &CallArgs, name: &str) -> Result<(ObjRef, TaKind, usize), Value> {
+    validate_write(vm, &a.this, name)
+}
+
+fn validate_write(vm: &mut Vm, v: &Value, name: &str) -> Result<(ObjRef, TaKind, usize), Value> {
+    if let Value::Object(o) = v
+        && o.borrow().ta_immutable()
+    {
+        return Err(vm.type_error(format!("Cannot perform {name} on an immutable ArrayBuffer")));
+    }
+    validate(vm, v, name)
+}
+
 fn validate(vm: &mut Vm, v: &Value, name: &str) -> Result<(ObjRef, TaKind, usize), Value> {
     if let Value::Object(o) = v
         && let Kind::TypedArray(t) = &o.borrow().kind
@@ -649,16 +721,17 @@ fn elem_opt(o: &ObjRef, i: usize) -> Option<Value> {
 
 /// TypedArrayCreateFromConstructor: o resultado precisa ser um typed array
 /// dentro dos limites (e com pelo menos `min` elementos).
-fn create_from_ctor(vm: &mut Vm, c: &ObjRef, args: Vec<Value>, min: Option<usize>) -> Result<ObjRef, Value> {
+fn create_from_ctor(vm: &mut Vm, c: &ObjRef, args: Vec<Value>, min: Option<usize>, write: bool) -> Result<ObjRef, Value> {
     let r = vm.construct(c, args, c)?;
-    let (o, _, len) = validate(vm, &r, "Construct")?;
+    let (o, _, len) = if write { validate_write(vm, &r, "Construct")? } else { validate(vm, &r, "Construct")? };
     if min.is_some_and(|m| len < m) {
         return Err(vm.type_error("Derived TypedArray constructor created an array which was too small"));
     }
     Ok(o)
 }
 
-/// TypedArraySpeciesCreate (com `args`; `min` quando é só um tamanho).
+/// TypedArraySpeciesCreate (com `args`; `min` quando é só um tamanho, e
+/// aí o resultado vai ser escrito).
 fn species_create(vm: &mut Vm, exemplar: &ObjRef, kind: TaKind, args: Vec<Value>, min: Option<usize>) -> Result<ObjRef, Value> {
     let def = vm.realm.typed_ctors.borrow()[kind.index()].clone();
     let c = species_ctor(vm, exemplar, &def)?;
@@ -667,7 +740,7 @@ fn species_create(vm: &mut Vm, exemplar: &ObjRef, kind: TaKind, args: Vec<Value>
     {
         return new_typed(vm, kind, m, None);
     }
-    let o = create_from_ctor(vm, &c, args, min)?;
+    let o = create_from_ctor(vm, &c, args, min, min.is_some())?;
     let big = match &o.borrow().kind {
         Kind::TypedArray(t) => t.kind.is_bigint(),
         _ => false,
@@ -755,7 +828,7 @@ fn ta_from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         }
         let vals = iterate_method(vm, &src, &method)?;
         let len = vals.len();
-        let t = create_from_ctor(vm, &c, vec![Value::Number(len as f64)], Some(len))?;
+        let t = create_from_ctor(vm, &c, vec![Value::Number(len as f64)], Some(len), true)?;
         for (k, v) in vals.into_iter().enumerate() {
             let v = if mapping { vm.call(&map, a.arg(2), vec![v, Value::Number(k as f64)])? } else { v };
             vm.typed_set(&t, k, &v)?;
@@ -764,7 +837,7 @@ fn ta_from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     }
     let o = vm.to_object(&src)?;
     let len = vm.length_of(&o)?;
-    let t = create_from_ctor(vm, &c, vec![Value::Number(len as f64)], Some(len))?;
+    let t = create_from_ctor(vm, &c, vec![Value::Number(len as f64)], Some(len), true)?;
     for k in 0..len {
         let v = vm.get_obj(&o, &index_key(k))?;
         let v = if mapping { vm.call(&map, a.arg(2), vec![v, Value::Number(k as f64)])? } else { v };
@@ -776,7 +849,7 @@ fn ta_from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 fn ta_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let c = this_ctor(vm, a, "of")?;
     let len = a.args.len();
-    let t = create_from_ctor(vm, &c, vec![Value::Number(len as f64)], Some(len))?;
+    let t = create_from_ctor(vm, &c, vec![Value::Number(len as f64)], Some(len), true)?;
     for (k, v) in a.args.clone().iter().enumerate() {
         vm.typed_set(&t, k, v)?;
     }
@@ -828,29 +901,21 @@ fn at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn copy_within(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     const NAME: &str = "%TypedArray%.prototype.copyWithin";
-    let (o, kind, len) = this_ta(vm, a, NAME)?;
+    let (o, kind, len) = this_ta_write(vm, a, NAME)?;
     let to = rel_index(vm, &a.arg(0), len, 0)?;
     let from = rel_index(vm, &a.arg(1), len, 0)?;
     let end = rel_index(vm, &a.arg(2), len, len)?;
     let count = end.saturating_sub(from).min(len - to);
     if count > 0 {
         let len = revalidate(vm, &o, NAME)?;
+        // se encolheu, copia o maior prefixo que ainda cabe
+        let count = count.min(len.saturating_sub(from)).min(len.saturating_sub(to));
         let b = o.borrow();
         let Kind::TypedArray(t) = &b.kind else { return Ok(a.this.clone()) };
         let sz = kind.size();
-        let limit = len * sz + t.offset;
-        let (to_b, from_b, cb) = (to * sz + t.offset, from * sz + t.offset, count * sz);
-        let mut d = t.data.borrow_mut();
-        if from_b < to_b && to_b < from_b + cb {
-            // cópia de trás para frente: só acontece se o fim couber
-            if to_b + cb <= limit {
-                d.copy_within(from_b..from_b + cb, to_b);
-            }
-        } else {
-            let n = cb.min(limit.saturating_sub(from_b)).min(limit.saturating_sub(to_b));
-            if n > 0 {
-                d.copy_within(from_b..from_b + n, to_b);
-            }
+        if count > 0 {
+            let (to_b, from_b) = (to * sz + t.offset, from * sz + t.offset);
+            t.data.borrow_mut().copy_within(from_b..from_b + count * sz, to_b);
         }
     }
     Ok(a.this.clone())
@@ -948,7 +1013,7 @@ fn encode(kind: TaKind, v: &Value) -> ([u8; 8], usize) {
 
 fn fill(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     const NAME: &str = "%TypedArray%.prototype.fill";
-    let (o, kind, len) = this_ta(vm, a, NAME)?;
+    let (o, kind, len) = this_ta_write(vm, a, NAME)?;
     let v = to_content(vm, kind, &a.arg(0))?;
     let start = rel_index(vm, &a.arg(1), len, 0)?;
     let end = rel_index(vm, &a.arg(2), len, len)?;
@@ -1112,7 +1177,7 @@ fn values_of(o: &ObjRef, len: usize) -> Vec<Value> {
 }
 
 fn reverse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let (o, kind, len) = this_ta(vm, a, "%TypedArray%.prototype.reverse")?;
+    let (o, kind, len) = this_ta_write(vm, a, "%TypedArray%.prototype.reverse")?;
     let b = o.borrow();
     if let Kind::TypedArray(t) = &b.kind {
         let sz = kind.size();
@@ -1135,6 +1200,9 @@ fn reverse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 fn set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     const NAME: &str = "%TypedArray%.prototype.set";
     let o = this_ta_any(vm, a)?;
+    if o.borrow().ta_immutable() {
+        return Err(vm.type_error(format!("Cannot perform {NAME} on an immutable ArrayBuffer")));
+    }
     let offset = vm.to_integer(&a.arg(1))?;
     if offset < 0.0 {
         return Err(vm.range_error("offset is out of bounds"));
@@ -1288,7 +1356,7 @@ fn sorted_values(vm: &mut Vm, o: &ObjRef, len: usize, cmp: &Value) -> Result<Vec
 
 fn sort(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let cmp = compare_fn(vm, a)?;
-    let (o, _, len) = this_ta(vm, a, "%TypedArray%.prototype.sort")?;
+    let (o, _, len) = this_ta_write(vm, a, "%TypedArray%.prototype.sort")?;
     let vals = sorted_values(vm, &o, len, &cmp)?;
     for (i, v) in vals.iter().enumerate() {
         vm.typed_set(&o, i, v)?;
@@ -1366,6 +1434,7 @@ fn dv_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     };
     let def = vm.realm.data_view_proto.clone();
     let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    let immutable = is_immutable(&buf);
     // ler o protótipo pode ter desanexado ou encolhido o buffer
     if is_detached(&buf) {
         return Err(vm.type_error(DETACHED));
@@ -1389,6 +1458,7 @@ fn dv_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
             offset,
             length: length.unwrap_or(0),
             tracking: length.is_none(),
+            immutable,
         })),
     ))))
 }
@@ -1461,6 +1531,9 @@ fn dv_get(vm: &mut Vm, a: &CallArgs, kind: TaKind, name: &str) -> Result<Value, 
 /// SetViewValue.
 fn dv_set(vm: &mut Vm, a: &CallArgs, kind: TaKind, name: &str) -> Result<Value, Value> {
     let o = this_dv(vm, a, name)?;
+    if matches!(&o.borrow().kind, Kind::DataView(t) if t.immutable) {
+        return Err(vm.type_error(format!("Cannot perform DataView.prototype.{name} on an immutable ArrayBuffer")));
+    }
     let pos = to_index(vm, &a.arg(0), "offset")?;
     let v = to_content(vm, kind, &a.arg(1))?;
     let little = truthy(&a.arg(2));

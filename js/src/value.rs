@@ -718,11 +718,18 @@ pub struct BufferData {
     /// Tamanho máximo (Some = redimensionável).
     pub max: Option<usize>,
     pub detached: bool,
+    /// Imutável (transferToImmutable / sliceToImmutable): só leitura.
+    pub immutable: bool,
 }
 
 impl BufferData {
     pub fn new(bytes: Vec<u8>) -> BufferData {
-        BufferData { bytes: Rc::new(RefCell::new(bytes)), max: None, detached: false }
+        BufferData {
+            bytes: Rc::new(RefCell::new(bytes)),
+            max: None,
+            detached: false,
+            immutable: false,
+        }
     }
 }
 
@@ -737,6 +744,8 @@ pub struct TypedArrayData {
     pub length: usize,
     /// Acompanha o tamanho do buffer (redimensionável, criada sem tamanho).
     pub tracking: bool,
+    /// O buffer é imutável (não muda depois de criado).
+    pub immutable: bool,
 }
 
 impl TypedArrayData {
@@ -896,7 +905,13 @@ impl Object {
         if let Kind::TypedArray(t) = &self.kind
             && let Some(n) = k.numeric_index()
         {
-            return integer_index(n).and_then(|i| t.get(i)).map(Property::data);
+            let v = integer_index(n).and_then(|i| t.get(i))?;
+            // elementos de buffer imutável: nem graváveis nem configuráveis
+            return Some(Property {
+                slot: Slot::Data { value: v, writable: !t.immutable },
+                enumerable: true,
+                configurable: !t.immutable,
+            });
         }
         if let Kind::Array(v) = &self.kind {
             if let Some(i) = k.as_index() {
@@ -1013,6 +1028,11 @@ impl Object {
             Kind::TypedArray(_) => k.numeric_index(),
             _ => None,
         }
+    }
+
+    /// Typed array sobre buffer imutável.
+    pub fn ta_immutable(&self) -> bool {
+        matches!(&self.kind, Kind::TypedArray(t) if t.immutable)
     }
 
     pub fn is_enumerable(&self, k: &PropKey) -> bool {

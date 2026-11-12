@@ -242,8 +242,22 @@ pub fn define_own_property(vm: &mut Vm, o: &ObjRef, key: PropKey, d: Descriptor)
     // typed arrays: chaves numéricas são os elementos
     let numeric = o.borrow().ta_numeric(&key);
     if let Some(n) = numeric {
-        if !vm.ta_valid_index(o, n)
-            || d.configurable == Some(false)
+        if !vm.ta_valid_index(o, n) {
+            return Ok(false);
+        }
+        if o.borrow().ta_immutable() {
+            // buffer imutável: só aceita o que já vale (ValidateAndApplyPropertyDescriptor)
+            let cur = o.borrow().own(&key).and_then(|p| match p.slot {
+                Slot::Data { value, .. } => Some(value),
+                _ => None,
+            });
+            return Ok(d.configurable != Some(true)
+                && d.enumerable != Some(false)
+                && !d.is_accessor()
+                && d.writable != Some(true)
+                && d.value.as_ref().is_none_or(|v| cur.is_some_and(|c| crate::vm::same_value(v, &c))));
+        }
+        if d.configurable == Some(false)
             || d.enumerable == Some(false)
             || d.is_accessor()
             || d.writable == Some(false)
@@ -579,8 +593,9 @@ pub fn freeze_obj(o: &ObjRef, freeze: bool) {
 
 /// Typed arrays: elementos não podem ser congelados nem selados.
 fn check_typed_integrity(vm: &mut Vm, o: &ObjRef, what: &str) -> Result<(), Value> {
+    // buffer imutável: os elementos já são fixos
     let len = match &o.borrow().kind {
-        Kind::TypedArray(t) => t.len(),
+        Kind::TypedArray(t) if !t.immutable => t.len(),
         _ => return Ok(()),
     };
     if !vm.prevent_extensions(o)? {
@@ -626,6 +641,7 @@ fn test_integrity(o: &ObjRef, frozen: bool) -> bool {
         return false;
     }
     if let Kind::TypedArray(t) = &b.kind
+        && !t.immutable
         && !t.is_empty()
     {
         return false;
