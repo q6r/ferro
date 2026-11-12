@@ -746,3 +746,47 @@ fn clone_node(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(wrap(vm, c))
 }
 
+fn contains(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let Some(o) = node_of(&a.arg(0)) else { return Ok(Value::Bool(false)) };
+    Ok(Value::Bool(read(vm, |h| h.page.doc.is_inclusive_ancestor(n, o))))
+}
+
+fn has_child_nodes(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Bool(read(vm, |h| !h.page.doc.node(n).children.is_empty())))
+}
+
+fn get_root_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let mut n = this(vm, a)?;
+    while let Some(p) = read(vm, |h| h.page.doc.node(n).parent) {
+        n = p;
+    }
+    Ok(wrap(vm, n))
+}
+
+fn is_same_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Bool(node_of(&a.arg(0)) == Some(n)))
+}
+
+fn is_equal_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let Some(o) = node_of(&a.arg(0)) else { return Ok(Value::Bool(false)) };
+    Ok(Value::Bool(read(vm, |h| {
+        let d = &h.page.doc;
+        d.serialize(n, true) == d.serialize(o, true)
+    })))
+}
+
+/// Posição em pré-ordem (para compareDocumentPosition).
+fn path_to_root(doc: &Document, mut n: NodeId) -> Vec<NodeId> {
+    let mut p = vec![n];
+    while let Some(x) = doc.node(n).parent {
+        p.push(x);
+        n = x;
+    }
+    p.reverse();
+    p
+}
+
