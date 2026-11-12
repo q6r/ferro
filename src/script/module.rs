@@ -272,3 +272,63 @@ fn evaluate(vm: &mut Vm, url: &Url) -> R {
     }
 }
 
+/// Atende quem estava esperando um grafo que ficou pronto. Devolve se rodou algo.
+pub(crate) fn drive(vm: &mut Vm) -> bool {
+    let ready: Vec<(Url, Waiter)> = write(vm, |h| {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < h.modules.waiting.len() {
+            if graph_ready(h, &h.modules.waiting[i].0).is_some() {
+                out.push(h.modules.waiting.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+        out
+    });
+    let any = !ready.is_empty();
+    for (url, w) in ready {
+        let result = evaluate(vm, &url);
+        let ns = read(vm, |h| h.modules.recs.get(&url).map(|r| r.ns.clone()));
+        match w {
+            Waiter::Script(n) => {
+                let el = wrap(vm, n);
+                match &result {
+                    Ok(p) => {
+                        // erro dentro do módulo (assíncrono) aparece como Uncaught
+                        hook(vm, "moduleRan", vec![p.clone()]);
+                        if read(vm, |h| h.page.doc.element(n).and_then(|e| e.attr("src")).is_some()) {
+                            hook(vm, "fire", vec![el, Value::str("load")]);
+                        }
+                    }
+                    Err(e) => {
+                        let fetch_failed = read(vm, |h| {
+                            matches!(h.modules.recs.get(&url).map(|r| &r.state), Some(State::Failed(_)))
+                        });
+                        if fetch_failed {
+                            hook(vm, "fire", vec![el, Value::str("error")]);
+                        } else {
+                            vm.report_uncaught(e);
+                        }
+                    }
+                }
+            }
+            Waiter::Import { res, rej } => match result {
+                Ok(p) => {
+                    let done = hook(vm, "moduleDone", vec![p, ns.unwrap_or(Value::Undefined)]);
+                    if let Err(e) = vm.call(&res, Value::Undefined, vec![done]) {
+                        vm.report_uncaught(&e);
+                    }
+                }
+                Err(e) => {
+                    if let Err(e) = vm.call(&rej, Value::Undefined, vec![e]) {
+                        vm.report_uncaught(&e);
+                    }
+                }
+            },
+        }
+        vm.run_microtasks();
+    }
+    any
+}
+
