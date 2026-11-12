@@ -231,3 +231,80 @@ fn parse_start_tag(chars: &[char], start: usize) -> (Token, usize) {
     )
 }
 
+fn starts_with(chars: &[char], at: usize, pat: &str) -> bool {
+    let mut k = at;
+    for p in pat.chars() {
+        if chars.get(k) != Some(&p) {
+            return false;
+        }
+        k += 1;
+    }
+    true
+}
+
+fn find(chars: &[char], from: usize, pat: &str) -> Option<usize> {
+    (from..chars.len()).find(|&k| starts_with(chars, k, pat))
+}
+
+fn find_char(chars: &[char], from: usize, c: char) -> Option<usize> {
+    (from..chars.len()).find(|&k| chars[k] == c)
+}
+
+/// Busca sem diferenciar maiúsculas (para </SCRIPT>, </Style>...).
+fn find_ci(chars: &[char], from: usize, pat: &str) -> Option<usize> {
+    let pat: Vec<char> = pat.chars().collect();
+    (from..chars.len()).find(|&k| {
+        pat.iter()
+            .enumerate()
+            .all(|(n, p)| chars.get(k + n).is_some_and(|c| c.to_ascii_lowercase() == *p))
+    })
+}
+
+// ------------------------------------------------------------------ entidades
+
+const ENTITIES: &[(&str, &str)] = &[
+    ("amp", "&"), ("lt", "<"), ("gt", ">"), ("quot", "\""), ("apos", "'"),
+    ("nbsp", "\u{a0}"), ("copy", "©"), ("reg", "®"), ("trade", "™"),
+    ("hellip", "…"), ("mdash", "—"), ("ndash", "–"), ("lsquo", "‘"),
+    ("rsquo", "’"), ("ldquo", "“"), ("rdquo", "”"), ("laquo", "«"),
+    ("raquo", "»"), ("middot", "·"), ("bull", "•"), ("euro", "€"),
+    ("pound", "£"), ("yen", "¥"), ("cent", "¢"), ("deg", "°"), ("times", "×"),
+    ("divide", "÷"), ("plusmn", "±"), ("para", "¶"), ("sect", "§"),
+    ("shy", "\u{ad}"), ("iexcl", "¡"), ("iquest", "¿"), ("frac12", "½"),
+    ("frac14", "¼"), ("frac34", "¾"), ("ordf", "ª"), ("ordm", "º"),
+    ("aacute", "á"), ("agrave", "à"), ("acirc", "â"), ("atilde", "ã"),
+    ("auml", "ä"), ("eacute", "é"), ("egrave", "è"), ("ecirc", "ê"),
+    ("euml", "ë"), ("iacute", "í"), ("igrave", "ì"), ("icirc", "î"),
+    ("oacute", "ó"), ("ograve", "ò"), ("ocirc", "ô"), ("otilde", "õ"),
+    ("ouml", "ö"), ("uacute", "ú"), ("ugrave", "ù"), ("ucirc", "û"),
+    ("uuml", "ü"), ("ccedil", "ç"), ("ntilde", "ñ"), ("szlig", "ß"),
+    ("Aacute", "Á"), ("Agrave", "À"), ("Acirc", "Â"), ("Atilde", "Ã"),
+    ("Eacute", "É"), ("Ecirc", "Ê"), ("Iacute", "Í"), ("Oacute", "Ó"),
+    ("Ocirc", "Ô"), ("Otilde", "Õ"), ("Uacute", "Ú"), ("Ccedil", "Ç"),
+    ("Ntilde", "Ñ"), ("rarr", "→"), ("larr", "←"), ("uarr", "↑"),
+    ("darr", "↓"), ("harr", "↔"), ("hearts", "♥"), ("check", "✓"),
+    ("zwj", "\u{200d}"), ("zwnj", "\u{200c}"), ("ensp", "\u{2002}"),
+    ("emsp", "\u{2003}"), ("thinsp", "\u{2009}"),
+];
+
+pub fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find('&') {
+        out.push_str(&rest[..pos]);
+        rest = &rest[pos..];
+        if let Some((decoded, used)) = decode_one(rest) {
+            out.push_str(&decoded);
+            rest = &rest[used..];
+        } else {
+            out.push('&');
+            rest = &rest[1..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
