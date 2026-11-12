@@ -467,3 +467,49 @@ fn local_changed(a: &CallArgs) {
     }
 }
 
+/// O localStorage inteiro, uma linha por chave (origem, chave, valor).
+pub fn export_local_storage() -> String {
+    use crate::dados::escape;
+    let g = LOCAL.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = String::new();
+    for (origin, map) in g.iter().flatten() {
+        for (k, v) in map {
+            out.push_str(&escape(origin));
+            out.push('\t');
+            out.push_str(&escape(k));
+            out.push('\t');
+            out.push_str(&escape(v));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Lê o que [`export_local_storage`] gravou.
+pub fn import_local_storage(text: &str) {
+    use crate::dados::unescape;
+    let mut g = LOCAL.lock().unwrap_or_else(|e| e.into_inner());
+    let all = g.get_or_insert_with(HashMap::new);
+    for line in text.lines() {
+        let mut f = line.splitn(3, '\t');
+        let (Some(o), Some(k), Some(v)) = (f.next(), f.next(), f.next()) else { continue };
+        all.entry(unescape(o)).or_default().entry(unescape(k)).or_insert_with(|| unescape(v));
+    }
+}
+
+fn storage_get(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let k = arg_string(vm, a, 1)?;
+    let v = with_store(vm, a, |m| m.get(&k).cloned());
+    Ok(v.map_or(Value::Null, |v| s(&v)))
+}
+
+fn storage_set(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let k = arg_string(vm, a, 1)?;
+    let v = arg_string(vm, a, 2)?;
+    let old = with_store(vm, a, |m| m.insert(k, v.clone()));
+    if old.as_deref() != Some(v.as_str()) {
+        local_changed(a);
+    }
+    Ok(Value::Undefined)
+}
+
