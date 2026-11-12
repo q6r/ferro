@@ -801,3 +801,39 @@ fn unshift(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Number((len + n) as f64))
 }
 
+fn slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let end = rel_index(vm, &a.arg(1), len, len)?;
+    if let Kind::Array(v) = &o.borrow().kind {
+        let part = if start < end { v[start..end.min(v.len())].to_vec() } else { Vec::new() };
+        return Ok(vm.array_value(part));
+    }
+    let mut out = Vec::new();
+    for i in start..end.max(start) {
+        if has_i(vm, &o, i) {
+            out.push(get_i(vm, &o, i)?);
+        } else {
+            out.push(Value::Empty);
+        }
+    }
+    Ok(vm.array_value(out))
+}
+
+/// Ordena valores (estável), com comparador opcional que pode lançar.
+pub fn sort_values(vm: &mut Vm, mut vals: Vec<Value>, cmp: &Value) -> Result<Vec<Value>, Value> {
+    // undefined vai para o fim, sem passar pelo comparador
+    let undef_count = vals.iter().filter(|v| v.is_undefined()).count();
+    vals.retain(|v| !v.is_undefined());
+    let keys: Option<Vec<JsStr>> = if cmp.is_undefined() {
+        let mut ks = Vec::with_capacity(vals.len());
+        for v in &vals {
+            ks.push(vm.to_string(v)?);
+        }
+        Some(ks)
+    } else {
+        None
+    };
+    let mut idx: Vec<usize> = (0..vals.len()).collect();
+    let mut err: Option<Value> = None;
