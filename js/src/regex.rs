@@ -1741,3 +1741,54 @@ impl Program {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn u(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    /// Primeiro casamento e grupos como texto.
+    fn m(p: &str, f: &str, s: &str) -> Option<Vec<Option<String>>> {
+        let prog = compile(&u(p), Flags::parse(f).unwrap()).unwrap_or_else(|e| panic!("/{p}/: {}", e.0));
+        let text = u(s);
+        let r = prog.search(&text, 0, false)?;
+        Some(
+            r.chunks(2)
+                .map(|c| if c[0] == NONE || c[1] == NONE { None } else { Some(String::from_utf16_lossy(&text[c[0]..c[1]])) })
+                .collect(),
+        )
+    }
+
+    fn whole(p: &str, f: &str, s: &str) -> Option<String> {
+        m(p, f, s).and_then(|v| v[0].clone())
+    }
+
+    #[test]
+    fn basico() {
+        assert_eq!(whole("b+", "", "abbbc"), Some("bbb".into()));
+        assert_eq!(whole("b+?", "", "abbbc"), Some("b".into()));
+        assert_eq!(whole("a.c", "", "xabcx"), Some("abc".into()));
+        assert_eq!(whole("^abc$", "", "abc"), Some("abc".into()));
+        assert_eq!(whole("^b", "m", "a\nb"), Some("b".into()));
+        assert_eq!(whole("[a-c]{2,3}", "", "xxabcdx"), Some("abc".into()));
+        assert_eq!(whole("\\d+(\\.\\d+)?", "", "v1.25x"), Some("1.25".into()));
+        assert_eq!(whole("colou?r", "", "colour"), Some("colour".into()));
+        assert_eq!(whole("ABC", "i", "xabcx"), Some("abc".into()));
+        assert_eq!(whole("\\bfoo\\b", "", "a foo b"), Some("foo".into()));
+        assert_eq!(whole("a|ab|abc", "", "abc"), Some("a".into()));
+        assert_eq!(whole("(a|ab)(c|bcd)", "", "abcd"), Some("abcd".into()));
+        assert_eq!(whole("x*", "", "aaa"), Some("".into()));
+        assert_eq!(whole("[^abc]+", "", "abcdefa"), Some("def".into()));
+        assert_eq!(whole("\\s+", "", "a \t\nb"), Some(" \t\n".into()));
+        assert_eq!(whole(".*", "", "abc\ndef"), Some("abc".into()));
+        assert_eq!(whole(".*", "s", "abc\ndef"), Some("abc\ndef".into()));
+        assert_eq!(whole("a{3}", "", "aaaa"), Some("aaa".into()));
+        assert_eq!(whole("(?:ab){2}", "", "abababx"), Some("abab".into()));
+        assert_eq!(whole("(ab){1,2}?c", "", "ababc"), Some("ababc".into()));
+        assert_eq!(whole("]", "", "a]"), Some("]".into()));
+        assert_eq!(whole("a{,2}", "", "a{,2}"), Some("a{,2}".into()));
+        assert_eq!(whole("\\x41\\u0042\\103", "", "ABC"), Some("ABC".into()));
+    }
+
