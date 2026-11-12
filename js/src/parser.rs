@@ -141,3 +141,40 @@ pub fn parse_module(src: &str) -> PResult<Vec<ModuleItem>> {
     Ok(items)
 }
 
+/// Para `new Function(params, body)`.
+pub fn parse_function_parts(params: &str, body: &str) -> PResult<Rc<FunctionDef>> {
+    parse_function_parts_kind(params, body, "function")
+}
+
+/// `prefix`: "function", "async function", "function*" ou "async function*".
+pub fn parse_function_parts_kind(params: &str, body: &str, prefix: &str) -> PResult<Rc<FunctionDef>> {
+    let src = format!("({prefix} anonymous({params}\n) {{\n{body}\n}})");
+    let mut p = Parser::new(&src)?;
+    let e = p.parse_expression(false)?;
+    match e {
+        Expr::Function(f) => Ok(f),
+        _ => Err(ParseError {
+            msg: "corpo de função inválido".into(),
+            line: 1,
+            eof: false,
+        }),
+    }
+}
+
+impl Parser {
+    fn new(src: &str) -> PResult<Parser> {
+        let mut lx = Lexer::new(src);
+        let tok = lx.next_token()?;
+        Ok(Parser {
+            lx,
+            tok,
+            prev_end: 0,
+            prev_line: 1,
+            ctx: Ctx::default(),
+            strict: false,
+            module: false,
+        })
+    }
+
+    // ------------------------------------------------------------ módulos
+
