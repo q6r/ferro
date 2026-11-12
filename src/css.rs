@@ -723,3 +723,49 @@ impl Parser<'_> {
         self.pos >= self.s.len()
     }
 
+    fn parse_rule_list(&mut self, rules: &mut Vec<Rule>, nested: bool) {
+        loop {
+            while !self.eof() && self.s[self.pos].is_whitespace() {
+                self.pos += 1;
+            }
+            if self.eof() {
+                return;
+            }
+            match self.s[self.pos] {
+                '}' => {
+                    self.pos += 1;
+                    if nested {
+                        return;
+                    }
+                }
+                '@' => self.parse_at_rule(rules),
+                _ => {
+                    // marcadores antigos <!-- e --> dentro de <style>
+                    if self.starts_with("<!--") {
+                        self.pos += 4;
+                        continue;
+                    }
+                    if self.starts_with("-->") {
+                        self.pos += 3;
+                        continue;
+                    }
+                    let (prelude, stop) = self.read_prelude();
+                    if stop != Some('{') {
+                        continue; // lixo antes de ';' ou fim
+                    }
+                    self.pos += 1;
+                    let block = self.read_block();
+                    if let Some(selectors) = parse_selector_list(&prelude) {
+                        let declarations = parse_declarations(&block);
+                        if !declarations.is_empty() {
+                            rules.push(Rule {
+                                selectors,
+                                declarations,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
