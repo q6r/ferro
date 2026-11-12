@@ -166,3 +166,60 @@ pub fn new_tab(
     hits.push((pr, Hit::Customize));
 }
 
+/// Miniatura de navegador nas cores de um tema.
+fn theme_preview(p: &mut Painter, card: Rect, th: &Theme) {
+    let u = card.w / 100.0;
+    p.rrect(card, 12.0, th.frame);
+    // trilho lateral e a página flutuante, como no layout padrão
+    p.rrect(rect(card.x + 4.0 * u, card.y + 4.0 * u, 8.0 * u, card.h - 8.0 * u), 3.0 * u, th.rail());
+    for i in 0..3 {
+        let w = [22.0, 16.0, 19.0][i] * u;
+        let c = if i == 0 { th.row_selected() } else { th.border };
+        p.rrect(rect(card.x + 16.0 * u, card.y + (8.0 + i as f32 * 7.0) * u, w, 4.5 * u), 2.0 * u, c);
+    }
+    let page = rect(card.x + 42.0 * u, card.y + 6.0 * u, card.w - 46.0 * u, card.h - 10.0 * u);
+    p.rrect(page, 4.0 * u, th.toolbar);
+    p.rrect(rect(page.x + 4.0 * u, page.y + 4.0 * u, page.w * 0.5, 3.5 * u), 1.75 * u, th.muted);
+    for (i, j) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        let bw = (page.w - 12.0 * u) / 2.0;
+        p.rrect(
+            rect(page.x + 4.0 * u + i as f32 * (bw + 4.0 * u), page.y + 12.0 * u + j as f32 * 16.0 * u, bw, 13.0 * u),
+            3.0 * u,
+            th.card_hover,
+        );
+    }
+}
+
+/// Miniatura de um dos dois layouts, nas cores do tema atual.
+fn layout_preview(p: &mut Painter, card: Rect, t: &Theme, mode: LayoutMode) {
+    let u = card.w / 100.0;
+    p.rrect(card, 12.0, t.frame);
+    match mode {
+        LayoutMode::Sidebar => {
+            p.rrect(rect(card.x + 3.0 * u, card.y + 3.0 * u, 7.0 * u, card.h - 6.0 * u), 2.5 * u, t.rail());
+            p.rrect(rect(card.x + 5.0 * u, card.y + 6.0 * u, 3.0 * u, 3.0 * u), 1.0 * u, t.rail_icon_active());
+            for i in 0..4 {
+                let c = if i == 0 { t.row_selected() } else { t.border };
+                p.rrect(rect(card.x + 13.0 * u, card.y + (6.0 + i as f32 * 6.0) * u, 22.0 * u, 4.0 * u), 2.0 * u, c);
+            }
+            p.rrect(rect(card.x + 52.0 * u, card.y + 4.0 * u, 34.0 * u, 4.0 * u), 2.0 * u, t.field);
+            let page = rect(card.x + 39.0 * u, card.y + 11.0 * u, card.w - 42.0 * u, card.h - 14.0 * u);
+            p.rrect(page, 3.0 * u, t.toolbar);
+        }
+        LayoutMode::Capsules => {
+            for i in 0..3 {
+                let c = if i == 0 { t.row_selected() } else { t.border };
+                p.rrect(rect(card.x + (4.0 + i as f32 * 20.0) * u, card.y + 4.0 * u, 17.0 * u, 5.0 * u), 2.5 * u, c);
+            }
+            p.rrect(rect(card.x + 28.0 * u, card.y + 12.0 * u, 44.0 * u, 5.0 * u), 2.5 * u, t.field);
+            let page = rect(card.x + 3.0 * u, card.y + 20.0 * u, card.w - 6.0 * u, card.h - 23.0 * u);
+            p.rrect(page, 3.0 * u, t.toolbar);
+        }
+    }
+}
+
+fn ring(p: &mut Painter, card: Rect, color: Color, width: f32) {
+    let r = rect(card.x - 3.0, card.y - 3.0, card.w + 6.0, card.h + 6.0);
+    p.stroke(r, 15.0, width, color);
+}
+
