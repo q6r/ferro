@@ -194,3 +194,52 @@ impl JsonParser<'_> {
         Ok(Value::Number(text.parse().unwrap_or(f64::NAN)))
     }
 
+    fn string(&mut self) -> Result<JsStr, String> {
+        self.pos += 1;
+        let mut out = Vec::new();
+        loop {
+            let Some(&c) = self.s.get(self.pos) else {
+                return Err(self.err_at_end("Unterminated string"));
+            };
+            self.pos += 1;
+            match c {
+                0x22 => return Ok(JsStr::from_units(out)),
+                0x5C => {
+                    let Some(&e) = self.s.get(self.pos) else { return Err(self.err()) };
+                    self.pos += 1;
+                    match e {
+                        0x22 => out.push(0x22),
+                        0x5C => out.push(0x5C),
+                        0x2F => out.push(0x2F),
+                        0x62 => out.push(0x08),
+                        0x66 => out.push(0x0C),
+                        0x6E => out.push(0x0A),
+                        0x72 => out.push(0x0D),
+                        0x74 => out.push(0x09),
+                        0x75 => {
+                            let mut v = 0u16;
+                            for _ in 0..4 {
+                                let Some(&h) = self.s.get(self.pos) else { return Err(self.err()) };
+                                let d = char::from_u32(h as u32).and_then(|ch| ch.to_digit(16));
+                                let Some(d) = d else { return Err(self.err()) };
+                                v = v * 16 + d as u16;
+                                self.pos += 1;
+                            }
+                            out.push(v);
+                        }
+                        _ => {
+                            self.pos -= 1;
+                            return Err(self.err());
+                        }
+                    }
+                }
+                0..=0x1F => {
+                    self.pos -= 1;
+                    return Err(format!("Bad control character in string literal in JSON at position {}", self.pos));
+                }
+                _ => out.push(c),
+            }
+        }
+    }
+}
+
