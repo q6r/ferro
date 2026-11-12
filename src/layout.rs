@@ -3041,3 +3041,118 @@ impl<'a> Ctx<'a> {
 
     // ------------------------------------------------------------- em linha
 
+    fn layout_inline(&mut self, b: &'a LayoutBox, x: f32, y: f32, w: f32, inh: &Inherited) -> (f32, Option<f32>) {
+        let mut items = Vec::new();
+        self.flatten(b, &mut items, inh, w);
+        let floats = self.bfc_floats().to_vec();
+        let mut lb = LineBuilder::new(self.fonts, &b.style, x, y, w, floats);
+        let mut anchors: Vec<(String, usize)> = Vec::new();
+        let mut out_of_flow: Vec<(&'a LayoutBox, Inherited, usize, f32)> = Vec::new();
+        // inline-blocks já montados, esperando a posição final na linha
+        let mut held: Vec<(Vec<DisplayItem>, Mark, Mark, f32, f32)> = Vec::new();
+        for item in items {
+            match item {
+                Item::Text { text, style, inh } => lb.push_text(&text, &style, &inh),
+                Item::Break => lb.break_line(true),
+                Item::Atomic { w, h, paint, label, style, inh } => lb.push_box(w, h, paint, label, &style, &inh),
+                Item::InlineStart(style, id) => lb.open_inline(id, style),
+                Item::InlineEnd(_, id) => lb.close_inline(id),
+                Item::InlineBlock(ib, inh) => {
+                    let bm = self.shrink_bm(ib, w, false);
+                    let start = self.mark();
+                    let r = self.layout_block(ib, &bm, x, y + bm.margin[TOP], &inh, Opts::bfc());
+                    let end = self.mark();
+                    let items = self.items.split_off(start.items);
+                    let outer_w = bm.content_w + bm.extra_h() + bm.margin[LEFT] + bm.margin[RIGHT];
+                    let outer_h = bm.margin[TOP] + r.height + bm.margin[BOTTOM];
+                    let base = match r.first_baseline {
+                        Some(bl) if !ib.style.overflow_clip => (bl - y).clamp(0.0, outer_h),
+                        _ => outer_h,
+                    };
+                    held.push((items, start, end, x, y));
+                    lb.push_inline_block(outer_w, outer_h, base, held.len() - 1, &ib.style, &inh);
+                }
+                Item::Anchor(name) => anchors.push((name, lb.lines.len())),
+                Item::OutOfFlow(bx, inh) => out_of_flow.push((bx, inh, lb.lines.len(), lb.x)),
+                Item::Float(bx, inh) => {
+                    // o float vai para a linha atual (ou a próxima, se ela já tem conteúdo)
+                    let top = y + lb.top + lb.gap + if lb.cur.is_empty() { 0.0 } else { lb.strut };
+                    let f = self.place_float(bx, x, w, top, &inh);
+                    lb.add_float(f);
+                }
+            }
+        }
+        let lines = lb.finish();
+
+        let mut cy = y;
+        let mut first = None;
+        let mut line_tops = Vec::with_capacity(lines.len());
+        for line in &lines {
+            cy += line.gap;
+            line_tops.push(cy);
+            let free = (line.avail - line.width).max(0.0);
+            let offset = line.inset
+                + match b.style.text_align {
+                    TextAlign::Left => 0.0,
+                    TextAlign::Center => free / 2.0,
+                    TextAlign::Right => free,
+                };
+            let baseline = cy + line.above;
+            first.get_or_insert(baseline);
+            let line_h = line.above + line.below;
+            for seg in &line.segs {
+                self.paint_inline_seg(seg, x + offset, baseline);
+            }
+            for f in &line.frags {
+                let fx = x + offset + f.x;
+                if let Some(href) = &f.inh.link {
+                    let list = if self.in_fixed > 0 { &mut self.fixed_links } else { &mut self.links };
+                    list.push((
+                        Rect { x: fx, y: cy, w: f.w, h: line_h },
+                        href.to_string(),
+                    ));
+                }
+                if let Some(e) = f.inh.elem {
+                    let r = Rect { x: fx, y: cy, w: f.w, h: line_h };
+                    self.boxes.push((e, r));
+                    if self.in_fixed > 0 {
+                        self.fixed_nodes.insert(e);
+                    }
+                    if !f.inh.no_hit {
+                        self.items.push(DisplayItem::Hit { rect: r, node: e });
+                    }
+                }
+                if let FragKind::InlineBlock { h, base, hold } = &f.kind {
+                    // move o inline-block já montado para o lugar dele
+                    let top = if f.valign == VAlign::Middle {
+                        baseline - f.mid - h / 2.0
+                    } else {
+                        baseline - base
+                    };
+                    let (items, start, end, tx, ty) = &mut held[*hold];
+                    let (dx, dy) = (fx - *tx, top - *ty);
+                    let mut moved = std::mem::take(items);
+                    for it in &mut moved {
+                        translate(it, dx, dy);
+                    }
+                    self.items.append(&mut moved);
+                    let (mut a, mut z) = (start.clone(), end.clone());
+                    a.items = 0;
+                    z.items = 0;
+                    self.shift_between(&a, Some(&z), dx, dy);
+                    continue;
+                }
+                self.emit_frag(f, fx, baseline);
+            }
+            cy += line_h;
+        }
+        for (name, line) in anchors {
+            self.anchors.push((name, line_tops.get(line).copied().unwrap_or(cy)));
+        }
+        for (bx, inh, line, lx) in out_of_flow {
+            let top = line_tops.get(line).copied().unwrap_or(cy);
+            self.add_pending(bx, x + lx, top, &inh);
+        }
+        (cy - y, first)
+    }
+
