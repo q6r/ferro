@@ -422,3 +422,67 @@ pub fn get_substitution(
     Ok(JsStr::from_units(out))
 }
 
+fn replace_impl(vm: &mut Vm, a: &CallArgs, all: bool) -> Result<Value, Value> {
+    let what = if all { "replaceAll" } else { "replace" };
+    if a.this.is_nullish() {
+        return Err(vm.type_error(format!("String.prototype.{what} called on null or undefined")));
+    }
+    let pattern = a.arg(0);
+    let replacement = a.arg(1);
+    if !pattern.is_nullish() {
+        if all
+            && let Value::Object(o) = &pattern
+            && matches!(o.borrow().kind, Kind::RegExp { .. })
+        {
+            let flags = vm.get_str(&pattern, "flags")?;
+            let flags = vm.to_rust_string(&flags)?;
+            if !flags.contains('g') {
+                return Err(vm.type_error("String.prototype.replaceAll called with a non-global RegExp argument"));
+            }
+        }
+        let key = PropKey::Sym(vm.realm.sym_replace.clone());
+        let m = vm.get(&pattern, &key)?;
+        if !m.is_nullish() {
+            return vm.call(&m, pattern, vec![a.this.clone(), replacement]);
+        }
+    }
+    let s = vm.to_string(&a.this)?;
+    let search = vm.to_string(&pattern)?;
+    let functional = replacement.is_callable();
+    let repl_str = if functional { JsStr::empty() } else { vm.to_string(&replacement)? };
+    let mut positions = Vec::new();
+    let mut from = 0;
+    while let Some(p) = s.find(&search, from) {
+        positions.push(p);
+        if !all {
+            break;
+        }
+        from = p + search.len().max(1);
+        if from > s.len() {
+            break;
+        }
+    }
+    if positions.is_empty() {
+        return Ok(Value::String(s));
+    }
+    let mut out: Vec<u16> = Vec::new();
+    let mut last = 0;
+    for p in positions {
+        out.extend_from_slice(&s.units()[last..p]);
+        let rep = if functional {
+            let r = vm.call(
+                &replacement,
+                Value::Undefined,
+                vec![Value::String(search.clone()), Value::Number(p as f64), Value::String(s.clone())],
+            )?;
+            vm.to_string(&r)?
+        } else {
+            get_substitution(vm, &search, &s, p, &[], &Value::Undefined, &repl_str)?
+        };
+        out.extend_from_slice(rep.units());
+        last = p + search.len();
+    }
+    out.extend_from_slice(&s.units()[last..]);
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
