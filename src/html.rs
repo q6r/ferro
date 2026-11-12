@@ -611,3 +611,74 @@ impl TreeBuilder {
         }
     }
 
+    /// Fechamentos implícitos: <p> antes de blocos, <li> antes de <li>, etc.
+    fn close_implied(&mut self, name: &str) {
+        if CLOSES_P.contains(&name) {
+            self.close_if_open("p", &[]);
+        }
+        match name {
+            "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+                if matches!(self.doc.tag(self.current()), Some("h1" | "h2" | "h3" | "h4" | "h5" | "h6")) {
+                    self.stack.pop();
+                }
+            }
+            "li" => self.close_if_open("li", &["ul", "ol"]),
+            "dd" | "dt" => {
+                self.close_if_open("dd", &["dl"]);
+                self.close_if_open("dt", &["dl"]);
+            }
+            "option" => {
+                if self.doc.tag(self.current()) == Some("option") {
+                    self.stack.pop();
+                }
+            }
+            "optgroup" => {
+                if self.doc.tag(self.current()) == Some("option") {
+                    self.stack.pop();
+                }
+                if self.doc.tag(self.current()) == Some("optgroup") {
+                    self.stack.pop();
+                }
+            }
+            "tr" => self.close_if_open("tr", &["table", "tbody", "thead", "tfoot"]),
+            "td" | "th" => {
+                self.close_if_open("td", &["tr", "table"]);
+                self.close_if_open("th", &["tr", "table"]);
+            }
+            "thead" | "tbody" | "tfoot" => {
+                for t in ["tr", "thead", "tbody", "tfoot"] {
+                    self.close_if_open(t, &["table"]);
+                }
+            }
+            "a" => self.close_if_open("a", &[]),
+            "button" => self.close_if_open("button", &[]),
+            _ => {}
+        }
+    }
+
+    fn end_tag(&mut self, name: &str) {
+        match name {
+            "html" | "body" | "br" => {}
+            "head" => {
+                if let Some(pos) = self.stack.iter().position(|&n| Some(n) == self.head) {
+                    self.stack.truncate(pos);
+                }
+            }
+            _ => {
+                // fecha o elemento aberto mais próximo com esse nome,
+                // sem nunca fechar <html> ou <body>
+                for idx in (0..self.stack.len()).rev() {
+                    let t = self.tag_at(idx);
+                    if t == "body" || t == "html" {
+                        break;
+                    }
+                    if t == name {
+                        self.stack.truncate(idx);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
