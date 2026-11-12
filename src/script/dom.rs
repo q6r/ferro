@@ -2395,3 +2395,245 @@ impl Protos<'_> {
     }
 }
 
+pub(crate) fn install(vm: &mut Vm) {
+    let object_proto = vm.realm.object_proto.clone();
+    let mut p = Protos { vm };
+
+    let et = p.make("EventTarget", &object_proto, event_target_ctor);
+    let window = p.make("Window", &et, illegal);
+    let global = p.vm.realm.global.clone();
+    global.borrow_mut().proto = Some(window);
+
+    let node = p.make("Node", &et, illegal);
+    for (name, v) in [
+        ("ELEMENT_NODE", 1.0),
+        ("ATTRIBUTE_NODE", 2.0),
+        ("TEXT_NODE", 3.0),
+        ("CDATA_SECTION_NODE", 4.0),
+        ("PROCESSING_INSTRUCTION_NODE", 7.0),
+        ("COMMENT_NODE", 8.0),
+        ("DOCUMENT_NODE", 9.0),
+        ("DOCUMENT_TYPE_NODE", 10.0),
+        ("DOCUMENT_FRAGMENT_NODE", 11.0),
+        ("DOCUMENT_POSITION_DISCONNECTED", 1.0),
+        ("DOCUMENT_POSITION_PRECEDING", 2.0),
+        ("DOCUMENT_POSITION_FOLLOWING", 4.0),
+        ("DOCUMENT_POSITION_CONTAINS", 8.0),
+        ("DOCUMENT_POSITION_CONTAINED_BY", 16.0),
+    ] {
+        p.vm.realm.constant(&node, name, Value::Number(v));
+        if let Some(Value::Object(c)) = p.vm.realm.global.borrow().own(&ferro_js::value::PropKey::str("Node")).and_then(|pr| match pr.slot {
+            ferro_js::value::Slot::Data { value, .. } => Some(value),
+            _ => None,
+        }) {
+            p.vm.realm.constant(&c, name, Value::Number(v));
+        }
+    }
+    p.get(&node, "nodeType", node_type);
+    p.get(&node, "nodeName", node_name);
+    p.get_set(&node, "nodeValue", node_value, set_node_value);
+    p.get_set(&node, "textContent", text_content, set_text_content);
+    p.get(&node, "parentNode", parent_node);
+    p.get(&node, "parentElement", parent_element);
+    p.get(&node, "childNodes", child_nodes);
+    p.get(&node, "firstChild", first_child);
+    p.get(&node, "lastChild", last_child);
+    p.get(&node, "previousSibling", previous_sibling);
+    p.get(&node, "nextSibling", next_sibling);
+    p.get(&node, "ownerDocument", owner_document);
+    p.get(&node, "isConnected", is_connected);
+    p.get(&node, "baseURI", base_uri);
+    p.method(&node, "appendChild", 1, append_child);
+    p.method(&node, "insertBefore", 2, insert_before);
+    p.method(&node, "removeChild", 1, remove_child);
+    p.method(&node, "replaceChild", 2, replace_child);
+    p.method(&node, "cloneNode", 0, clone_node);
+    p.method(&node, "contains", 1, contains);
+    p.method(&node, "hasChildNodes", 0, has_child_nodes);
+    p.method(&node, "getRootNode", 0, get_root_node);
+    p.method(&node, "isSameNode", 1, is_same_node);
+    p.method(&node, "isEqualNode", 1, is_equal_node);
+    p.method(&node, "compareDocumentPosition", 1, compare_document_position);
+    p.method(&node, "normalize", 0, normalize);
+
+    let cd = p.make("CharacterData", &node, illegal);
+    p.get_set(&cd, "data", cd_data, cd_set_data);
+    p.get(&cd, "length", cd_length);
+    p.method(&cd, "appendData", 1, cd_append_data);
+    let text = p.make("Text", &cd, text_ctor);
+    p.get(&text, "wholeText", cd_data);
+    p.make("CDATASection", &text, illegal);
+    p.make("ProcessingInstruction", &cd, illegal);
+    p.make("Comment", &cd, comment_ctor);
+    let doctype_p = p.make("DocumentType", &node, illegal);
+    p.get(&doctype_p, "name", node_name);
+
+    let element = p.make("Element", &node, illegal);
+    let doc_p = p.make("Document", &node, illegal);
+    let frag = p.make("DocumentFragment", &node, fragment_ctor);
+
+    // ParentNode
+    for target in [&element, &doc_p, &frag] {
+        p.get(target, "children", children);
+        p.get(target, "firstElementChild", first_element_child);
+        p.get(target, "lastElementChild", last_element_child);
+        p.get(target, "childElementCount", child_element_count);
+        p.method(target, "append", 0, append);
+        p.method(target, "prepend", 0, prepend);
+        p.method(target, "replaceChildren", 0, replace_children);
+        p.method(target, "querySelector", 1, query_selector);
+        p.method(target, "querySelectorAll", 1, query_selector_all);
+    }
+    // ChildNode
+    for target in [&element, &cd, &doctype_p] {
+        p.method(target, "before", 0, before);
+        p.method(target, "after", 0, after);
+        p.method(target, "replaceWith", 0, replace_with);
+        p.method(target, "remove", 0, remove);
+    }
+    for target in [&element, &cd] {
+        p.get(target, "previousElementSibling", previous_element_sibling);
+        p.get(target, "nextElementSibling", next_element_sibling);
+    }
+    for target in [&element, &doc_p] {
+        p.method(target, "getElementsByTagName", 1, get_elements_by_tag_name);
+        p.method(target, "getElementsByClassName", 1, get_elements_by_class_name);
+    }
+    p.method(&doc_p, "getElementById", 1, get_element_by_id);
+    p.method(&frag, "getElementById", 1, get_element_by_id);
+
+    p.method(&element, "attachShadow", 1, attach_shadow);
+    p.get(&element, "shadowRoot", shadow_root);
+    p.get(&element, "tagName", tag_name);
+    p.get(&element, "localName", local_name);
+    p.get(&element, "namespaceURI", namespace_uri);
+    p.get_set(&element, "id", id, set_id);
+    p.get_set(&element, "className", class_name, set_class_name);
+    p.get(&element, "attributes", attributes);
+    p.method(&element, "getAttribute", 1, get_attribute);
+    p.method(&element, "setAttribute", 2, set_attribute);
+    p.method(&element, "removeAttribute", 1, remove_attribute);
+    p.method(&element, "hasAttribute", 1, has_attribute);
+    p.method(&element, "hasAttributes", 0, has_attributes);
+    p.method(&element, "toggleAttribute", 1, toggle_attribute);
+    p.method(&element, "getAttributeNames", 0, get_attribute_names);
+    p.get_set(&element, "innerHTML", inner_html, set_inner_html);
+    p.get_set(&element, "outerHTML", outer_html, set_outer_html);
+    p.method(&element, "insertAdjacentHTML", 2, insert_adjacent_html);
+    p.method(&element, "insertAdjacentElement", 2, insert_adjacent_element);
+    p.method(&element, "insertAdjacentText", 2, insert_adjacent_text);
+    p.method(&element, "matches", 1, matches_sel);
+    p.method(&element, "webkitMatchesSelector", 1, matches_sel);
+    p.method(&element, "closest", 1, closest);
+    p.method(&element, "getBoundingClientRect", 0, get_bounding_client_rect);
+    p.method(&element, "getClientRects", 0, get_client_rects);
+    p.get(&element, "clientWidth", client_width);
+    p.get(&element, "clientHeight", client_height);
+    p.get(&element, "clientTop", zero);
+    p.get(&element, "clientLeft", zero);
+    p.get(&element, "scrollWidth", scroll_width);
+    p.get(&element, "scrollHeight", scroll_height);
+    p.get_set(&element, "scrollTop", scroll_top, set_scroll_top);
+    p.get_set(&element, "scrollLeft", scroll_left, set_scroll_left);
+    p.method(&element, "scrollIntoView", 0, scroll_into_view);
+    p.method(&element, "scrollIntoViewIfNeeded", 0, scroll_into_view);
+    p.method(&element, "scroll", 0, scroll_to);
+    p.method(&element, "scrollTo", 0, scroll_to);
+    p.method(&element, "scrollBy", 0, scroll_by);
+
+    let html = p.make("HTMLElement", &element, html_element_ctor);
+    p.get_set(&html, "innerText", inner_text, set_inner_text);
+    p.get_set(&html, "outerText", inner_text, set_inner_text);
+    p.get(&html, "offsetWidth", offset_width);
+    p.get(&html, "offsetHeight", offset_height);
+    p.get(&html, "offsetTop", offset_top);
+    p.get(&html, "offsetLeft", offset_left);
+    p.get(&html, "offsetParent", offset_parent);
+    p.method(&html, "focus", 0, focus);
+    p.method(&html, "blur", 0, blur);
+    p.method(&html, "click", 0, click);
+    let svg = p.make("SVGElement", &element, illegal);
+    p.method(&svg, "focus", 0, focus);
+    p.method(&svg, "blur", 0, blur);
+    p.make("SVGGraphicsElement", &svg, illegal);
+    let svg_graphics = host(p.vm).borrow().protos.get("SVGGraphicsElement").cloned().expect("svg");
+    p.make("SVGSVGElement", &svg_graphics, illegal);
+
+    let media = p.make("HTMLMediaElement", &html, illegal);
+    for name in HTML_IFACES {
+        if *name == "HTMLMediaElement" {
+            continue;
+        }
+        p.make(name, &html, illegal);
+    }
+    p.make("HTMLAudioElement", &media, illegal);
+    p.make("HTMLVideoElement", &media, illegal);
+    let slot = host(p.vm).borrow().protos.get("HTMLSlotElement").cloned().expect("slot");
+    p.method(&slot, "assignedNodes", 0, assigned_nodes);
+    p.method(&slot, "assignedElements", 0, assigned_elements);
+    let sr = p.make("ShadowRoot", &frag, illegal);
+    p.get(&sr, "host", shadow_host);
+    p.get(&sr, "mode", shadow_mode);
+    p.get_set(&sr, "innerHTML", inner_html, set_inner_html);
+    let template = host(p.vm).borrow().protos.get("HTMLTemplateElement").cloned().expect("template");
+    p.get(&template, "content", template_content);
+
+    // Image() e Option() criam elementos
+    let img_proto = host(p.vm).borrow().protos.get("HTMLImageElement").cloned().expect("img");
+    let image = ferro_js::builtins::native_fn(&p.vm.realm.function_proto.clone(), "Image", 0, image_ctor, true);
+    p.vm.realm.constant(&image, "prototype", Value::Object(img_proto));
+    p.vm.realm.global_value("Image", Value::Object(image));
+    let opt_proto = host(p.vm).borrow().protos.get("HTMLOptionElement").cloned().expect("option");
+    let option = ferro_js::builtins::native_fn(&p.vm.realm.function_proto.clone(), "Option", 0, option_ctor, true);
+    p.vm.realm.constant(&option, "prototype", Value::Object(opt_proto));
+    p.vm.realm.global_value("Option", Value::Object(option));
+
+    // Document
+    let hd = p.make("HTMLDocument", &doc_p, illegal);
+    let _ = hd;
+    p.get(&doc_p, "documentElement", document_element);
+    p.get(&doc_p, "head", head);
+    p.get(&doc_p, "body", body);
+    p.get(&doc_p, "doctype", doctype);
+    p.get_set(&doc_p, "title", title, set_title);
+    p.get(&doc_p, "URL", document_url);
+    p.get(&doc_p, "documentURI", document_url);
+    p.get(&doc_p, "readyState", ready_state);
+    p.get(&doc_p, "currentScript", current_script);
+    p.get(&doc_p, "activeElement", active_element);
+    p.get(&doc_p, "defaultView", default_view);
+    p.get(&doc_p, "forms", forms);
+    p.get(&doc_p, "images", images);
+    p.get(&doc_p, "scripts", scripts);
+    p.get(&doc_p, "links", links);
+    p.method(&doc_p, "createElement", 1, create_element);
+    p.method(&doc_p, "createElementNS", 2, create_element_ns);
+    p.method(&doc_p, "createTextNode", 1, create_text_node);
+    p.method(&doc_p, "createComment", 1, create_comment);
+    p.method(&doc_p, "createDocumentFragment", 0, create_document_fragment);
+    p.method(&doc_p, "importNode", 1, import_node);
+    p.method(&doc_p, "adoptNode", 1, adopt_node);
+    p.method(&doc_p, "write", 1, document_write);
+    p.method(&doc_p, "writeln", 1, document_writeln);
+    p.method(&doc_p, "open", 0, noop);
+    p.method(&doc_p, "close", 0, noop);
+    p.method(&doc_p, "getElementsByName", 1, get_elements_by_name);
+    p.method(&doc_p, "elementFromPoint", 2, element_from_point);
+    p.method(&doc_p, "hasFocus", 0, has_focus);
+
+    // NodeList e HTMLCollection: arrays com protótipo próprio (o prelúdio
+    // completa com item(), forEach...)
+    for name in ["NodeList", "HTMLCollection", "NamedNodeMap"] {
+        let pr = ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Ordinary));
+        p.vm.realm.tag(&pr, name);
+        p.vm.realm.ctor(name, 0, illegal, &pr);
+        host(p.vm).borrow_mut().protos.insert(name, pr);
+    }
+
+    p.vm.global_miss = Some(named_element);
+
+    // window.document
+    let doc = wrap(p.vm, Document::ROOT);
+    p.vm.realm.global_value("document", doc);
+    let _ = Rc::new(());
+}
