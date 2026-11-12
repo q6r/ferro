@@ -8,7 +8,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use crate::builtins::Realm;
-use crate::compiler::{Code, ERR_REFERENCE, ERR_SYNTAX, GETTER, METHOD, Op, SETTER};
+use crate::compiler::{Code, ERR_REFERENCE, ERR_SYNTAX, EVAL_BAG_VAR, EVAL_GLOBAL_FN, EVAL_GLOBAL_VAR, EvalFail, EvalHost, GETTER, METHOD, Op, SETTER};
 use crate::string::JsStr;
 use crate::value::*;
 
@@ -1108,6 +1108,70 @@ impl Vm {
                     let r = self.call(&callee, this, args)?;
                     f.stack.push(r);
                 }
+                Op::CallEval(argc, site) => {
+                    let n = f.stack.len() - argc as usize;
+                    let args = f.stack.split_off(n);
+                    let this = pop!();
+                    let callee = pop!();
+                    if !callee.is_callable() {
+                        return Err(self.not_callable(&code, &callee));
+                    }
+                    let r = if is_eval_fn(&callee) {
+                        match args.into_iter().next() {
+                            Some(Value::String(src)) => self.direct_eval(f, &code, site, &src)?,
+                            Some(v) => v,
+                            None => Value::Undefined,
+                        }
+                    } else {
+                        self.call(&callee, this, args)?
+                    };
+                    f.stack.push(r);
+                }
+                Op::EvalDecl(n, mode) => {
+                    let key = PropKey::Str(code.const_str(n));
+                    let deletable = |v: Value| Property {
+                        slot: Slot::Data { value: v, writable: true },
+                        enumerable: true,
+                        configurable: true,
+                    };
+                    match mode {
+                        EVAL_GLOBAL_VAR => {
+                            let mut g = self.realm.global.borrow_mut();
+                            if !g.props.contains(&key) && g.extensible {
+                                g.props.insert(key, deletable(Value::Undefined));
+                            }
+                        }
+                        EVAL_GLOBAL_FN => {
+                            // CreateGlobalFunctionBinding(N, V, true)
+                            let v = pop!();
+                            let mut g = self.realm.global.borrow_mut();
+                            match g.props.get_mut(&key) {
+                                Some(Property {
+                                    configurable: false,
+                                    slot: Slot::Data { value, .. },
+                                    ..
+                                }) => *value = v,
+                                _ => {
+                                    g.props.insert(key, deletable(v));
+                                }
+                            }
+                        }
+                        EVAL_BAG_VAR => {
+                            if let Value::Object(bag) = pop!() {
+                                let mut b = bag.borrow_mut();
+                                if !b.props.contains(&key) {
+                                    b.props.insert(key, deletable(Value::Undefined));
+                                }
+                            }
+                        }
+                        _ => {
+                            let v = pop!();
+                            if let Value::Object(bag) = pop!() {
+                                bag.borrow_mut().props.insert(key, deletable(v));
+                            }
+                        }
+                    }
+                }
                 Op::CallSpread => {
                     let arr = pop!();
                     let this = pop!();
@@ -1774,6 +1838,47 @@ impl Vm {
         }
     }
 
+    /// Eval direto: compila o texto nos escopos de quem chamou e roda com o
+    /// ambiente atual dele (como uma arrow function criada ali).
+    fn direct_eval(&mut self, f: &mut Frame, code: &Code, site: u32, src: &JsStr) -> Result<Value, Value> {
+        let site = code.eval_sites[site as usize].clone();
+        let prog = match crate::parser::parse_program_strict(&src.to_rust(), site.strict()) {
+            Ok(p) => p,
+            Err(e) => return Err(self.syntax_error(format!("{} (eval:{})", e.msg, e.line))),
+        };
+        let ecode = match crate::compiler::compile_eval(&prog, &site, &GlobalView(self)) {
+            Ok(c) => c,
+            Err(EvalFail::Syntax(e)) => return Err(self.syntax_error(format!("{} (eval:{})", e.msg, e.line))),
+            Err(EvalFail::Type(m)) => return Err(self.type_error(m)),
+        };
+        drop(prog);
+        let mut regs = vec![Value::Empty; ecode.nregs as usize];
+        for r in regs.iter_mut().take(ecode.var_end as usize) {
+            *r = Value::Undefined;
+        }
+        let mut frame = Frame {
+            code: ecode,
+            pc: 0,
+            regs,
+            stack: Vec::with_capacity(8),
+            env: f.env.clone(),
+            this: f.this.clone(),
+            func: f.func.clone(),
+            home: f.home.clone(),
+            new_target: f.new_target.clone(),
+            args: Vec::new(),
+            handlers: Vec::new(),
+            suspended: false,
+            suspend_await: false,
+        };
+        let r = self.run_frame(&mut frame);
+        // super() dentro do eval iniciou o `this` do construtor
+        if matches!(f.this, Value::Empty) && !matches!(frame.this, Value::Empty) {
+            f.this = frame.this;
+        }
+        r
+    }
+
     fn super_call(&mut self, f: &mut Frame, args: Vec<Value>) -> Result<Value, Value> {
         let func = f.func.clone();
         let parent = func.as_ref().and_then(|fo| fo.proto());
@@ -2004,6 +2109,45 @@ impl Vm {
             *slot = Some(arr.clone());
         }
         Value::Object(arr)
+    }
+}
+
+/// O ambiente global visto pelo compilador de um eval.
+struct GlobalView<'a>(&'a Vm);
+
+impl EvalHost for GlobalView<'_> {
+    fn global_lexical(&self, name: &str) -> bool {
+        self.0.lex.contains_key(&JsStr::new(name))
+    }
+
+    fn can_declare_global_var(&self, name: &str) -> bool {
+        let g = self.0.realm.global.borrow();
+        g.props.contains(&PropKey::str(name)) || g.extensible
+    }
+
+    fn can_declare_global_fn(&self, name: &str) -> bool {
+        let g = self.0.realm.global.borrow();
+        match g.props.get(&PropKey::str(name)) {
+            None => g.extensible,
+            Some(p) if p.configurable => true,
+            Some(Property {
+                slot: Slot::Data { writable: true, .. },
+                enumerable: true,
+                ..
+            }) => true,
+            _ => false,
+        }
+    }
+}
+
+/// É o `eval` original (%eval%)? Só ele faz eval direto.
+fn is_eval_fn(v: &Value) -> bool {
+    match v {
+        Value::Object(o) => matches!(
+            &o.borrow().kind,
+            Kind::Function(Func::Native(n)) if std::ptr::fn_addr_eq(n.f, crate::builtins::global::eval as NativeFn)
+        ),
+        _ => false,
     }
 }
 

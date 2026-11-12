@@ -9,7 +9,7 @@
 use crate::fxhash::FxHashSet;
 
 use crate::ast::*;
-use crate::compiler::{bound_names, lexical_decls, var_names};
+use crate::compiler::{annex_b_functions, bound_names, lexical_decls, var_names};
 
 pub type Captures = FxHashSet<(usize, Name)>;
 
@@ -37,6 +37,15 @@ struct Scope {
 /// Nome da variável escondida que guarda o objeto de um `with`.
 pub const WITH_OBJ: &str = "%with";
 
+/// Nome da variável escondida com as `var` criadas por `eval` direto
+/// (não estrito) dentro de uma função.
+pub const EVAL_VARS: &str = "%vars";
+
+/// `eval(...)` com o identificador `eval` puro (sem `?.`): pode ser eval direto.
+pub fn is_direct_eval(callee: &Expr, optional: bool) -> bool {
+    !optional && matches!(callee, Expr::Ident(n, _) if &**n == "eval")
+}
+
 pub struct Resolver {
     scopes: Vec<Scope>,
     func: u32,
@@ -44,6 +53,11 @@ pub struct Resolver {
     pub out: Captures,
     /// Importações do módulo: o nome local lê o namespace (que é capturado).
     imports: crate::fxhash::FxHashMap<Name, (Name, Option<Name>)>,
+    /// Escopos que envolvem um `eval` direto: o texto do eval pode usar
+    /// qualquer nome deles, então tudo ali mora no heap.
+    pub evals: FxHashSet<usize>,
+    /// Funções (chave do escopo) com `eval` direto no próprio corpo.
+    pub eval_fns: FxHashSet<usize>,
 }
 
 impl Resolver {
@@ -54,7 +68,47 @@ impl Resolver {
             strict: vec![strict],
             out: FxHashSet::default(),
             imports: Default::default(),
+            evals: FxHashSet::default(),
+            eval_fns: FxHashSet::default(),
         }
+    }
+
+    /// Um `eval` direto aqui: marca todos os escopos em volta.
+    fn saw_eval(&mut self) {
+        for sc in &self.scopes {
+            self.evals.insert(sc.key);
+        }
+        if self.func > 0
+            && let Some(sc) = self.scopes.iter().find(|sc| sc.func == self.func)
+        {
+            self.eval_fns.insert(sc.key);
+        }
+    }
+
+    /// Código de um `eval` direto: um corpo de função com as declarações
+    /// próprias (as `var` de um eval não estrito ficam fora dele).
+    pub fn eval_body(&mut self, body: &[Stmt], key: usize, strict: bool) {
+        self.func += 1;
+        self.strict.push(strict);
+        let mut names: Vec<Name> = Vec::new();
+        if strict {
+            var_names(body, &mut names, false, false);
+            for s in body {
+                if let Stmt::Function(fd) = s
+                    && let Some(n) = &fd.name
+                {
+                    names.push(n.clone());
+                }
+            }
+        }
+        let mut lex = Vec::new();
+        lexical_decls(body, false, &mut lex);
+        names.extend(lex.into_iter().map(|(n, _)| n));
+        self.push(key, names);
+        self.stmts(body);
+        self.pop();
+        self.strict.pop();
+        self.func -= 1;
     }
 
     fn strict(&self) -> bool {
@@ -127,7 +181,21 @@ impl Resolver {
             FnBody::Block(b) => b,
             FnBody::Expr(_) => &[],
         };
-        var_names(body, &mut names, !strict, false);
+        var_names(body, &mut names, false, false);
+        if !strict {
+            // mesmas funções em bloco que o compilador transforma em `var`
+            let mut top = Vec::new();
+            for p in &f.params {
+                bound_names(p, &mut top);
+            }
+            if let Some(r) = &f.rest {
+                bound_names(r, &mut top);
+            }
+            let mut lex = Vec::new();
+            lexical_decls(body, false, &mut lex);
+            top.extend(lex.into_iter().map(|(n, _)| n));
+            names.extend(annex_b_functions(body, top).into_iter().map(|(n, _)| n));
+        }
         for s in body {
             if let Stmt::Function(fd) = s
                 && let Some(n) = &fd.name
@@ -168,6 +236,15 @@ impl Resolver {
         self.pop();
     }
 
+    /// Ramo de um if: `if (x) function f() {}` vale como `{ function f() {} }`.
+    fn branch(&mut self, s: &Stmt) {
+        if let Stmt::Function(_) = s {
+            self.block(std::slice::from_ref(s), key_of(s));
+        } else {
+            self.stmt(s);
+        }
+    }
+
     fn decls(&mut self, decls: &[VarDecl]) {
         for d in decls {
             if let Some(i) = &d.init {
@@ -190,9 +267,9 @@ impl Resolver {
             }
             Stmt::If(t, c, a) => {
                 self.expr(t);
-                self.stmt(c);
+                self.branch(c);
                 if let Some(a) = a {
-                    self.stmt(a);
+                    self.branch(a);
                 }
             }
             Stmt::Block(b) => self.block(b, slice_key(b)),
@@ -441,7 +518,10 @@ impl Resolver {
                 self.expr(c);
                 self.expr(a);
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, optional, .. } => {
+                if is_direct_eval(callee, *optional) {
+                    self.saw_eval();
+                }
                 self.expr(callee);
                 self.elems(args);
             }

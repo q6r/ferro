@@ -199,7 +199,7 @@ fn unescape(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 /// `eval` indireto: roda o texto como um script global.
-fn eval(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+pub(crate) fn eval(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let Value::String(src) = a.arg(0) else { return Ok(a.arg(0)) };
     vm.eval_script(&src.to_rust(), "eval")
 }

@@ -52,6 +52,9 @@ const RESERVED: &[&str] = &[
     "this", "throw", "try", "typeof", "var", "void", "while", "with", "null", "true", "false", "enum",
 ];
 
+/// Reservadas só no modo estrito (não podem nomear variáveis).
+const STRICT_RESERVED: &[&str] = &["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield"];
+
 fn bin_prec(t: &Tok, no_in: bool) -> Option<(u8, BinOrLog)> {
     let p = match t {
         Tok::Punct(p) => *p,
@@ -116,7 +119,14 @@ fn assign_op(p: &str) -> Option<AssignOp> {
 }
 
 pub fn parse_program(src: &str) -> PResult<Program> {
+    parse_program_strict(src, false)
+}
+
+/// Como `parse_program`, já em modo estrito se `strict` (eval direto
+/// chamado de código estrito).
+pub fn parse_program_strict(src: &str, strict: bool) -> PResult<Program> {
     let mut p = Parser::new(src)?;
+    p.strict = strict;
     let body = p.parse_body_until_eof()?;
     Ok(Program { body, strict: p.strict, imports: Default::default() })
 }
@@ -465,6 +475,9 @@ impl Parser {
             Tok::Ident(n) if !RESERVED.contains(&&**n) || self.tok.escaped => {
                 if (&**n == "await" && self.ctx.in_async) || (&**n == "yield" && self.ctx.in_generator) {
                     return self.unexpected();
+                }
+                if self.strict && STRICT_RESERVED.contains(&&**n) {
+                    return self.err(format!("Unexpected strict mode reserved word '{n}'"));
                 }
                 let n = n.clone();
                 self.advance()?;

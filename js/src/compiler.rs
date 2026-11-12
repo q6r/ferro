@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::ast::*;
 use crate::parser::ParseError;
-use crate::resolve::{Captures, Resolver, class_init_key, key_of, slice_key};
+use crate::resolve::{Captures, EVAL_VARS, Resolver, WITH_OBJ, class_init_key, is_direct_eval, key_of, slice_key};
 use crate::string::JsStr;
 use crate::value::{ObjRef, Value};
 
@@ -31,6 +31,16 @@ pub const SETTER: u8 = 2;
 pub const ERR_TYPE: u8 = 0;
 pub const ERR_SYNTAX: u8 = 1;
 pub const ERR_REFERENCE: u8 = 2;
+
+/// Modos de `EvalDecl` (declarações de um eval direto não estrito).
+/// [] → []: cria a `var` global (configurável) se ainda não existir.
+pub const EVAL_GLOBAL_VAR: u8 = 0;
+/// [fn] → []: função global (CreateGlobalFunctionBinding configurável).
+pub const EVAL_GLOBAL_FN: u8 = 1;
+/// [sacola] → []: cria a `var` na sacola da função se ainda não existir.
+pub const EVAL_BAG_VAR: u8 = 2;
+/// [sacola fn] → []: função na sacola.
+pub const EVAL_BAG_FN: u8 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Op {
@@ -152,6 +162,11 @@ pub enum Op {
     CallInit,
     /// [fn this args...] → [resultado]
     Call(u32),
+    /// Como Call, mas se fn for o `eval` original é eval direto: o texto é
+    /// compilado nos escopos descritos em `eval_sites[1]`.
+    CallEval(u32, u32),
+    /// Declaração de um eval direto não estrito (nome, modo `EVAL_*`).
+    EvalDecl(u32, u8),
     /// [fn this array] → [resultado]
     CallSpread,
     /// [ctor args...] → [objeto]
@@ -449,6 +464,55 @@ pub struct Code {
     /// Propriedades do objeto global já encontradas: (geração das léxicas,
     /// geração das propriedades, posição), por constante.
     pub gobj_cache: RefCell<Vec<(u32, u32, u32)>>,
+    /// Escopos visíveis em cada `eval(...)` direto (índice em `CallEval`).
+    pub eval_sites: Vec<Rc<EvalSite>>,
+}
+
+/// O que um `eval(...)` direto enxerga: a cadeia de escopos do ponto da
+/// chamada (só nomes e posições no heap), para compilar o texto na hora.
+pub struct EvalSite {
+    fns: Vec<EvalFn>,
+    /// A chamada está nos parâmetros da função mais interna.
+    in_params: bool,
+    imports: Rc<FxHashMap<Name, (Name, Option<Name>)>>,
+}
+
+impl EvalSite {
+    /// O código em volta é estrito (o eval também será).
+    pub fn strict(&self) -> bool {
+        self.fns.last().is_some_and(|f| f.strict)
+    }
+}
+
+struct EvalFn {
+    kind: FnKind,
+    strict: bool,
+    is_script: bool,
+    is_eval: bool,
+    scopes: Vec<Rc<ScopeC>>,
+}
+
+/// O que o eval precisa saber do ambiente global na hora de compilar
+/// (EvalDeclarationInstantiation).
+pub trait EvalHost {
+    /// Existe let/const/class global com esse nome.
+    fn global_lexical(&self, name: &str) -> bool;
+    /// CanDeclareGlobalVar.
+    fn can_declare_global_var(&self, name: &str) -> bool;
+    /// CanDeclareGlobalFunction.
+    fn can_declare_global_fn(&self, name: &str) -> bool;
+}
+
+/// Erro ao preparar um eval: de sintaxe ou TypeError (global não extensível...).
+pub enum EvalFail {
+    Syntax(ParseError),
+    Type(String),
+}
+
+impl From<ParseError> for EvalFail {
+    fn from(e: ParseError) -> EvalFail {
+        EvalFail::Syntax(e)
+    }
 }
 
 impl Code {
@@ -492,6 +556,14 @@ impl Code {
 struct Usage {
     inner: FxHashSet<Name>,
     uses_arguments: bool,
+    /// Tem `eval(...)` direto (fora de funções comuns): enxerga `this`,
+    /// `new.target` e `arguments` da função.
+    has_eval: bool,
+    /// `new.target`, `super.x` e `super()` fora de funções comuns (erros de
+    /// sintaxe no topo de scripts e em eval).
+    new_target: bool,
+    super_prop: bool,
+    super_call: bool,
 }
 
 impl Usage {
@@ -697,13 +769,21 @@ impl Usage {
                 self.name(n, d);
             }
             Expr::This => self.special("this", d, a),
-            Expr::NewTarget => self.special("new.target", d, a),
-            Expr::SuperMember(_) => self.special("this", d, a),
+            Expr::NewTarget => {
+                self.new_target |= a;
+                self.special("new.target", d, a);
+            }
+            Expr::SuperMember(_) => {
+                self.super_prop |= a;
+                self.special("this", d, a);
+            }
             Expr::SuperIndex(i) => {
+                self.super_prop |= a;
                 self.special("this", d, a);
                 self.expr(i, d, a);
             }
             Expr::SuperCall(args) => {
+                self.super_call |= a;
                 self.special("this", d, a);
                 self.elems(args, d, a);
             }
@@ -747,7 +827,13 @@ impl Usage {
                 self.expr(c, d, a);
                 self.expr(e, d, a);
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, optional, .. } => {
+                if a && is_direct_eval(callee, *optional) {
+                    // o texto do eval é como uma arrow function aqui dentro
+                    self.has_eval = true;
+                    self.inner.insert("this".into());
+                    self.inner.insert("new.target".into());
+                }
                 self.expr(callee, d, a);
                 self.elems(args, d, a);
             }
@@ -868,6 +954,20 @@ fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>, annex_b: bool, nested: bool) {
     }
 }
 
+/// Funções declaradas em blocos (código não estrito) que também viram `var`
+/// (Anexo B.3.3), com o endereço da declaração. `top`: nomes que bloqueiam
+/// desde o topo (léxicas do topo e parâmetros).
+pub(crate) fn annex_b_functions(body: &[Stmt], top: Vec<Name>) -> Vec<(Name, usize)> {
+    let mut ab = AnnexB {
+        stack: vec![top],
+        out: Vec::new(),
+    };
+    for s in body {
+        ab.stmt(s);
+    }
+    ab.out
+}
+
 /// Declarações léxicas diretas de uma lista de instruções.
 pub(crate) fn lexical_decls(ss: &[Stmt], funcs: bool, out: &mut Vec<(Name, Decl)>) {
     for s in ss {
@@ -910,6 +1010,8 @@ fn is_simple_params(def: &FunctionDef) -> bool {
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Decl {
+    /// Sacola das `var` criadas por eval direto (escondida).
+    EvalVars,
     Var,
     Let,
     Const,
@@ -930,6 +1032,7 @@ enum Loc {
     Global,
 }
 
+#[derive(Clone)]
 struct VarC {
     name: Name,
     loc: Loc,
@@ -946,6 +1049,7 @@ enum ScopeKind {
     Script,
 }
 
+#[derive(Clone)]
 struct ScopeC {
     /// Identidade do escopo (endereço do nó da AST), ligando à análise de capturas.
     key: usize,
@@ -956,10 +1060,15 @@ struct ScopeC {
     has_env: bool,
     kind: ScopeKind,
     reg_base: u32,
+    /// Escopo do parâmetro de um `catch` (Anexo B: `var` pode repetir o nome).
+    catch: bool,
+    /// Cópia já feita para algum eval direto (vale até mudar uma declaração).
+    snap: Option<Rc<ScopeC>>,
 }
 
 impl ScopeC {
     fn add(&mut self, v: VarC) {
+        self.snap = None;
         self.index.entry(v.name.clone()).or_default().push(self.vars.len() as u32);
         self.vars.push(v);
     }
@@ -999,8 +1108,9 @@ enum Ctl {
     },
     /// Tratador de exceção ativo (sair dele exige PopTry).
     Try,
-    /// Corpo do finally (aponta para a AST, que vive durante toda a compilação).
-    Finally(*const [Stmt], u32),
+    /// Corpo do finally (aponta para a AST, que vive durante toda a
+    /// compilação), profundidade de ambiente e quantos escopos havia no try.
+    Finally(*const [Stmt], u32, usize),
 }
 
 enum Res {
@@ -1046,6 +1156,16 @@ struct FnState {
     last_line: u32,
     is_async: bool,
     is_generator: bool,
+    /// Código de um eval direto (as `var` dele, se não estrito, são de fora).
+    is_eval: bool,
+    /// Compilando os parâmetros (eval ali não pode declarar `arguments`).
+    in_params: bool,
+    /// Eval não estrito: funções em bloco (endereço da declaração) que também
+    /// viram `var` (Anexo B).
+    annexb: FxHashSet<usize>,
+    /// Eval direto no construtor derivado: `super()` vale e inicia o `this` dele.
+    eval_super_call: bool,
+    eval_sites: Vec<Rc<EvalSite>>,
 }
 
 impl FnState {
@@ -1073,6 +1193,11 @@ impl FnState {
             last_line: 0,
             is_async: false,
             is_generator: false,
+            is_eval: false,
+            in_params: false,
+            annexb: FxHashSet::default(),
+            eval_super_call: false,
+            eval_sites: Vec::new(),
         }
     }
 
@@ -1085,10 +1210,16 @@ pub struct Compiler {
     fns: Vec<FnState>,
     file: Rc<str>,
     captures: Captures,
+    /// Escopos que envolvem um eval direto (tudo neles vai para o heap).
+    evals: FxHashSet<usize>,
+    /// Funções com eval direto no próprio corpo (ganham a sacola de `var`).
+    eval_fns: FxHashSet<usize>,
     /// Importações do módulo (nome local → namespace, nome exportado).
-    imports: crate::fxhash::FxHashMap<Name, (Name, Option<Name>)>,
+    imports: Rc<FxHashMap<Name, (Name, Option<Name>)>>,
     /// Quantos `with` envolvem o código sendo compilado agora.
     with_depth: u32,
+    /// Quantas funções com sacola de eval envolvem o código agora.
+    bag_depth: u32,
 }
 
 fn syntax<T>(msg: impl Into<String>, line: u32) -> CResult<T> {
@@ -1113,8 +1244,11 @@ pub fn compile_script(prog: &Program, file: &str) -> CResult<Rc<Code>> {
         fns: Vec::new(),
         file: file.into(),
         captures: r.out,
-        imports: prog.imports.clone(),
+        evals: r.evals,
+        eval_fns: r.eval_fns,
+        imports: Rc::new(prog.imports.clone()),
         with_depth: 0,
+        bag_depth: 0,
     };
     let code = c.script(prog)?;
     // depuração: FERRO_BYTECODE=1 mostra as instruções de cada função
@@ -1141,8 +1275,11 @@ pub fn compile_standalone(def: &FunctionDef, file: &str) -> CResult<Rc<Code>> {
         fns: Vec::new(),
         file: file.into(),
         captures: r.out,
+        evals: r.evals,
+        eval_fns: r.eval_fns,
         imports: Default::default(),
         with_depth: 0,
+        bag_depth: 0,
     };
     c.fns.push(FnState::new(FnKind::Normal, false, FxHashSet::default(), true));
     c.push_scope(ScopeKind::Script, 0);
@@ -1151,7 +1288,524 @@ pub fn compile_standalone(def: &FunctionDef, file: &str) -> CResult<Rc<Code>> {
     Ok(st.functions[idx as usize].clone())
 }
 
+/// Compila o texto de um eval direto como o corpo de uma arrow function
+/// escrita no ponto da chamada: os escopos de lá (descritos em `site`) são
+/// os de fora. Roda com o ambiente atual de quem chamou.
+pub fn compile_eval(prog: &Program, site: &EvalSite, host: &dyn EvalHost) -> Result<Rc<Code>, EvalFail> {
+    let strict = prog.strict || site.strict();
+    let key = slice_key(&prog.body);
+    let mut r = Resolver::new(strict);
+    r.eval_body(&prog.body, key, strict);
+    let mut c = Compiler {
+        fns: Vec::new(),
+        file: "eval".into(),
+        captures: r.out,
+        evals: r.evals,
+        eval_fns: r.eval_fns,
+        imports: site.imports.clone(),
+        with_depth: 0,
+        bag_depth: 0,
+    };
+    for ef in &site.fns {
+        let mut st = FnState::new(ef.kind, ef.strict, FxHashSet::default(), ef.is_script);
+        st.is_eval = ef.is_eval;
+        for sc in &ef.scopes {
+            if sc.last(WITH_OBJ).is_some() {
+                c.with_depth += 1;
+            }
+            if sc.last(EVAL_VARS).is_some() {
+                c.bag_depth += 1;
+            }
+            st.scopes.push((**sc).clone());
+        }
+        c.fns.push(st);
+    }
+    c.eval_code(prog, strict, site, host, key)
+}
+
+/// Onde mora a `var` de um eval não estrito.
+#[derive(Clone, Copy)]
+enum VarAt {
+    /// Propriedade do objeto global.
+    Global,
+    /// Variável já declarada no topo da função (função, posição no heap).
+    Static(usize, u32),
+    /// Sacola de `var` da função (função, posição da sacola).
+    Bag(usize, u32),
+}
+
+/// Funções declaradas em blocos de código não estrito que também ganham uma
+/// `var` (Anexo B.3.3): só as que, trocadas por `var F`, não dariam erro
+/// (nenhuma declaração léxica F em volta, até o topo).
+struct AnnexB {
+    stack: Vec<Vec<Name>>,
+    /// (nome, endereço da declaração)
+    out: Vec<(Name, usize)>,
+}
+
+impl AnnexB {
+    fn blocked(&self, n: &str) -> bool {
+        self.stack.iter().any(|s| s.iter().any(|x| &**x == n))
+    }
+
+    fn candidate(&mut self, f: &Rc<FunctionDef>, own: &[Name]) {
+        if f.is_async || f.is_generator {
+            return;
+        }
+        if let Some(n) = &f.name
+            && !self.blocked(n)
+            && !own.contains(n)
+        {
+            self.out.push((n.clone(), key_of(&**f)));
+        }
+    }
+
+    /// Um bloco (ou o corpo de um switch, em partes).
+    fn block(&mut self, parts: &[&[Stmt]]) {
+        let mut lex = Vec::new();
+        for ss in parts {
+            lexical_decls(ss, true, &mut lex);
+        }
+        // léxicas do próprio bloco que não são funções (repetir seria erro)
+        let own: Vec<Name> = lex.iter().filter(|(_, d)| *d != Decl::Func).map(|(n, _)| n.clone()).collect();
+        for ss in parts {
+            for s in ss.iter() {
+                if let Stmt::Function(f) = s {
+                    self.candidate(f, &own);
+                }
+            }
+        }
+        self.stack.push(lex.into_iter().map(|(n, _)| n).collect());
+        for ss in parts {
+            for s in ss.iter() {
+                self.stmt(s);
+            }
+        }
+        self.stack.pop();
+    }
+
+    /// Corpo de if/laço: `if (x) function f() {}` vale como bloco próprio.
+    fn body(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Function(f) => self.candidate(f, &[]),
+            _ => self.stmt(s),
+        }
+    }
+
+    fn stmt(&mut self, s: &Stmt) {
+        match s {
+            Stmt::Block(b) => self.block(&[b]),
+            Stmt::If(_, c, a) => {
+                self.body(c);
+                if let Some(a) = a {
+                    self.body(a);
+                }
+            }
+            Stmt::For { init, body, .. } => {
+                let mut names = Vec::new();
+                if let Some(ForInit::Var(VarKind::Let | VarKind::Const, decls)) = init {
+                    for d in decls {
+                        bound_names(&d.target, &mut names);
+                    }
+                }
+                self.stack.push(names);
+                self.stmt(body);
+                self.stack.pop();
+            }
+            Stmt::ForIn { left, body, .. } | Stmt::ForOf { left, body, .. } => {
+                let mut names = Vec::new();
+                if let ForHead::Var(VarKind::Let | VarKind::Const, p) = left {
+                    bound_names(p, &mut names);
+                }
+                self.stack.push(names);
+                self.stmt(body);
+                self.stack.pop();
+            }
+            Stmt::While(_, b) | Stmt::DoWhile(b, _) | Stmt::With(_, b) | Stmt::Labeled(_, b) => self.stmt(b),
+            Stmt::Try {
+                block,
+                param,
+                handler,
+                finalizer,
+            } => {
+                self.block(&[block]);
+                if let Some(h) = handler {
+                    // Anexo B.3.4: `var` pode repetir o parâmetro simples do catch
+                    let mut names = Vec::new();
+                    if let Some(p @ (Pattern::Object { .. } | Pattern::Array { .. } | Pattern::Default(..))) = param {
+                        bound_names(p, &mut names);
+                    }
+                    self.stack.push(names);
+                    self.block(&[h]);
+                    self.stack.pop();
+                }
+                if let Some(f) = finalizer {
+                    self.block(&[f]);
+                }
+            }
+            Stmt::Switch(_, cases) => {
+                let parts: Vec<&[Stmt]> = cases.iter().map(|c| &c.body[..]).collect();
+                self.block(&parts);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl Compiler {
+    /// Corpo de um eval direto (veja `compile_eval`). Os `fns` já têm as
+    /// funções de fora, só com os escopos.
+    fn eval_code(&mut self, prog: &Program, strict: bool, site: &EvalSite, host: &dyn EvalHost, key: usize) -> Result<Rc<Code>, EvalFail> {
+        let body = &prog.body[..];
+        // PerformEval: o que depende da função onde o eval está
+        let mut usage = Usage::default();
+        usage.stmts(body, 0, true);
+        let this_fn = site
+            .fns
+            .iter()
+            .rev()
+            .find(|f| !f.is_eval && f.kind != FnKind::Arrow)
+            .filter(|f| !f.is_script)
+            .map(|f| f.kind);
+        let in_method = matches!(
+            this_fn,
+            Some(
+                FnKind::Method
+                    | FnKind::Getter
+                    | FnKind::Setter
+                    | FnKind::ClassConstructor
+                    | FnKind::DerivedConstructor
+                    | FnKind::FieldInit
+            )
+        );
+        if usage.new_target && this_fn.is_none() {
+            return Err(syntax::<()>("new.target expression is not allowed here", 0).unwrap_err().into());
+        }
+        if (usage.super_prop && !in_method) || (usage.super_call && this_fn != Some(FnKind::DerivedConstructor)) {
+            return Err(syntax::<()>("'super' keyword unexpected here", 0).unwrap_err().into());
+        }
+        if this_fn == Some(FnKind::FieldInit) && usage.uses_arguments {
+            return Err(syntax::<()>("'arguments' is not allowed in class field initializer or static initialization block", 0)
+                .unwrap_err()
+                .into());
+        }
+        let mut st = FnState::new(FnKind::Arrow, strict, FxHashSet::default(), false);
+        st.is_eval = true;
+        // super() só direto no construtor derivado (não numa arrow dentro dele)
+        st.eval_super_call = site.fns.last().is_some_and(|f| f.kind == FnKind::DerivedConstructor);
+        self.fns.push(st);
+        self.push_scope(ScopeKind::Function, key);
+        let completion = self.alloc_reg();
+        self.f().completion = Some(completion);
+        let funcs: Vec<Rc<FunctionDef>> = body
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Function(f) => Some(f.clone()),
+                _ => None,
+            })
+            .collect();
+        let mut lex = Vec::new();
+        lexical_decls(body, false, &mut lex);
+        // não estrito: as `var` e funções do topo vão para fora (EvalDeclarationInstantiation)
+        let mut plan: Vec<(Name, VarAt, Option<Rc<FunctionDef>>)> = Vec::new();
+        if strict {
+            let mut vars = Vec::new();
+            var_names(body, &mut vars, false, false);
+            for v in vars {
+                self.declare(v, Decl::Var, false, true);
+            }
+            for f in &funcs {
+                if let Some(n) = &f.name {
+                    self.declare(n.clone(), Decl::Func, false, true);
+                }
+            }
+        } else {
+            plan = self.eval_var_plan(body, &funcs, &lex, site, host)?;
+        }
+        let var_end = self.fr().reg_top;
+        for (n, d) in lex {
+            self.declare(n, d, false, false);
+        }
+        self.open_env();
+        let env_vars: Vec<u32> = self
+            .fr()
+            .scopes
+            .last()
+            .unwrap()
+            .vars
+            .iter()
+            .filter_map(|v| match (v.decl, v.loc) {
+                (Decl::Var | Decl::Func, Loc::Env(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        for s in env_vars {
+            self.emit(Op::Undef);
+            self.emit(Op::SetEnv(0, s));
+        }
+        // cria as ligações de fora: primeiro as `var`, depois as funções
+        for (name, at, def) in plan {
+            let n = self.konst(&name);
+            match def {
+                None => match at {
+                    VarAt::Global => {
+                        self.emit(Op::EvalDecl(n, EVAL_GLOBAL_VAR));
+                    }
+                    VarAt::Bag(fi, s) => {
+                        let h = self.hops_to(fi, 0);
+                        self.emit(Op::GetEnv(h, s));
+                        self.emit(Op::EvalDecl(n, EVAL_BAG_VAR));
+                    }
+                    VarAt::Static(..) => {}
+                },
+                Some(def) => {
+                    let idx = self.function(&def, None, None, false)?;
+                    self.emit(Op::Closure(idx));
+                    match at {
+                        VarAt::Global => {
+                            self.emit(Op::EvalDecl(n, EVAL_GLOBAL_FN));
+                        }
+                        VarAt::Bag(fi, s) => {
+                            let h = self.hops_to(fi, 0);
+                            self.emit(Op::GetEnv(h, s));
+                            self.emit(Op::Swap);
+                            self.emit(Op::EvalDecl(n, EVAL_BAG_FN));
+                        }
+                        VarAt::Static(fi, s) => {
+                            let h = self.hops_to(fi, 0);
+                            self.emit(Op::SetEnv(h, s));
+                        }
+                    }
+                }
+            }
+        }
+        if strict {
+            for f in funcs {
+                let idx = self.function(&f, None, None, false)?;
+                self.emit(Op::Closure(idx));
+                self.init(f.name.as_deref().unwrap_or(""));
+            }
+        }
+        self.stmts(body)?;
+        self.emit(Op::GetReg(completion));
+        self.emit(Op::Return);
+        let st = self.fns.pop().unwrap();
+        let code = self.finish(st, JsStr::new("eval"), 0, 0, var_end, FnKind::Arrow, false, false, "".into(), 1);
+        Ok(Rc::new(code))
+    }
+
+    /// EvalDeclarationInstantiation (não estrito): confere conflitos e decide
+    /// onde cada `var`/função do eval mora. Devolve, em ordem de criação, as
+    /// `var` (sem função) e depois as funções do topo.
+    fn eval_var_plan(
+        &mut self,
+        body: &[Stmt],
+        funcs: &[Rc<FunctionDef>],
+        lex: &[(Name, Decl)],
+        site: &EvalSite,
+        host: &dyn EvalHost,
+    ) -> Result<Vec<(Name, VarAt, Option<Rc<FunctionDef>>)>, EvalFail> {
+        let vf = self.var_scope_fn();
+        let global = self.fns[vf].is_script;
+        let mut var_list = Vec::new();
+        var_names(body, &mut var_list, false, false);
+        let mut fn_names: Vec<Name> = Vec::new();
+        for f in funcs {
+            if let Some(n) = &f.name
+                && !fn_names.contains(n)
+            {
+                fn_names.push(n.clone());
+            }
+        }
+        let mut seen: FxHashSet<Name> = FxHashSet::default();
+        let all: Vec<Name> = var_list.iter().chain(fn_names.iter()).filter(|n| seen.insert((*n).clone())).cloned().collect();
+        let redeclared = |n: &str| EvalFail::Syntax(ParseError {
+            msg: format!("Identifier '{n}' has already been declared"),
+            line: 0,
+            eof: false,
+        });
+        // eval nos parâmetros: não pode repetir um parâmetro (nem `arguments`)
+        let params_fn = (site.in_params && vf == self.fns.len() - 2).then_some(vf);
+        for n in &all {
+            if global && host.global_lexical(n) {
+                return Err(redeclared(n));
+            }
+            if self.eval_binding_between(vf, n, true, params_fn.is_some()) {
+                return Err(redeclared(n));
+            }
+            if let Some(pf) = params_fn {
+                let f = &self.fns[pf];
+                let is_param = f.scopes[0].first_where(n, |v| v.decl == Decl::Param).is_some();
+                if is_param || (&**n == "arguments" && f.kind != FnKind::Arrow) {
+                    return Err(redeclared(n));
+                }
+            }
+        }
+        if global {
+            for n in fn_names.iter().rev() {
+                if !host.can_declare_global_fn(n) {
+                    return Err(EvalFail::Type(format!("Cannot redefine property: {n}")));
+                }
+            }
+            for n in &var_list {
+                if !fn_names.contains(n) && !host.can_declare_global_var(n) {
+                    return Err(EvalFail::Type(format!("Cannot define property {n}, object is not extensible")));
+                }
+            }
+        }
+        // Anexo B.3.3.3: funções em blocos que viram `var`
+        let candidates = annex_b_functions(body, lex.iter().map(|(n, _)| n.clone()).collect());
+        let mut plan = Vec::new();
+        let mut hoisted = FxHashSet::default();
+        for (n, def) in candidates {
+            if self.eval_binding_between(vf, &n, false, params_fn.is_some()) {
+                continue;
+            }
+            if global && (host.global_lexical(&n) || !host.can_declare_global_var(&n)) {
+                continue;
+            }
+            hoisted.insert(def);
+            if !seen.contains(&n) {
+                seen.insert(n.clone());
+                plan.push((n.clone(), self.var_at(vf, &n), None));
+            }
+        }
+        self.f().annexb = hoisted;
+        for n in &var_list {
+            if !fn_names.contains(n) && !plan.iter().any(|(p, _, _)| p == n) {
+                plan.push((n.clone(), self.var_at(vf, n), None));
+            }
+        }
+        // funções por último (a última declaração com o nome vence)
+        for f in funcs {
+            if let Some(n) = &f.name {
+                plan.push((n.clone(), self.var_at(vf, n), Some(f.clone())));
+            }
+        }
+        Ok(plan)
+    }
+
+    /// A função (entre as de fora) cujo escopo recebe as `var` do eval atual:
+    /// a mais interna que não é outro eval não estrito.
+    fn var_scope_fn(&self) -> usize {
+        let nf = self.fns.len();
+        (0..nf - 1).rev().find(|&fi| !(self.fns[fi].is_eval && !self.fns[fi].strict)).unwrap_or(0)
+    }
+
+    /// Onde fica a `var` `name` no escopo de `var` da função `vf`.
+    fn var_at(&self, vf: usize, name: &str) -> VarAt {
+        let f = &self.fns[vf];
+        if f.is_script {
+            return VarAt::Global;
+        }
+        let Some(sc) = f.scopes.first() else { return VarAt::Global };
+        if let Some(i) = sc.first_where(name, |v| matches!(v.decl, Decl::Var | Decl::Func | Decl::Param | Decl::Hidden))
+            && let Loc::Env(s) = sc.vars[i].loc
+        {
+            return VarAt::Static(vf, s);
+        }
+        match sc.last(EVAL_VARS).map(|i| sc.vars[i].loc) {
+            Some(Loc::Env(s)) => VarAt::Bag(vf, s),
+            _ => VarAt::Global,
+        }
+    }
+
+    /// Alguma declaração `name` entre o eval atual e o escopo de `var` (função
+    /// `vf`)? As do topo da função contam só se forem léxicas (e não contam
+    /// se o eval está nos parâmetros: o corpo ainda não existe). `catch_ok`:
+    /// o parâmetro de catch não conta (Anexo B.3.4).
+    fn eval_binding_between(&self, vf: usize, name: &str, catch_ok: bool, in_params: bool) -> bool {
+        let nf = self.fns.len();
+        for fi in (vf..nf - 1).rev() {
+            for (si, sc) in self.fns[fi].scopes.iter().enumerate().rev() {
+                let Some(i) = sc.last(name) else { continue };
+                let d = sc.vars[i].decl;
+                if fi == vf && si == 0 {
+                    if !in_params && matches!(d, Decl::Let | Decl::Const | Decl::Class) {
+                        return true;
+                    }
+                    continue;
+                }
+                if (catch_ok && sc.catch) || matches!(d, Decl::With | Decl::EvalVars) {
+                    continue;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Saltos de ambiente daqui até o escopo `si` da função `fi`.
+    fn hops_to(&self, fi: usize, si: usize) -> u32 {
+        let mut hops = 0;
+        for (j, f) in self.fns.iter().enumerate().skip(fi) {
+            let from = if j == fi { si + 1 } else { 0 };
+            hops += f.scopes.iter().skip(from).filter(|s| s.has_env).count() as u32;
+        }
+        hops
+    }
+
+    /// Descreve os escopos visíveis aqui para um eval direto.
+    fn eval_site(&mut self) -> u32 {
+        let mut fns = Vec::with_capacity(self.fns.len());
+        for fi in 0..self.fns.len() {
+            let mut scopes = Vec::with_capacity(self.fns[fi].scopes.len());
+            for si in 0..self.fns[fi].scopes.len() {
+                scopes.push(self.snap_scope(fi, si));
+            }
+            let f = &self.fns[fi];
+            fns.push(EvalFn {
+                kind: f.kind,
+                strict: f.strict,
+                is_script: f.is_script,
+                is_eval: f.is_eval,
+                scopes,
+            });
+        }
+        let site = Rc::new(EvalSite {
+            fns,
+            in_params: self.fr().in_params,
+            imports: self.imports.clone(),
+        });
+        let f = self.f();
+        f.eval_sites.push(site);
+        (f.eval_sites.len() - 1) as u32
+    }
+
+    /// Cópia de um escopo para os evals (feita uma vez por escopo).
+    fn snap_scope(&mut self, fi: usize, si: usize) -> Rc<ScopeC> {
+        let sc = &mut self.fns[fi].scopes[si];
+        if let Some(s) = &sc.snap {
+            return s.clone();
+        }
+        let mut copy = ScopeC {
+            key: sc.key,
+            vars: Vec::new(),
+            index: FxHashMap::default(),
+            env_size: sc.env_size,
+            has_env: sc.has_env,
+            kind: sc.kind,
+            reg_base: 0,
+            catch: sc.catch,
+            snap: None,
+        };
+        // nomes globais (topo do script) o eval acha sozinho
+        for v in sc.vars.iter().filter(|v| v.loc != Loc::Global) {
+            copy.add(v.clone());
+        }
+        let rc = Rc::new(copy);
+        sc.snap = Some(rc.clone());
+        rc
+    }
+
+    /// A função comum (não arrow) mais próxima declara `name` (`this`,
+    /// `new.target`)? Arrow functions e eval leem dela.
+    fn has_lexical(&self, name: &str) -> bool {
+        match self.fns.iter().rev().find(|f| f.kind != FnKind::Arrow) {
+            Some(f) => f.scopes.first().is_some_and(|s| s.index.contains_key(name)),
+            None => false,
+        }
+    }
     fn f(&mut self) -> &mut FnState {
         self.fns.last_mut().unwrap()
     }
@@ -1233,6 +1887,8 @@ impl Compiler {
             has_env: false,
             kind,
             reg_base: base,
+            catch: false,
+            snap: None,
         });
     }
 
@@ -1245,12 +1901,13 @@ impl Compiler {
         {
             let sc = self.f().scopes.last_mut().unwrap();
             if let Some(i) = sc.first_where(&name, |v| v.decl != Decl::Callee) {
-                let v = &mut sc.vars[i];
                 if matches!(decl, Decl::Let | Decl::Const | Decl::Class) {
+                    sc.snap = None;
+                    let v = &mut sc.vars[i];
                     v.decl = decl;
                     v.ready = false;
                 }
-                return v.loc;
+                return sc.vars[i].loc;
             }
         }
         let loc = if script_top && decl != Decl::Hidden {
@@ -1271,7 +1928,7 @@ impl Compiler {
     /// A declaração `name` do escopo atual é usada por alguma função interna?
     fn is_captured(&self, name: &Name) -> bool {
         let key = self.fr().scopes.last().map_or(0, |s| s.key);
-        self.captures.contains(&(key, name.clone()))
+        self.evals.contains(&key) || self.captures.contains(&(key, name.clone()))
     }
 
     /// Abre o ambiente do escopo atual se ele tiver variáveis capturadas, e
@@ -1348,29 +2005,43 @@ impl Compiler {
             .any(|f| f.scopes.iter().any(|sc| sc.index.contains_key(name)))
     }
 
-    /// Objetos de `with` entre o uso de `name` e a declaração dele, do mais
-    /// interno para o mais externo.
-    fn withs_for(&self, name: &str) -> Vec<Res> {
+    /// Objetos de `with` (e sacolas de `var` de eval) entre o uso de `name` e
+    /// a declaração dele, do mais interno para o mais externo. O bool diz se
+    /// é sacola (chamadas por ela não recebem o objeto como `this`).
+    fn withs_for(&self, name: &str) -> Vec<(Res, bool)> {
         let mut out = Vec::new();
-        if self.with_depth == 0 || name == "this" || name == "new.target" || name.starts_with(['#', '%']) {
+        if (self.with_depth == 0 && self.bag_depth == 0) || name == "this" || name == "new.target" || name.starts_with(['#', '%']) {
             return out;
         }
         let mut hops = 0u32;
         let nf = self.fns.len();
+        let slot = |v: &VarC, hops: u32, fi: usize| match v.loc {
+            Loc::Reg(r) if fi == nf - 1 => Some(Res::Reg(r)),
+            Loc::Env(s) => Some(Res::Env(hops, s)),
+            _ => None,
+        };
         for fi in (0..nf).rev() {
             let f = &self.fns[fi];
             for sc in f.scopes.iter().rev() {
-                if sc.index.contains_key(name) {
+                let bag = sc.last(EVAL_VARS).map(|i| &sc.vars[i]).filter(|v| v.decl == Decl::EvalVars);
+                if let Some(i) = sc.last(name) {
+                    // o nome da própria função fica fora do escopo das `var`:
+                    // uma `var` do eval com esse nome o esconde
+                    if sc.vars[i].decl == Decl::Callee
+                        && let Some(r) = bag.and_then(|v| slot(v, hops, fi))
+                    {
+                        out.push((r, true));
+                    }
                     return out;
                 }
-                if let Some(i) = sc.last(crate::resolve::WITH_OBJ)
+                if let Some(i) = sc.last(WITH_OBJ)
                     && sc.vars[i].decl == Decl::With
+                    && let Some(r) = slot(&sc.vars[i], hops, fi)
                 {
-                    match sc.vars[i].loc {
-                        Loc::Reg(r) if fi == nf - 1 => out.push(Res::Reg(r)),
-                        Loc::Env(s) => out.push(Res::Env(hops, s)),
-                        _ => {}
-                    }
+                    out.push((r, false));
+                }
+                if let Some(r) = bag.and_then(|v| slot(v, hops, fi)) {
+                    out.push((r, true));
                 }
                 if sc.has_env {
                     hops += 1;
@@ -1380,23 +2051,36 @@ impl Compiler {
         out
     }
 
-    /// Para cada `with` em volta: empilha o objeto e testa o nome. Devolve os
-    /// pulos (que chegam com [obj]) para remendar no caminho do objeto.
-    fn with_checks(&mut self, name: &str) -> Vec<usize> {
+    /// Para cada `with` (ou sacola de eval) em volta: empilha o objeto e testa
+    /// o nome. Devolve os pulos (que chegam com [obj]) para remendar no
+    /// caminho do objeto: os de `with` e os de sacola separados.
+    fn with_checks2(&mut self, name: &str) -> (Vec<usize>, Vec<usize>) {
         let withs = self.withs_for(name);
         if withs.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let n = self.konst(name);
-        let mut hits = Vec::new();
-        for w in withs {
+        let (mut hits, mut bags) = (Vec::new(), Vec::new());
+        for (w, is_bag) in withs {
             match w {
                 Res::Reg(r) => self.emit(Op::GetReg(r)),
                 Res::Env(h, s) => self.emit(Op::GetEnv(h, s)),
                 Res::Global => continue,
             };
-            hits.push(self.emit(Op::WithHas(n, 0)));
+            let j = self.emit(Op::WithHas(n, 0));
+            if is_bag {
+                bags.push(j);
+            } else {
+                hits.push(j);
+            }
         }
+        (hits, bags)
+    }
+
+    /// Como `with_checks2`, quando `with` e sacola são tratados igual.
+    fn with_checks(&mut self, name: &str) -> Vec<usize> {
+        let (mut hits, bags) = self.with_checks2(name);
+        hits.extend(bags);
         hits
     }
 
@@ -1551,11 +2235,39 @@ impl Compiler {
     }
 
     /// Guarda na variável `var` da função (Anexo B: função declarada em bloco).
-    fn store_function_var(&mut self, name: &str) {
+    fn store_function_var(&mut self, name: &str, def: &FunctionDef) {
+        if self.fr().is_eval && !self.fr().strict {
+            if !self.fr().annexb.contains(&key_of(def)) {
+                self.emit(Op::Pop);
+                return;
+            }
+            let vf = self.var_scope_fn();
+            let n = self.konst(name);
+            match self.var_at(vf, name) {
+                VarAt::Global => {
+                    self.emit(Op::SetGlobal(n));
+                }
+                VarAt::Static(fi, s) => {
+                    let h = self.hops_to(fi, 0);
+                    self.emit(Op::SetEnv(h, s));
+                }
+                VarAt::Bag(fi, s) => {
+                    let h = self.hops_to(fi, 0);
+                    self.emit(Op::GetEnv(h, s));
+                    self.emit(Op::Swap);
+                    self.emit(Op::WithSet(n));
+                }
+            }
+            return;
+        }
+        if !self.fr().annexb.contains(&key_of(def)) {
+            self.emit(Op::Pop);
+            return;
+        }
         let f = self.fr();
         let Some(fs) = f.scopes.first() else { return };
         let Some(v) = fs
-            .first_where(name, |v| matches!(v.decl, Decl::Var | Decl::Func | Decl::Param))
+            .first_where(name, |v| matches!(v.decl, Decl::Var | Decl::Func))
             .map(|i| &fs.vars[i])
         else {
             self.emit(Op::Pop);
@@ -1582,14 +2294,26 @@ impl Compiler {
     fn script(&mut self, prog: &Program) -> CResult<Rc<Code>> {
         let mut usage = Usage::default();
         usage.stmts(&prog.body, 0, true);
+        if usage.new_target {
+            return syntax("new.target expression is not allowed here", 0);
+        }
+        if usage.super_prop || usage.super_call {
+            return syntax("'super' keyword unexpected here", 0);
+        }
         self.fns.push(FnState::new(FnKind::Normal, prog.strict, usage.inner, true));
         self.push_scope(ScopeKind::Script, 0);
         let completion = self.alloc_reg();
         self.f().completion = Some(completion);
         let mut vars = Vec::new();
-        var_names(&prog.body, &mut vars, !prog.strict, false);
+        var_names(&prog.body, &mut vars, false, false);
         let mut lex = Vec::new();
         lexical_decls(&prog.body, false, &mut lex);
+        if !prog.strict {
+            for (n, def) in annex_b_functions(&prog.body, lex.iter().map(|(n, _)| n.clone()).collect()) {
+                vars.push(n);
+                self.f().annexb.insert(def);
+            }
+        }
         let mut seen = HashSet::new();
         for v in vars {
             if seen.insert(v.clone()) {
@@ -1668,6 +2392,7 @@ impl Compiler {
             call_names,
             global_cache: RefCell::new(Vec::new()),
             gobj_cache: RefCell::new(Vec::new()),
+            eval_sites: st.eval_sites,
         }
     }
 
@@ -1733,10 +2458,16 @@ impl Compiler {
         if let Some(r) = &def.rest {
             bound_names(r, &mut param_names);
         }
-        let uses_arguments = !is_arrow && usage.uses_arguments && !param_names.iter().any(|n| &**n == "arguments");
+        let uses_arguments =
+            !is_arrow && (usage.uses_arguments || usage.has_eval) && !param_names.iter().any(|n| &**n == "arguments");
         if uses_arguments {
             let cap = self.is_captured(&"arguments".into());
             self.declare("arguments".into(), Decl::Hidden, cap, true);
+        }
+        // eval direto não estrito no corpo: as `var` dele vão para uma sacola
+        let has_bag = !strict && self.eval_fns.contains(&key_of(def));
+        if has_bag {
+            self.declare(EVAL_VARS.into(), Decl::EvalVars, true, true);
         }
         let simple = is_simple_params(def);
         for (i, p) in def.params.iter().enumerate() {
@@ -1747,6 +2478,7 @@ impl Compiler {
                     // o próprio registrador do argumento
                     let sc = self.f().scopes.last_mut().unwrap();
                     if let Some(j) = sc.first_where(n, |v| v.decl != Decl::Callee) {
+                        sc.snap = None;
                         sc.vars[j].loc = Loc::Reg(i as u32);
                     } else {
                         sc.add(VarC {
@@ -1765,7 +2497,17 @@ impl Compiler {
             }
         }
         let mut vars = Vec::new();
-        var_names(body_stmts, &mut vars, !strict, false);
+        var_names(body_stmts, &mut vars, false, false);
+        if !strict {
+            let mut top = param_names.clone();
+            let mut lexs = Vec::new();
+            lexical_decls(body_stmts, false, &mut lexs);
+            top.extend(lexs.into_iter().map(|(n, _)| n));
+            for (n, def) in annex_b_functions(body_stmts, top) {
+                vars.push(n);
+                self.f().annexb.insert(def);
+            }
+        }
         for v in &vars {
             self.declare(v.clone(), Decl::Var, false, true);
         }
@@ -1804,6 +2546,13 @@ impl Compiler {
             self.emit(Op::Undef);
             self.emit(Op::SetEnv(0, s));
         }
+        if has_bag {
+            self.emit(Op::NewObject);
+            self.emit(Op::Null);
+            self.emit(Op::SetProto);
+            self.init(EVAL_VARS);
+            self.bag_depth += 1;
+        }
         if self_binding && !fname.is_empty() && matches!(self.resolve(&fname).decl, Decl::Callee) {
             self.emit(Op::FnSelf);
             self.init(&fname);
@@ -1830,6 +2579,7 @@ impl Compiler {
                 }
             }
         } else {
+            self.f().in_params = true;
             for (i, p) in def.params.iter().enumerate() {
                 self.emit(Op::GetReg(i as u32));
                 self.pattern(p, Bind::Init)?;
@@ -1838,6 +2588,7 @@ impl Compiler {
                 self.emit(Op::RestArgs(nparams));
                 self.pattern(r, Bind::Init)?;
             }
+            self.f().in_params = false;
         }
         for f in funcs {
             let idx = self.function(&f, None, None, false)?;
@@ -1858,6 +2609,9 @@ impl Compiler {
                 self.expr(e)?;
                 self.emit(Op::Return);
             }
+        }
+        if has_bag {
+            self.bag_depth -= 1;
         }
         let st = self.fns.pop().unwrap();
         let length = def
@@ -1900,7 +2654,7 @@ impl Compiler {
                 let name = f.name.clone().unwrap_or_else(|| "".into());
                 if sloppy {
                     self.emit(Op::Dup);
-                    self.store_function_var(&name);
+                    self.store_function_var(&name, f);
                 }
                 self.init(&name);
             }
@@ -1913,6 +2667,16 @@ impl Compiler {
         self.stmts(ss)?;
         self.pop_scope();
         Ok(())
+    }
+
+    /// Ramo de um if: `if (x) function f() {}` vale como `{ function f() {} }`
+    /// (Anexo B.3.4).
+    fn branch(&mut self, s: &Stmt) -> CResult<()> {
+        if let Stmt::Function(_) = s {
+            self.block(std::slice::from_ref(s))
+        } else {
+            self.stmt(s)
+        }
     }
 
     fn take_labels(&mut self) -> Vec<Name> {
@@ -1947,7 +2711,7 @@ impl Compiler {
             }
             Stmt::Return(e, line) => {
                 self.line(*line);
-                if self.fr().is_script {
+                if self.fr().is_script || self.fr().is_eval {
                     return syntax("'return' fora de função", *line);
                 }
                 match e {
@@ -1968,12 +2732,12 @@ impl Compiler {
             Stmt::If(test, cons, alt) => {
                 self.expr(test)?;
                 let j = self.emit(Op::JumpIfFalse(0));
-                self.stmt(cons)?;
+                self.branch(cons)?;
                 match alt {
                     Some(alt) => {
                         let j2 = self.emit(Op::Jump(0));
                         self.patch(j);
-                        self.stmt(alt)?;
+                        self.branch(alt)?;
                         self.patch(j2);
                     }
                     None => self.patch(j),
@@ -2392,7 +3156,8 @@ impl Compiler {
         let fin = finalizer;
         if let Some(fin) = fin {
             let d = self.fr().env_depth;
-            self.f().ctl.push(Ctl::Finally(fin as *const [Stmt], d));
+            let ns = self.fr().scopes.len();
+            self.f().ctl.push(Ctl::Finally(fin as *const [Stmt], d, ns));
         }
         let try_at = self.emit(Op::Try(0));
         self.f().ctl.push(Ctl::Try);
@@ -2412,6 +3177,7 @@ impl Compiler {
             };
             // parâmetro do catch
             self.push_scope(ScopeKind::Block, param.map(key_of).unwrap_or(0));
+            self.f().scopes.last_mut().unwrap().catch = true;
             if let Some(p) = param {
                 let mut names = Vec::new();
                 bound_names(p, &mut names);
@@ -2467,7 +3233,7 @@ impl Compiler {
             i -= 1;
             enum Act {
                 PopTry,
-                Finally(*const [Stmt], u32),
+                Finally(*const [Stmt], u32, usize),
                 IterClose,
                 AsyncIterClose,
                 PopValue,
@@ -2475,7 +3241,7 @@ impl Compiler {
             }
             let act = match &self.fr().ctl[i] {
                 Ctl::Try => Act::PopTry,
-                Ctl::Finally(b, d) => Act::Finally(*b, *d),
+                Ctl::Finally(b, d, ns) => Act::Finally(*b, *d, *ns),
                 Ctl::Loop { kind: LoopKind::ForOf, .. } => Act::IterClose,
                 Ctl::Loop { kind: LoopKind::ForAwait, .. } => Act::AsyncIterClose,
                 Ctl::Loop { kind: LoopKind::ForIn, .. } => Act::PopValue,
@@ -2492,19 +3258,23 @@ impl Compiler {
                 Act::PopValue => {
                     self.emit(Op::Pop);
                 }
-                Act::Finally(body, d) => {
+                Act::Finally(body, d, ns) => {
                     while cur_env > d {
                         self.emit(Op::PopEnv);
                         cur_env -= 1;
                     }
                     let tail = self.f().ctl.split_off(i);
+                    // os escopos abertos dentro do try já foram fechados aqui
+                    let inner = self.f().scopes.split_off(ns);
                     let saved = self.fr().env_depth;
                     self.f().env_depth = d;
                     // SEGURANÇA: o ponteiro aponta para a AST recebida por
-                    // compile_script/compile_standalone, viva até o fim da compilação.
+                    // compile_script/compile_standalone/compile_eval, viva até o
+                    // fim da compilação.
                     let body: &[Stmt] = unsafe { &*body };
                     self.block(body)?;
                     self.f().env_depth = saved;
+                    self.f().scopes.extend(inner);
                     self.f().ctl.extend(tail);
                 }
                 Act::None => {}
@@ -2748,7 +3518,7 @@ impl Compiler {
             self.emit(Op::This);
             return Ok(());
         }
-        if self.has_binding("this") {
+        if self.has_lexical("this") {
             self.load("this");
         } else {
             self.emit(Op::GlobalThis);
@@ -2919,23 +3689,36 @@ impl Compiler {
                 }
                 self.emit(Op::Swap);
             }
-            Expr::Ident(name, _) if self.with_depth > 0 && !self.withs_for(name).is_empty() => {
-                let hits = self.with_checks(name);
+            Expr::Ident(name, _) if (self.with_depth > 0 || self.bag_depth > 0) && !self.withs_for(name).is_empty() => {
+                let (hits, bags) = self.with_checks2(name);
                 self.expr(callee)?;
                 if optional {
                     self.opt_site(0);
                 }
                 self.emit(Op::Undef);
-                let end = self.emit(Op::Jump(0));
-                for h in hits {
-                    self.patch(h);
-                }
-                // [obj] → [função obj]
-                self.emit(Op::Dup);
                 let n = self.konst(name);
-                self.emit(Op::WithGet(n));
-                self.emit(Op::Swap);
-                self.patch(end);
+                let mut ends = vec![self.emit(Op::Jump(0))];
+                if !hits.is_empty() {
+                    for h in hits {
+                        self.patch(h);
+                    }
+                    // [obj] → [função obj]
+                    self.emit(Op::Dup);
+                    self.emit(Op::WithGet(n));
+                    self.emit(Op::Swap);
+                    ends.push(self.emit(Op::Jump(0)));
+                }
+                if !bags.is_empty() {
+                    for h in bags {
+                        self.patch(h);
+                    }
+                    // sacola de eval: [sacola] → [função undefined]
+                    self.emit(Op::WithGet(n));
+                    self.emit(Op::Undef);
+                }
+                for e in ends {
+                    self.patch(e);
+                }
             }
             _ => {
                 self.expr(callee)?;
@@ -3076,6 +3859,10 @@ impl Compiler {
                 let argc = self.args(args)?;
                 self.line(*line);
                 let at = match argc {
+                    Some(n) if is_direct_eval(callee, *optional) => {
+                        let site = self.eval_site();
+                        self.emit(Op::CallEval(n, site))
+                    }
                     Some(n) => self.emit(Op::Call(n)),
                     None => self.emit(Op::CallSpread),
                 };
@@ -3147,7 +3934,8 @@ impl Compiler {
                 self.emit(Op::GetSuperIndex);
             }
             Expr::SuperCall(args) => {
-                if self.fr().is_arrow() {
+                let in_eval = self.fr().eval_super_call;
+                if self.fr().is_arrow() && !in_eval {
                     return syntax("super() dentro de arrow function ainda não é suportado", 0);
                 }
                 let argc = self.args(args)?;
@@ -3155,7 +3943,13 @@ impl Compiler {
                     Some(n) => self.emit(Op::SuperCall(n)),
                     None => self.emit(Op::SuperCallSpread),
                 };
-                if self.fr().scopes.first().is_some_and(|s| s.index.contains_key("this")) {
+                if in_eval {
+                    // eval no construtor: inicia o `this` escondido dele
+                    if let Res::Env(h, s) = self.resolve("this").res {
+                        self.emit(Op::Dup);
+                        self.emit(Op::SetEnv(h, s));
+                    }
+                } else if self.fr().scopes.first().is_some_and(|s| s.index.contains_key("this")) {
                     self.emit(Op::Dup);
                     self.init("this");
                 }
@@ -3214,7 +4008,7 @@ impl Compiler {
             Expr::NewTarget => {
                 if !self.fr().is_arrow() {
                     self.emit(Op::NewTarget);
-                } else if self.has_binding("new.target") {
+                } else if self.has_lexical("new.target") {
                     self.load("new.target");
                 } else {
                     self.emit(Op::Undef);
