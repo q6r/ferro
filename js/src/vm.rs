@@ -482,3 +482,1110 @@ impl Vm {
 
     // ---------------------------------------------------------- execução
 
+    fn exec(&mut self, f: &mut Frame) -> Result<Value, Value> {
+        let code = f.code.clone();
+        let ops = &code.ops[..];
+        macro_rules! pop {
+            () => {
+                f.stack.pop().unwrap_or_default()
+            };
+        }
+        macro_rules! peek {
+            () => {
+                f.stack.last().cloned().unwrap_or_default()
+            };
+        }
+        macro_rules! num2 {
+            ($k:expr) => {{
+                let b = pop!();
+                let a = pop!();
+                let r = match (&a, &b) {
+                    (Value::Number(x), Value::Number(y)) => Value::Number(crate::ops::num_op($k, *x, *y)),
+                    _ => self.arith($k, &a, &b)?,
+                };
+                f.stack.push(r);
+            }};
+        }
+        macro_rules! cmp {
+            ($swap:expr, $test:expr) => {{
+                let b = pop!();
+                let a = pop!();
+                let r = match (&a, &b) {
+                    (Value::Number(x), Value::Number(y)) => {
+                        let (x, y) = if $swap { (*y, *x) } else { (*x, *y) };
+                        if x.is_nan() || y.is_nan() { None } else { Some(x < y || ($test && x == y)) }
+                    }
+                    _ => {
+                        let r = if $swap { self.less_than(&b, &a, false)? } else { self.less_than(&a, &b, true)? };
+                        // a <= b é !(b < a)
+                        match r {
+                            None => None,
+                            Some(lt) => Some(lt),
+                        }
+                    }
+                };
+                f.stack.push(Value::Bool(r.unwrap_or(false)));
+            }};
+        }
+        loop {
+            let op = ops[f.pc];
+            self.cur_pc = f.pc;
+            f.pc += 1;
+            match op {
+                Op::Undef => f.stack.push(Value::Undefined),
+                Op::Null => f.stack.push(Value::Null),
+                Op::True => f.stack.push(Value::Bool(true)),
+                Op::False => f.stack.push(Value::Bool(false)),
+                Op::Num(n) => f.stack.push(Value::Number(n)),
+                Op::Str(i) => f.stack.push(code.consts[i as usize].clone()),
+                Op::Pop => {
+                    f.stack.pop();
+                }
+                Op::Dup => {
+                    let v = peek!();
+                    f.stack.push(v);
+                }
+                Op::Dup2 => {
+                    let n = f.stack.len();
+                    let a = f.stack[n - 2].clone();
+                    let b = f.stack[n - 1].clone();
+                    f.stack.push(a);
+                    f.stack.push(b);
+                }
+                Op::Swap => {
+                    let n = f.stack.len();
+                    f.stack.swap(n - 1, n - 2);
+                }
+                Op::Over => {
+                    let n = f.stack.len();
+                    let v = f.stack[n - 2].clone();
+                    f.stack.push(v);
+                }
+                Op::Rot3 => {
+                    let c = pop!();
+                    let n = f.stack.len();
+                    f.stack.insert(n - 2, c);
+                }
+                Op::Roll3 => {
+                    let n = f.stack.len();
+                    let a = f.stack.remove(n - 3);
+                    f.stack.push(a);
+                }
+                Op::Rot4 => {
+                    let d = pop!();
+                    let n = f.stack.len();
+                    f.stack.insert(n - 3, d);
+                }
+                Op::GetReg(r) => f.stack.push(f.regs[r as usize].clone()),
+                Op::SetReg(r) => f.regs[r as usize] = pop!(),
+                Op::GetReg2(a, b) => {
+                    let x = f.regs[a as usize].clone();
+                    let y = f.regs[b as usize].clone();
+                    f.stack.push(x);
+                    f.stack.push(y);
+                }
+                Op::GetRegProp(r, n) => {
+                    let obj = f.regs[r as usize].clone();
+                    let key = PropKey::Str(code.const_str(n));
+                    let v = self.get(&obj, &key)?;
+                    f.stack.push(v);
+                }
+                Op::IncReg(r) | Op::DecReg(r) => {
+                    let d = if matches!(op, Op::IncReg(_)) { 1.0 } else { -1.0 };
+                    let slot = &mut f.regs[r as usize];
+                    if let Value::Number(n) = slot {
+                        *n += d;
+                    } else {
+                        let a = slot.clone();
+                        let v = match self.to_numeric(&a)? {
+                            Value::BigInt(b) => Value::BigInt(Rc::new(b.add(&crate::bigint::BigInt::from_i64(d as i64)))),
+                            v => Value::Number(self.to_number(&v)? + d),
+                        };
+                        f.regs[r as usize] = v;
+                    }
+                }
+                Op::AddNum(y) => {
+                    let a = pop!();
+                    let r = match &a {
+                        Value::Number(x) => Value::Number(x + y),
+                        _ => self.add(&a, &Value::Number(y))?,
+                    };
+                    f.stack.push(r);
+                }
+                Op::SubNum(y) => {
+                    let a = pop!();
+                    let r = match &a {
+                        Value::Number(x) => Value::Number(x - y),
+                        _ => self.arith(crate::ops::Arith::Sub, &a, &Value::Number(y))?,
+                    };
+                    f.stack.push(r);
+                }
+                Op::JumpIfNotLt(t) | Op::JumpIfNotLe(t) | Op::JumpIfNotGt(t) | Op::JumpIfNotGe(t) => {
+                    let b = pop!();
+                    let a = pop!();
+                    let ok = match (&a, &b) {
+                        (Value::Number(x), Value::Number(y)) => match op {
+                            Op::JumpIfNotLt(_) => x < y,
+                            Op::JumpIfNotLe(_) => x <= y,
+                            Op::JumpIfNotGt(_) => x > y,
+                            _ => x >= y,
+                        },
+                        _ => match op {
+                            Op::JumpIfNotLt(_) => self.less_than(&a, &b, true)? == Some(true),
+                            Op::JumpIfNotGt(_) => self.less_than(&b, &a, false)? == Some(true),
+                            Op::JumpIfNotLe(_) => matches!(self.less_than(&b, &a, false)?, Some(false)),
+                            _ => matches!(self.less_than(&a, &b, true)?, Some(false)),
+                        },
+                    };
+                    if !ok {
+                        f.pc = t as usize;
+                    }
+                }
+                Op::JumpIfNotStrictEq(t) | Op::JumpIfStrictEq(t) => {
+                    let b = pop!();
+                    let a = pop!();
+                    if strict_equals(&a, &b) == matches!(op, Op::JumpIfStrictEq(_)) {
+                        f.pc = t as usize;
+                    }
+                }
+                Op::ClearReg(r) => f.regs[r as usize] = Value::Empty,
+                Op::GetRegChk(r, n) => {
+                    let v = f.regs[r as usize].clone();
+                    if matches!(v, Value::Empty) {
+                        return Err(self.tdz_error(&code, n));
+                    }
+                    f.stack.push(v);
+                }
+                Op::SetRegChk(r, n) => {
+                    if matches!(f.regs[r as usize], Value::Empty) {
+                        return Err(self.tdz_error(&code, n));
+                    }
+                    f.regs[r as usize] = pop!();
+                }
+                Op::GetEnv(h, s) => {
+                    let v = env_get(&f.env, h, s);
+                    f.stack.push(v);
+                }
+                Op::SetEnv(h, s) => {
+                    let v = pop!();
+                    env_set(&f.env, h, s, v);
+                }
+                Op::GetEnvChk(h, s, n) => {
+                    let v = env_get(&f.env, h, s);
+                    if matches!(v, Value::Empty) {
+                        return Err(self.tdz_error(&code, n));
+                    }
+                    f.stack.push(v);
+                }
+                Op::SetEnvChk(h, s, n) => {
+                    if matches!(env_get(&f.env, h, s), Value::Empty) {
+                        return Err(self.tdz_error(&code, n));
+                    }
+                    let v = pop!();
+                    env_set(&f.env, h, s, v);
+                }
+                Op::GetGlobal(n) => {
+                    let cached = match code.global_cache.borrow().get(n as usize) {
+                        Some(Some(cell)) => {
+                            let b = cell.borrow();
+                            if matches!(b.value, Value::Empty) { None } else { Some(b.value.clone()) }
+                        }
+                        _ => None,
+                    };
+                    let v = match cached {
+                        Some(v) => v,
+                        None => match self.global_prop_cached(&code, n) {
+                            Some(v) => v,
+                            None => {
+                                let name = code.const_str(n);
+                                self.cache_global(&code, n, &name);
+                                let v = self.get_global(&name)?;
+                                self.remember_global_prop(&code, n, &name);
+                                v
+                            }
+                        },
+                    };
+                    f.stack.push(v);
+                }
+                Op::SetGlobal(n) => {
+                    let v = pop!();
+                    let done = match code.global_cache.borrow().get(n as usize) {
+                        Some(Some(cell)) => {
+                            let mut b = cell.borrow_mut();
+                            if matches!(b.value, Value::Empty) || b.is_const {
+                                false
+                            } else {
+                                b.value = v.clone();
+                                true
+                            }
+                        }
+                        _ => false,
+                    };
+                    if !done {
+                        let name = code.const_str(n);
+                        self.cache_global(&code, n, &name);
+                        self.set_global(&name, v, code.strict)?;
+                    }
+                }
+                Op::TypeofGlobal(n) => {
+                    let name = code.const_str(n);
+                    let lexv = self.lex.get(&name).map(|b| b.borrow().value.clone());
+                    let v = match lexv {
+                        Some(v) => {
+                            if matches!(v, Value::Empty) {
+                                return Err(self.tdz_error(&code, n));
+                            }
+                            v
+                        }
+                        None => {
+                            let g = self.realm.global.clone();
+                            match self.get_opt(&g, &PropKey::Str(name.clone()))? {
+                                Some(v) => v,
+                                None => self.global_miss.and_then(|f| f(self, &name)).unwrap_or(Value::Undefined),
+                            }
+                        }
+                    };
+                    f.stack.push(Value::str(typeof_str(&v)));
+                }
+                Op::DeleteGlobal(n) => {
+                    let name = code.const_str(n);
+                    let g = self.realm.global.clone();
+                    let ok = self.delete_prop(&g, &PropKey::Str(name));
+                    f.stack.push(Value::Bool(ok));
+                }
+                Op::DeclareVar(n) => {
+                    let key = PropKey::Str(code.const_str(n));
+                    let g = self.realm.global.clone();
+                    if !g.borrow().props.contains(&key) {
+                        g.borrow_mut().props.insert(
+                            key,
+                            Property {
+                                slot: Slot::Data {
+                                    value: Value::Undefined,
+                                    writable: true,
+                                },
+                                enumerable: true,
+                                configurable: false,
+                            },
+                        );
+                    }
+                }
+                Op::DeclareFunc(n) => {
+                    let v = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    self.realm.global.borrow_mut().props.insert(
+                        key,
+                        Property {
+                            slot: Slot::Data { value: v, writable: true },
+                            enumerable: true,
+                            configurable: false,
+                        },
+                    );
+                }
+                Op::DeclareLex(n, is_const) => {
+                    let name = code.const_str(n);
+                    // redeclarar (REPL) reaproveita a célula: caches continuam válidos
+                    match self.lex.get(&name) {
+                        Some(cell) => {
+                            let mut b = cell.borrow_mut();
+                            b.value = Value::Empty;
+                            b.is_const = is_const;
+                        }
+                        None => {
+                            self.lex_gen = self.lex_gen.wrapping_add(1);
+                            self.lex.insert(
+                                name,
+                                Rc::new(std::cell::RefCell::new(LexBinding {
+                                    value: Value::Empty,
+                                    is_const,
+                                })),
+                            );
+                        }
+                    }
+                }
+                Op::InitLex(n) => {
+                    let v = pop!();
+                    let name = code.const_str(n);
+                    if let Some(b) = self.lex.get(&name) {
+                        b.borrow_mut().value = v;
+                    }
+                }
+                Op::PushEnv(size) => {
+                    let parent = f.env.take();
+                    f.env = Some(new_env(size as usize, parent));
+                }
+                Op::PopEnv => {
+                    let parent = f.env.as_ref().and_then(|e| e.borrow().parent.clone());
+                    f.env = parent;
+                }
+                Op::CopyEnv => {
+                    if let Some(e) = &f.env {
+                        let copy = {
+                            let b = e.borrow();
+                            crate::value::env_with(b.slots.clone(), b.parent.clone())
+                        };
+                        f.env = Some(copy);
+                    }
+                }
+                Op::ConstAssign(_) => return Err(self.type_error("Assignment to constant variable.")),
+                Op::This => {
+                    if matches!(f.this, Value::Empty) {
+                        return Err(self.reference_error(
+                            "Must call super constructor in derived class before accessing 'this' or returning from derived constructor",
+                        ));
+                    }
+                    f.stack.push(f.this.clone());
+                }
+                Op::ThisRaw => f.stack.push(f.this.clone()),
+                Op::GlobalThis => f.stack.push(Value::Object(self.realm.global.clone())),
+                Op::NewTarget => f.stack.push(f.new_target.clone()),
+                Op::FnSelf => f.stack.push(f.func.clone().map(Value::Object).unwrap_or_default()),
+                Op::RestArgs(from) => {
+                    let rest: Vec<Value> = f.args.iter().skip(from as usize).cloned().collect();
+                    f.stack.push(Value::Object(self.new_array(rest)));
+                }
+                Op::Arguments => {
+                    let a = self.make_arguments(&f.args, f.func.clone(), code.strict);
+                    f.stack.push(Value::Object(a));
+                }
+                Op::NewObject => f.stack.push(Value::Object(self.new_object())),
+                Op::NewArray => f.stack.push(Value::Object(self.new_array(Vec::new()))),
+                Op::ArrayPush => {
+                    let v = pop!();
+                    if let Some(Value::Object(a)) = f.stack.last()
+                        && let Kind::Array(vec) = &mut a.borrow_mut().kind
+                    {
+                        vec.push(v);
+                    }
+                }
+                Op::ArrayHole => {
+                    if let Some(Value::Object(a)) = f.stack.last()
+                        && let Kind::Array(vec) = &mut a.borrow_mut().kind
+                    {
+                        vec.push(Value::Empty);
+                    }
+                }
+                Op::ArraySpread => {
+                    let src = pop!();
+                    let items = self.iterate_to_vec(&src)?;
+                    if let Some(Value::Object(a)) = f.stack.last()
+                        && let Kind::Array(vec) = &mut a.borrow_mut().kind
+                    {
+                        vec.extend(items);
+                    }
+                }
+                Op::DefineProp => {
+                    let v = pop!();
+                    let k = pop!();
+                    let key = self.to_property_key(&k)?;
+                    if let Some(Value::Object(o)) = f.stack.last() {
+                        let o = o.clone();
+                        self.define_data(&o, key, v);
+                    }
+                }
+                Op::DefinePropNamed => {
+                    let v = pop!();
+                    let k = pop!();
+                    let key = self.to_property_key(&k)?;
+                    if let Value::Object(fo) = &v {
+                        self.name_from_key(fo, &key, METHOD);
+                    }
+                    if let Some(Value::Object(o)) = f.stack.last() {
+                        let o = o.clone();
+                        self.define_data(&o, key, v);
+                    }
+                }
+                Op::DefineName(n) => {
+                    let v = pop!();
+                    if let Some(Value::Object(o)) = f.stack.last() {
+                        let o = o.clone();
+                        self.define_data(&o, PropKey::Str(code.const_str(n)), v);
+                    }
+                }
+                Op::DefineMethod(kind, enumerable) => {
+                    let fv = pop!();
+                    let k = pop!();
+                    let key = self.to_property_key(&k)?;
+                    let obj = match f.stack.last() {
+                        Some(Value::Object(o)) => o.clone(),
+                        _ => continue,
+                    };
+                    if let Value::Object(fo) = &fv {
+                        set_home(fo, &obj);
+                        self.name_from_key(fo, &key, kind);
+                    }
+                    self.define_method(&obj, key, fv, kind, enumerable);
+                }
+                Op::CopyProps => {
+                    let src = pop!();
+                    if let Some(Value::Object(o)) = f.stack.last() {
+                        let o = o.clone();
+                        self.copy_data_props(&o, &src, &[])?;
+                    }
+                }
+                Op::CopyRest(n) => {
+                    let mut keys = Vec::new();
+                    for _ in 0..n {
+                        let k = pop!();
+                        keys.push(self.to_property_key(&k)?);
+                    }
+                    let src = pop!();
+                    let o = self.new_object();
+                    self.copy_data_props(&o, &src, &keys)?;
+                    f.stack.push(Value::Object(o));
+                }
+                Op::SetProto => {
+                    let p = pop!();
+                    if let Some(Value::Object(o)) = f.stack.last() {
+                        match p {
+                            Value::Object(p) => o.borrow_mut().proto = Some(p),
+                            Value::Null => o.borrow_mut().proto = None,
+                            _ => {}
+                        }
+                    }
+                }
+                Op::GetProp(n) => {
+                    let obj = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    let v = self.get(&obj, &key)?;
+                    f.stack.push(v);
+                }
+                Op::SetProp(n) => {
+                    let v = pop!();
+                    let obj = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    self.put(&obj, key, v.clone(), code.strict)?;
+                    f.stack.push(v);
+                }
+                Op::GetIndex => {
+                    let k = pop!();
+                    let obj = pop!();
+                    let v = self.get_index(&obj, &k)?;
+                    f.stack.push(v);
+                }
+                Op::SetIndex => {
+                    let v = pop!();
+                    let k = pop!();
+                    let obj = pop!();
+                    self.set_index(&obj, &k, v.clone(), code.strict)?;
+                    f.stack.push(v);
+                }
+                Op::DeleteProp(n) => {
+                    let obj = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    let r = self.delete_value(&obj, &key, code.strict)?;
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::DeleteIndex => {
+                    let k = pop!();
+                    let obj = pop!();
+                    let key = self.to_property_key(&k)?;
+                    let r = self.delete_value(&obj, &key, code.strict)?;
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::GetSuper(n) => {
+                    let this = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    let v = self.super_get(&f.home, &this, &key)?;
+                    f.stack.push(v);
+                }
+                Op::SetSuper(n) => {
+                    let v = pop!();
+                    let this = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    self.super_set(&f.home, &this, key, v.clone())?;
+                    f.stack.push(v);
+                }
+                Op::GetSuperIndex => {
+                    let k = pop!();
+                    let this = pop!();
+                    let key = self.to_property_key(&k)?;
+                    let v = self.super_get(&f.home, &this, &key)?;
+                    f.stack.push(v);
+                }
+                Op::SetSuperIndex => {
+                    let v = pop!();
+                    let k = pop!();
+                    let this = pop!();
+                    let key = self.to_property_key(&k)?;
+                    self.super_set(&f.home, &this, key, v.clone())?;
+                    f.stack.push(v);
+                }
+                Op::NewPrivate(n) => {
+                    f.stack.push(Value::Symbol(Sym::new_private(code.const_str(n))));
+                }
+                Op::GetPrivate => {
+                    let s = pop!();
+                    let obj = pop!();
+                    let v = self.private_get(&obj, &s)?;
+                    f.stack.push(v);
+                }
+                Op::SetPrivate => {
+                    let v = pop!();
+                    let s = pop!();
+                    let obj = pop!();
+                    self.private_set(&obj, &s, v.clone())?;
+                    f.stack.push(v);
+                }
+                Op::HasPrivate => {
+                    let obj = pop!();
+                    let s = pop!();
+                    let (Value::Object(o), Value::Symbol(s)) = (&obj, &s) else {
+                        return Err(self.type_error("Cannot use 'in' operator to search for a private field in a non-object"));
+                    };
+                    let has = o.borrow().props.contains(&PropKey::Sym(s.clone()));
+                    f.stack.push(Value::Bool(has));
+                }
+                Op::DefinePrivate => {
+                    let v = pop!();
+                    let s = pop!();
+                    if let (Some(Value::Object(o)), Value::Symbol(s)) = (f.stack.last(), &s) {
+                        let key = PropKey::Sym(s.clone());
+                        if o.borrow().props.contains(&key) {
+                            let d = s.description().map(|d| d.to_rust()).unwrap_or_default();
+                            return Err(self.type_error(format!("Cannot initialize {d} twice on the same object")));
+                        }
+                        o.borrow_mut().props.insert(key, Property::hidden(v));
+                    }
+                }
+                Op::DefinePrivateMethod(kind) => {
+                    let fv = pop!();
+                    let s = pop!();
+                    if let (Some(Value::Object(o)), Value::Symbol(s)) = (f.stack.last(), &s) {
+                        let o = o.clone();
+                        if let (Value::Object(fo), Some(h)) = (&fv, &f.home) {
+                            set_home(fo, h);
+                        }
+                        self.define_method(&o, PropKey::Sym(s.clone()), fv, kind, false);
+                    }
+                }
+                Op::Closure(i) => {
+                    let c = code.functions[i as usize].clone();
+                    let home = if c.is_arrow() { f.home.clone() } else { None };
+                    let fo = self.make_closure(c, f.env.clone(), home);
+                    f.stack.push(Value::Object(fo));
+                }
+                Op::MakeClass(i, derived) => {
+                    let sup = if derived { Some(pop!()) } else { None };
+                    let c = code.functions[i as usize].clone();
+                    let (ctor, proto) = self.make_class(c, f.env.clone(), sup)?;
+                    f.stack.push(Value::Object(ctor));
+                    f.stack.push(Value::Object(proto));
+                }
+                Op::SetFields => {
+                    let fv = pop!();
+                    let n = f.stack.len();
+                    if let (Value::Object(ctor), Value::Object(proto), Value::Object(fo)) = (&f.stack[n - 2], &f.stack[n - 1], &fv) {
+                        set_home(fo, proto);
+                        let mut b = ctor.borrow_mut();
+                        if let Kind::Function(Func::Closure(c)) = &mut b.kind {
+                            let mut nc = (**c).clone();
+                            nc.fields = Some(fo.clone());
+                            *c = Rc::new(nc);
+                        }
+                    }
+                }
+                Op::CallInit => {
+                    let fv = pop!();
+                    let obj = pop!();
+                    if let (Value::Object(fo), Value::Object(o)) = (&fv, &obj) {
+                        set_home(fo, o);
+                    }
+                    self.call(&fv, obj, Vec::new())?;
+                }
+                Op::Call(argc) => {
+                    let n = f.stack.len() - argc as usize;
+                    let args = f.stack.split_off(n);
+                    let this = pop!();
+                    let callee = pop!();
+                    if !callee.is_callable() {
+                        return Err(self.not_callable(&code, &callee));
+                    }
+                    let r = self.call(&callee, this, args)?;
+                    f.stack.push(r);
+                }
+                Op::CallSpread => {
+                    let arr = pop!();
+                    let this = pop!();
+                    let callee = pop!();
+                    let args = array_values(&arr);
+                    if !callee.is_callable() {
+                        return Err(self.not_callable(&code, &callee));
+                    }
+                    let r = self.call(&callee, this, args)?;
+                    f.stack.push(r);
+                }
+                Op::New(argc) => {
+                    let n = f.stack.len() - argc as usize;
+                    let args = f.stack.split_off(n);
+                    let callee = pop!();
+                    let r = self.new_value(&code, &callee, args)?;
+                    f.stack.push(r);
+                }
+                Op::NewSpread => {
+                    let arr = pop!();
+                    let callee = pop!();
+                    let args = array_values(&arr);
+                    let r = self.new_value(&code, &callee, args)?;
+                    f.stack.push(r);
+                }
+                Op::SuperCall(argc) => {
+                    let n = f.stack.len() - argc as usize;
+                    let args = f.stack.split_off(n);
+                    let r = self.super_call(f, args)?;
+                    f.stack.push(r);
+                }
+                Op::SuperCallSpread => {
+                    let arr = pop!();
+                    let args = array_values(&arr);
+                    let r = self.super_call(f, args)?;
+                    f.stack.push(r);
+                }
+                Op::Return => {
+                    let v = pop!();
+                    if code.kind == crate::ast::FnKind::DerivedConstructor && !matches!(v, Value::Object(_)) {
+                        if !v.is_undefined() {
+                            return Err(self.type_error("Derived constructors may only return object or undefined"));
+                        }
+                        if matches!(f.this, Value::Empty) {
+                            return Err(self.reference_error(
+                                "Must call super constructor in derived class before accessing 'this' or returning from derived constructor",
+                            ));
+                        }
+                        return Ok(f.this.clone());
+                    }
+                    return Ok(v);
+                }
+                Op::Throw => return Err(pop!()),
+                Op::InitialYield => {
+                    f.suspended = true;
+                    f.suspend_await = false;
+                    return Ok(Value::Undefined);
+                }
+                Op::Yield => {
+                    let v = pop!();
+                    f.suspended = true;
+                    f.suspend_await = false;
+                    return Ok(v);
+                }
+                Op::Await => {
+                    let v = pop!();
+                    f.suspended = true;
+                    f.suspend_await = true;
+                    return Ok(v);
+                }
+                Op::GetAsyncIter => {
+                    let v = pop!();
+                    let rec = self.get_async_iterator(&v)?;
+                    f.stack.push(Value::Object(rec));
+                }
+                Op::AsyncIterNext => {
+                    let rec = match f.stack.last() {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    let r = self.async_iter_next(&rec)?;
+                    f.stack.push(r);
+                }
+                Op::AsyncIterClose(t) => {
+                    let Value::Object(rec) = pop!() else { continue };
+                    let iter = match &rec.borrow().kind {
+                        Kind::IterRecord { iter, done: false, .. } => Some(iter.clone()),
+                        _ => None,
+                    };
+                    let Some(iter) = iter else {
+                        f.pc = t as usize;
+                        continue;
+                    };
+                    if let Kind::IterRecord { done, .. } = &mut rec.borrow_mut().kind {
+                        *done = true;
+                    }
+                    let ret = self.get_str(&iter, "return")?;
+                    if ret.is_nullish() {
+                        f.pc = t as usize;
+                        continue;
+                    }
+                    let r = self.call(&ret, iter, Vec::new())?;
+                    f.stack.push(r);
+                }
+                Op::IterResultValue(t) => {
+                    let res = pop!();
+                    if !matches!(res, Value::Object(_)) {
+                        let d = self.describe(&res);
+                        return Err(self.type_error(format!("Iterator result {d} is not an object")));
+                    }
+                    if truthy(&self.get_str(&res, "done")?) {
+                        if let Some(Value::Object(rec)) = f.stack.last()
+                            && let Kind::IterRecord { done, .. } = &mut rec.borrow_mut().kind
+                        {
+                            *done = true;
+                        }
+                        f.pc = t as usize;
+                    } else {
+                        let v = self.get_str(&res, "value")?;
+                        f.stack.push(v);
+                    }
+                }
+                Op::GenResume(t) => {
+                    let mode = pop!();
+                    match mode {
+                        Value::Number(m) if m as u8 == crate::builtins::promise::RESUME_THROW => return Err(pop!()),
+                        Value::Number(m) if m as u8 == crate::builtins::promise::RESUME_RETURN => {}
+                        _ => f.pc = t as usize,
+                    }
+                }
+                Op::AwaitResume => {
+                    let mode = pop!();
+                    if let Value::Number(m) = mode
+                        && m as u8 == crate::builtins::promise::RESUME_THROW
+                    {
+                        return Err(pop!());
+                    }
+                }
+                Op::DelegateStep(t) => {
+                    let mode = match pop!() {
+                        Value::Number(m) => m as u8,
+                        _ => 0,
+                    };
+                    let received = pop!();
+                    let rec = match f.stack.last() {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    let (iter, next) = match &rec.borrow().kind {
+                        Kind::IterRecord { iter, next, .. } => (iter.clone(), next.clone()),
+                        _ => (Value::Undefined, Value::Undefined),
+                    };
+                    let res = match mode {
+                        crate::builtins::promise::RESUME_THROW => {
+                            let th = self.get_str(&iter, "throw")?;
+                            if th.is_nullish() {
+                                let _ = self.iter_close(&rec);
+                                return Err(self.type_error("The iterator does not provide a 'throw' method"));
+                            }
+                            self.call(&th, iter.clone(), vec![received])?
+                        }
+                        crate::builtins::promise::RESUME_RETURN => {
+                            let rt = self.get_str(&iter, "return")?;
+                            if rt.is_nullish() {
+                                f.stack.pop();
+                                f.stack.push(received);
+                                f.stack.push(Value::Bool(true));
+                                f.pc = t as usize;
+                                continue;
+                            }
+                            self.call(&rt, iter.clone(), vec![received])?
+                        }
+                        _ => self.call(&next, iter.clone(), vec![received])?,
+                    };
+                    if !matches!(res, Value::Object(_)) {
+                        let d = self.describe(&res);
+                        return Err(self.type_error(format!("Iterator result {d} is not an object")));
+                    }
+                    let done = truthy(&self.get_str(&res, "done")?);
+                    let value = self.get_str(&res, "value")?;
+                    if done {
+                        f.stack.pop();
+                        f.stack.push(value);
+                        f.stack.push(Value::Bool(mode == crate::builtins::promise::RESUME_RETURN));
+                        f.pc = t as usize;
+                    } else {
+                        f.stack.push(value);
+                    }
+                }
+                Op::ThrowError(kind, msg) => {
+                    let m = code.const_str(msg).to_rust();
+                    return Err(match kind {
+                        ERR_SYNTAX => self.syntax_error(m),
+                        ERR_REFERENCE => self.reference_error(m),
+                        _ => self.type_error(m),
+                    });
+                }
+                Op::TemplateObj(i) => {
+                    let v = self.template_object(&code, i as usize);
+                    f.stack.push(v);
+                }
+                Op::Regex(p, fl) => {
+                    let v = self.new_regexp(code.const_str(p), code.const_str(fl))?;
+                    f.stack.push(v);
+                }
+                Op::Jump(t) => f.pc = t as usize,
+                Op::JumpIfFalse(t) => {
+                    if !truthy(&pop!()) {
+                        f.pc = t as usize;
+                    }
+                }
+                Op::JumpIfTrue(t) => {
+                    if truthy(&pop!()) {
+                        f.pc = t as usize;
+                    }
+                }
+                Op::JumpIfFalseKeep(t) => {
+                    if !truthy(f.stack.last().unwrap_or(&Value::Undefined)) {
+                        f.pc = t as usize;
+                    } else {
+                        f.stack.pop();
+                    }
+                }
+                Op::JumpIfTrueKeep(t) => {
+                    if truthy(f.stack.last().unwrap_or(&Value::Undefined)) {
+                        f.pc = t as usize;
+                    } else {
+                        f.stack.pop();
+                    }
+                }
+                Op::JumpIfNotNullishKeep(t) => {
+                    if !f.stack.last().unwrap_or(&Value::Undefined).is_nullish() {
+                        f.pc = t as usize;
+                    } else {
+                        f.stack.pop();
+                    }
+                }
+                Op::JumpIfNullish(t) => {
+                    if f.stack.last().unwrap_or(&Value::Undefined).is_nullish() {
+                        f.pc = t as usize;
+                    }
+                }
+                Op::JumpIfNotUndef(t) => {
+                    if !matches!(f.stack.last(), Some(Value::Undefined) | None) {
+                        f.pc = t as usize;
+                    }
+                }
+                Op::Try(t) => f.handlers.push(Handler {
+                    pc: t as usize,
+                    stack: f.stack.len(),
+                    env: f.env.clone(),
+                }),
+                Op::PopTry => {
+                    f.handlers.pop();
+                }
+                Op::GetIter => {
+                    let v = pop!();
+                    let rec = self.get_iterator(&v)?;
+                    f.stack.push(Value::Object(rec));
+                }
+                Op::IterStep(t) => {
+                    let rec = match f.stack.last() {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    match self.iter_step(&rec)? {
+                        Some(v) => f.stack.push(v),
+                        None => f.pc = t as usize,
+                    }
+                }
+                Op::IterValue => {
+                    let rec = match f.stack.last() {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    let v = self.iter_step(&rec)?.unwrap_or(Value::Undefined);
+                    f.stack.push(v);
+                }
+                Op::IterRest => {
+                    let rec = match f.stack.last() {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    let mut items = Vec::new();
+                    while let Some(v) = self.iter_step(&rec)? {
+                        items.push(v);
+                    }
+                    f.stack.push(Value::Object(self.new_array(items)));
+                }
+                Op::IterClose => {
+                    if let Value::Object(rec) = pop!() {
+                        self.iter_close(&rec)?;
+                    }
+                }
+                Op::IterCloseThrow => {
+                    let exc = pop!();
+                    if let Value::Object(rec) = pop!() {
+                        let _ = self.iter_close(&rec);
+                    }
+                    return Err(exc);
+                }
+                Op::IterPop => {
+                    f.stack.pop();
+                }
+                Op::ForIn => {
+                    let v = pop!();
+                    let it = self.for_in_iterator(&v)?;
+                    f.stack.push(Value::Object(it));
+                }
+                Op::ForInNext(t) => {
+                    let it = match f.stack.last() {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    match self.for_in_next(&it) {
+                        Some(k) => f.stack.push(Value::String(k)),
+                        None => f.pc = t as usize,
+                    }
+                }
+                Op::Add => {
+                    let b = pop!();
+                    let a = pop!();
+                    let r = match (&a, &b) {
+                        (Value::Number(x), Value::Number(y)) => Value::Number(x + y),
+                        (Value::String(x), Value::String(y)) => Value::String(x.concat(y)),
+                        _ => self.add(&a, &b)?,
+                    };
+                    f.stack.push(r);
+                }
+                Op::Sub => num2!(crate::ops::Arith::Sub),
+                Op::Mul => num2!(crate::ops::Arith::Mul),
+                Op::Div => num2!(crate::ops::Arith::Div),
+                Op::Mod => num2!(crate::ops::Arith::Mod),
+                Op::Exp => num2!(crate::ops::Arith::Exp),
+                Op::BitAnd => num2!(crate::ops::Arith::And),
+                Op::BitOr => num2!(crate::ops::Arith::Or),
+                Op::BitXor => num2!(crate::ops::Arith::Xor),
+                Op::Shl => num2!(crate::ops::Arith::Shl),
+                Op::Shr => num2!(crate::ops::Arith::Shr),
+                Op::UShr => num2!(crate::ops::Arith::UShr),
+                Op::Eq => {
+                    let b = pop!();
+                    let a = pop!();
+                    let r = self.loose_equals(&a, &b)?;
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::Ne => {
+                    let b = pop!();
+                    let a = pop!();
+                    let r = self.loose_equals(&a, &b)?;
+                    f.stack.push(Value::Bool(!r));
+                }
+                Op::StrictEq => {
+                    let b = pop!();
+                    let a = pop!();
+                    f.stack.push(Value::Bool(strict_equals(&a, &b)));
+                }
+                Op::StrictNe => {
+                    let b = pop!();
+                    let a = pop!();
+                    f.stack.push(Value::Bool(!strict_equals(&a, &b)));
+                }
+                Op::Lt => cmp!(false, false),
+                Op::Gt => cmp!(true, false),
+                Op::Le => {
+                    let b = pop!();
+                    let a = pop!();
+                    let r = match (&a, &b) {
+                        (Value::Number(x), Value::Number(y)) => *x <= *y,
+                        _ => matches!(self.less_than(&b, &a, false)?, Some(false)),
+                    };
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::Ge => {
+                    let b = pop!();
+                    let a = pop!();
+                    let r = match (&a, &b) {
+                        (Value::Number(x), Value::Number(y)) => *x >= *y,
+                        _ => matches!(self.less_than(&a, &b, true)?, Some(false)),
+                    };
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::InstanceOf => {
+                    let b = pop!();
+                    let a = pop!();
+                    let r = self.instance_of(&a, &b)?;
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::In => {
+                    let b = pop!();
+                    let a = pop!();
+                    let Value::Object(o) = &b else {
+                        let k = self.to_string(&a).map(|s| s.to_rust()).unwrap_or_default();
+                        let d = match &b {
+                            Value::String(s) => s.to_rust(),
+                            _ => self.describe(&b),
+                        };
+                        return Err(self.type_error(format!("Cannot use 'in' operator to search for '{k}' in {d}")));
+                    };
+                    let key = self.to_property_key(&a)?;
+                    let r = self.has_property(o, &key)?;
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::Neg => {
+                    let a = pop!();
+                    let r = match self.to_numeric(&a)? {
+                        Value::BigInt(b) => Value::BigInt(Rc::new(b.neg())),
+                        Value::Number(n) => Value::Number(-n),
+                        v => v,
+                    };
+                    f.stack.push(r);
+                }
+                Op::Plus => {
+                    let a = pop!();
+                    let n = match a {
+                        Value::Number(n) => n,
+                        _ => self.to_number(&a)?,
+                    };
+                    f.stack.push(Value::Number(n));
+                }
+                Op::ToNumeric => {
+                    let a = pop!();
+                    let r = match a {
+                        Value::Number(_) => a,
+                        _ => self.to_numeric(&a)?,
+                    };
+                    f.stack.push(r);
+                }
+                Op::Not => {
+                    let a = pop!();
+                    f.stack.push(Value::Bool(!truthy(&a)));
+                }
+                Op::BitNot => {
+                    let a = pop!();
+                    let r = match self.to_numeric(&a)? {
+                        Value::BigInt(b) => Value::BigInt(Rc::new(b.not())),
+                        v => {
+                            let n = crate::conv::to_int32(self.to_number(&v)?);
+                            Value::Number(!n as f64)
+                        }
+                    };
+                    f.stack.push(r);
+                }
+                Op::Typeof => {
+                    let a = pop!();
+                    f.stack.push(Value::str(typeof_str(&a)));
+                }
+                Op::Inc | Op::Dec => {
+                    let a = pop!();
+                    let d = if matches!(op, Op::Inc) { 1.0 } else { -1.0 };
+                    let r = match a {
+                        Value::Number(n) => Value::Number(n + d),
+                        _ => match self.to_numeric(&a)? {
+                            Value::BigInt(b) => Value::BigInt(Rc::new(b.add(&crate::bigint::BigInt::from_i64(d as i64)))),
+                            v => Value::Number(self.to_number(&v)? + d),
+                        },
+                    };
+                    f.stack.push(r);
+                }
+                Op::ToPropertyKey => {
+                    let a = pop!();
+                    let k = self.to_property_key(&a)?;
+                    f.stack.push(k.to_value());
+                }
+                Op::ToStr => {
+                    let a = pop!();
+                    let s = match a {
+                        Value::String(s) => s,
+                        _ => self.to_string(&a)?,
+                    };
+                    f.stack.push(Value::String(s));
+                }
+                Op::RequireCoercible => {
+                    if let Some(v) = f.stack.last()
+                        && v.is_nullish()
+                    {
+                        let d = if matches!(v, Value::Null) { "null" } else { "undefined" };
+                        return Err(self.type_error(format!("Cannot destructure '{d}' as it is {d}.")));
+                    }
+                }
+                Op::Nop => {}
+            }
+        }
+    }
+
