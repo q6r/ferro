@@ -1650,3 +1650,80 @@ impl Vm {
         self.reference_error(format!("Cannot access '{name}' before initialization"))
     }
 
+    fn not_callable(&mut self, code: &Code, callee: &Value) -> Value {
+        let pc = self.cur_pc as u32;
+        let hint = code
+            .call_names
+            .binary_search_by(|(p, _)| p.cmp(&pc))
+            .ok()
+            .map(|i| code.const_str(code.call_names[i].1).to_rust());
+        let d = match hint {
+            Some(h) => h,
+            None => self.describe(callee),
+        };
+        self.type_error(format!("{d} is not a function"))
+    }
+
+    fn new_value(&mut self, code: &Code, callee: &Value, args: Vec<Value>) -> Result<Value, Value> {
+        match callee {
+            Value::Object(o) if o.is_constructor() => self.construct(o, args, o),
+            _ => {
+                let pc = self.cur_pc as u32;
+                let hint = code
+                    .call_names
+                    .binary_search_by(|(p, _)| p.cmp(&pc))
+                    .ok()
+                    .map(|i| code.const_str(code.call_names[i].1).to_rust());
+                let d = match hint {
+                    Some(h) => h,
+                    None => self.describe(callee),
+                };
+                Err(self.type_error(format!("{d} is not a constructor")))
+            }
+        }
+    }
+
+    fn super_call(&mut self, f: &mut Frame, args: Vec<Value>) -> Result<Value, Value> {
+        let func = f.func.clone();
+        let parent = func.as_ref().and_then(|fo| fo.proto());
+        let Some(parent) = parent.filter(|p| p.is_constructor()) else {
+            return Err(self.type_error("Super constructor is not a constructor"));
+        };
+        if !matches!(f.this, Value::Empty) {
+            return Err(self.reference_error("Super constructor may only be called once"));
+        }
+        let nt = match &f.new_target {
+            Value::Object(o) => o.clone(),
+            _ => return Err(self.syntax_error("'super' keyword unexpected here")),
+        };
+        let r = self.construct(&parent, args, &nt)?;
+        f.this = r.clone();
+        self.init_fields(&func, &r)?;
+        Ok(r)
+    }
+
+    fn super_get(&mut self, home: &Option<ObjRef>, this: &Value, key: &PropKey) -> Result<Value, Value> {
+        let Some(home) = home else {
+            return Err(self.syntax_error("'super' keyword unexpected here"));
+        };
+        match home.proto() {
+            Some(p) => self.get_with(&p, key, this),
+            None => Ok(Value::Undefined),
+        }
+    }
+
+    fn super_set(&mut self, home: &Option<ObjRef>, this: &Value, key: PropKey, v: Value) -> Result<(), Value> {
+        let Some(home) = home else {
+            return Err(self.syntax_error("'super' keyword unexpected here"));
+        };
+        match home.proto() {
+            Some(p) => {
+                self.set_with(&p, key, v, this)?;
+            }
+            None => {
+                self.put(this, key, v, true)?;
+            }
+        }
+        Ok(())
+    }
+
