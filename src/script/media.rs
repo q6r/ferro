@@ -101,3 +101,58 @@ fn sb_new(vm: &mut Vm, a: &mut CallArgs) -> R {
     })
 }
 
+/// `sbAppend(id, bytes, timestampOffset)` → null ou mensagem de erro.
+fn sb_append(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let sb = id(vm, a, 0)?;
+    let bytes = super::web::bytes_of(&a.arg(1)).unwrap_or_default();
+    let offset = num(vm, a, 2).unwrap_or(0.0);
+    let r = write(vm, |h| h.media.append(sb, &bytes, if offset.is_finite() { offset } else { 0.0 }));
+    Ok(match r {
+        Ok(()) => Value::Null,
+        Err(e) => Value::str(&e),
+    })
+}
+
+fn sb_remove(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let sb = id(vm, a, 0)?;
+    let (s, e) = (num(vm, a, 1)?, num(vm, a, 2)?);
+    write(vm, |h| h.media.remove(sb, s, e));
+    Ok(Value::Undefined)
+}
+
+fn sb_buffered(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let sb = id(vm, a, 0)?;
+    let r = write(vm, |h| h.media.buffers.get(&sb).map(|b| b.buffered()).unwrap_or_default());
+    Ok(ranges(vm, r))
+}
+
+fn attach(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let ms = id(vm, a, 1)?;
+    write(vm, |h| h.media.attach(n, ms));
+    Ok(Value::Undefined)
+}
+
+fn detach(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    write(vm, |h| h.media.players.remove(&n));
+    Ok(Value::Undefined)
+}
+
+/// `mediaLoadUrl(el, url)`: baixa um arquivo de mídia inteiro (MP4) para tocar.
+fn load_url(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let url = vm.to_rust_string(&a.arg(1))?;
+    let Ok(url) = url::Url::parse(&url) else { return Ok(Value::Bool(false)) };
+    write(vm, |h| {
+        h.media_loading.insert(n, url.clone());
+        let net = h.net.clone();
+        h.in_flight += 1;
+        h.pool.submit(Box::new(move || {
+            let bytes = net.fetch(&url).ok().filter(|r| r.status < 400).map(|r| r.body);
+            super::Done::MediaFile { node: n, url, bytes }
+        }));
+    });
+    Ok(Value::Bool(true))
+}
+
