@@ -2167,3 +2167,110 @@ impl<'a> Ctx<'a> {
         r
     }
 
+    /// Larguras intrínsecas de conteúdo em linha: a palavra mais longa e a
+    /// linha inteira sem quebras.
+    fn inline_intrinsic(&mut self, b: &'a LayoutBox) -> (f32, f32) {
+        let mut items = Vec::new();
+        self.flatten(b, &mut items, &Inherited::default(), 1.0e6);
+        let (mut widest, mut line, mut min) = (0.0f32, 0.0f32, 0.0f32);
+        // `run`: largura desde a última oportunidade de quebra
+        let mut run = 0.0f32;
+        let mut space_before = false;
+        let mut space_breaks = true;
+        let mut space_w = 4.0;
+        for it in &items {
+            match it {
+                Item::Text { text, style, .. } => {
+                    let font = self.fonts.for_style(style);
+                    let size = style.font_size;
+                    space_w = self.fonts.advance(font, ' ', size);
+                    let nowrap = matches!(style.white_space, WhiteSpace::NoWrap | WhiteSpace::Pre);
+                    let keep_newlines =
+                        matches!(style.white_space, WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine);
+                    let text = transform(text, style.text_transform);
+                    let segments: Vec<&str> = if keep_newlines { text.split('\n').collect() } else { vec![&text] };
+                    for (si, seg) in segments.iter().enumerate() {
+                        if si > 0 {
+                            widest = widest.max(line);
+                            line = 0.0;
+                            run = 0.0;
+                            space_before = false;
+                        }
+                        if seg.starts_with(is_collapsible) {
+                            space_before = true;
+                            space_breaks = !nowrap;
+                        }
+                        for (k, word) in seg.split(is_collapsible).filter(|w| !w.is_empty()).enumerate() {
+                            let w = self.fonts.measure(font, size, word);
+                            if k > 0 {
+                                space_before = true;
+                                space_breaks = !nowrap;
+                            }
+                            if space_before && line > 0.0 {
+                                line += space_w;
+                                run = if space_breaks { 0.0 } else { run + space_w };
+                            }
+                            line += w;
+                            run += w;
+                            space_before = false;
+                            min = min.max(run);
+                        }
+                        if seg.ends_with(is_collapsible) && !seg.trim().is_empty() {
+                            space_before = true;
+                            space_breaks = !nowrap;
+                        }
+                    }
+                }
+                Item::Atomic { w, .. } => {
+                    if space_before && line > 0.0 {
+                        line += space_w;
+                        run = if space_breaks { 0.0 } else { run + space_w };
+                    }
+                    line += w;
+                    run += w;
+                    min = min.max(run);
+                    space_before = false;
+                }
+                Item::Float(f, _) => {
+                    let (a, z) = self.intrinsic(f);
+                    let m = px(f.style.margin[LEFT]) + px(f.style.margin[RIGHT]);
+                    line += z + m;
+                    min = min.max(a + m);
+                }
+                Item::InlineBlock(ib, _) => {
+                    let (a, z) = self.intrinsic(ib);
+                    let m = px(ib.style.margin[LEFT]) + px(ib.style.margin[RIGHT]);
+                    if space_before && line > 0.0 {
+                        line += space_w;
+                        run = if space_breaks { 0.0 } else { run + space_w };
+                    }
+                    line += z + m;
+                    run += a + m;
+                    min = min.max(run);
+                    space_before = false;
+                }
+                Item::InlineStart(st, _) => {
+                    let e = px(st.margin[LEFT]) + st.border(LEFT) + px(st.padding[LEFT]);
+                    line += e;
+                    run += e;
+                }
+                Item::InlineEnd(st, _) => {
+                    let e = px(st.margin[RIGHT]) + st.border(RIGHT) + px(st.padding[RIGHT]);
+                    line += e;
+                    run += e;
+                    min = min.max(run);
+                }
+                Item::Break => {
+                    widest = widest.max(line);
+                    line = 0.0;
+                    run = 0.0;
+                    space_before = false;
+                }
+                Item::Anchor(_) | Item::OutOfFlow(..) => {}
+            }
+        }
+        (min, widest.max(line))
+    }
+
+    // ------------------------------------------------------------- flexbox
+
