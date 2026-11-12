@@ -78,3 +78,60 @@ fn variaveis_escopos_closures() {
     );
 }
 
+#[test]
+fn controle_de_fluxo() {
+    check(
+        r#"
+        let s = "";
+        outer: for (let i = 0; i < 4; i++) {
+            for (let j = 0; j < 4; j++) {
+                if (j === 2) continue outer;
+                if (i === 3) break outer;
+                s += i + "" + j + " ";
+            }
+        }
+        console.log(s.trim());
+        let n = 0; while (true) { if (++n > 5) break; } console.log(n);
+        let d = 0; do { d++; } while (d < 3); console.log(d);
+        function f(x) {
+            switch (x) { case 1: return "um"; case 2: case 3: return "dois-tres"; default: return "outro"; }
+        }
+        console.log(f(1), f(3), f(9));
+        function g() { try { return "try"; } finally { console.log("finally"); } }
+        console.log(g());
+        function h() { for (const x of [1, 2, 3]) { try { if (x == 2) return x; } finally { console.log("f" + x); } } }
+        console.log(h());
+        try { throw new TypeError("ruim"); } catch ({ name, message }) { console.log(name + ": " + message); }
+        const o = { a: 1, b: 2 }; const ks = []; for (const k in o) ks.push(k); console.log(ks.join());
+        console.log(true ? "sim" : "não", null ?? "padrão", 0 || "falso", 1 && "verdadeiro");
+        "#,
+        "00 01 10 11 20 21\n6\n3\num dois-tres outro\nfinally\ntry\nf1\nf2\n2\nTypeError: ruim\na,b\nsim padrão falso verdadeiro",
+    );
+}
+
+#[test]
+fn objetos_arrays_desestruturacao() {
+    check(
+        r#"
+        const { a, b: { c = 5 } = {}, ...resto } = { a: 1, d: 4, e: 5 };
+        console.log(a, c, resto);
+        const [p, , q = 10, ...r] = [1, 2, undefined, 4, 5];
+        console.log(p, q, r);
+        let m = 1, n = 2; [m, n] = [n, m]; console.log(m, n);
+        const obj = { x: 1, get dobro() { return this.x * 2; }, ["k" + 1]: "computada", metodo() { return "m"; } };
+        console.log(obj.dobro, obj.k1, obj.metodo(), Object.keys(obj));
+        const arr = [5, 1, 4];
+        console.log([...arr, ...[9]], Math.max(...arr), arr.sort(), arr.length);
+        console.log({ ...obj, x: 9 }.x, Object.entries({ u: 1 }));
+        console.log([1, [2, [3, [4]]]].flat(Infinity), Array.from({ length: 3 }, (_, i) => i * i));
+        console.log([3, 1, 2].map(x => x * 2).filter(x => x > 2).reduce((s, x) => s + x, 0));
+        console.log(arr.includes(4), arr.indexOf(5), [1, 2, 3].at(-1), "abc".at(-1));
+        const nested = { a: [1, { b: 2 }], s: "texto" };
+        console.log(nested);
+        console.log(JSON.stringify(nested), JSON.parse('{"x":[1,2,{"y":null}]}').x[2].y);
+        console.log(JSON.stringify({ a: 1, b: [1, 2] }, null, 2));
+        "#,
+        "1 5 { d: 4, e: 5 }\n1 10 [ 4, 5 ]\n2 1\n2 computada m [ 'x', 'dobro', 'k1', 'metodo' ]\n[ 5, 1, 4, 9 ] 5 [ 1, 4, 5 ] 3\n9 [ [ 'u', 1 ] ]\n[ 1, 2, 3, 4 ] [ 0, 1, 4 ]\n10\ntrue 2 3 c\n{ a: [ 1, { b: 2 } ], s: 'texto' }\n{\"a\":[1,{\"b\":2}],\"s\":\"texto\"} null\n{\n  \"a\": 1,\n  \"b\": [\n    1,\n    2\n  ]\n}",
+    );
+}
+
