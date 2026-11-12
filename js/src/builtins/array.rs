@@ -215,3 +215,51 @@ fn from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 // ------------------------------------------------------ métodos
 
+fn at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)? as f64;
+    let n = vm.to_integer(&a.arg(0))?;
+    let k = if n >= 0.0 { n } else { len + n };
+    if k < 0.0 || k >= len {
+        return Ok(Value::Undefined);
+    }
+    get_i(vm, &o, k as usize)
+}
+
+fn is_spreadable(vm: &mut Vm, v: &Value) -> Result<bool, Value> {
+    let Value::Object(o) = v else { return Ok(false) };
+    let key = PropKey::Sym(vm.realm.sym_is_concat_spreadable.clone());
+    let s = vm.get_obj(o, &key)?;
+    if !s.is_undefined() {
+        return Ok(truthy(&s));
+    }
+    Ok(matches!(o.borrow().kind, Kind::Array(_)))
+}
+
+fn concat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let mut out = Vec::new();
+    let mut items = vec![Value::Object(o)];
+    items.extend(a.args.iter().cloned());
+    for item in items {
+        if is_spreadable(vm, &item)? {
+            let Value::Object(e) = &item else { continue };
+            if let Kind::Array(v) = &e.borrow().kind {
+                out.extend(v.iter().cloned());
+                continue;
+            }
+            let len = vm.length_of(e)?;
+            for i in 0..len {
+                if has_i(vm, e, i) {
+                    out.push(get_i(vm, e, i)?);
+                } else {
+                    out.push(Value::Empty);
+                }
+            }
+        } else {
+            out.push(item);
+        }
+    }
+    Ok(vm.array_value(out))
+}
+
