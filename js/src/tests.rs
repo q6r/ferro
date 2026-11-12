@@ -237,3 +237,75 @@ linha2`.split("\n").length);
     );
 }
 
+#[test]
+fn erros_e_pilha() {
+    let out = run(
+        r#"
+        function a() { b(); }
+        function b() { null.x; }
+        try { a(); } catch (e) { console.log(e.constructor.name); console.log(e.message); console.log(e.stack.split("\n").length > 2); }
+        try { undefinedFn(); } catch (e) { console.log(e.message); }
+        try { const o = {}; o.metodo(); } catch (e) { console.log(e.message); }
+        try { JSON.parse("{x"); } catch (e) { console.log(e.name); }
+        try { new Array(-1); } catch (e) { console.log(e.name, e.message); }
+        function rec() { return rec(); }
+        try { rec(); } catch (e) { console.log(e.name, e.message); }
+        throw new Error("fim");
+        "#,
+    );
+    assert_eq!(
+        out.lines().take(8).collect::<Vec<_>>().join("\n"),
+        "TypeError\nCannot read properties of null (reading 'x')\ntrue\nundefinedFn is not defined\no.metodo is not a function\nSyntaxError\nRangeError Invalid array length\nRangeError Maximum call stack size exceeded"
+    );
+    assert!(out.contains("Uncaught Error: fim"), "{out}");
+    assert!(out.contains("at teste.js:"), "{out}");
+}
+
+#[test]
+fn getters_setters_defineproperty() {
+    check(
+        r#"
+        const o = {};
+        Object.defineProperty(o, "fixo", { value: 1, writable: false, enumerable: false });
+        o.fixo = 2;
+        console.log(o.fixo, Object.keys(o), JSON.stringify(Object.getOwnPropertyDescriptor(o, "fixo")));
+        "use strict";
+        const p = { _v: 0, get v() { return this._v; }, set v(x) { this._v = x * 2; } };
+        p.v = 5; console.log(p.v);
+        const f = Object.freeze({ a: 1 }); f.a = 9; console.log(f.a, Object.isFrozen(f));
+        const herda = Object.create({ base: "b" }, { proprio: { value: "p", enumerable: true } });
+        console.log(herda.base, herda.proprio, "base" in herda, herda.hasOwnProperty("base"));
+        console.log(Object.getOwnPropertyNames([1, 2]), Reflect.ownKeys({ a: 1, [Symbol.iterator]: 2 }).length);
+        console.log(Object.prototype.toString.call([]), Object.prototype.toString.call(null), String({}));
+        "#,
+        "1 [] {\"value\":1,\"writable\":false,\"enumerable\":false,\"configurable\":false}\n10\n1 true\nb p true false\n[ '0', '1', 'length' ] 2\n[object Array] [object Null] [object Object]",
+    );
+}
+
+#[test]
+fn datas() {
+    check(
+        r#"
+        const d = new Date(Date.UTC(2024, 0, 2, 10, 30));
+        console.log(d.toISOString(), d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDay(), d.getTime());
+        console.log(new Date("2024-03-05T12:00:00Z").getUTCDate(), JSON.stringify({ d }), isNaN(new Date("lixo")));
+        "#,
+        "2024-01-02T10:30:00.000Z 2024 0 2 1704191400000\n5 {\"d\":\"2024-01-02T10:30:00.000Z\"} true",
+    );
+}
+
+#[test]
+fn inspect_estilo_node() {
+    check(
+        r#"
+        console.log([1, "a", null, undefined, true], { "chave-estranha": 1, ok: [] }, [ , 1]);
+        console.log(function nomeada() {}, class X {}, () => {}, Symbol("s"), -0, [new Error("e").message]);
+        console.log({ a: { b: { c: { d: 1 } } } }, new Map(), new Set(), Object.create(null));
+        console.log(Array.from({ length: 30 }, (_, i) => i));
+        const ciclo = { nome: "c" }; ciclo.eu = ciclo; console.log(ciclo);
+        console.log("%s tem %d anos e %o", "Ana", 30.7, { x: 1 }, "extra");
+        "#,
+        "[ 1, 'a', null, undefined, true ] { 'chave-estranha': 1, ok: [] } [ <1 empty item>, 1 ]\n[Function: nomeada] [class X] [Function (anonymous)] Symbol(s) -0 [ 'e' ]\n{ a: { b: { c: [Object] } } } Map(0) {} Set(0) {} [Object: null prototype] {}\n[\n   0,  1,  2,  3,  4,  5,  6,  7,  8,\n   9, 10, 11, 12, 13, 14, 15, 16, 17,\n  18, 19, 20, 21, 22, 23, 24, 25, 26,\n  27, 28, 29\n]\n<ref *1> { nome: 'c', eu: [Circular *1] }\nAna tem 30.7 anos e { x: 1 } extra",
+    );
+}
+
