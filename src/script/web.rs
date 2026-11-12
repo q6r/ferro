@@ -380,3 +380,40 @@ fn navigate(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Bool(true))
 }
 
+/// history.pushState/replaceState: troca a URL sem carregar (mesma origem).
+fn set_url(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let target = arg_string(vm, a, 0)?;
+    let (cur, base) = read(vm, |h| (h.page.url.clone(), h.page.base.clone()));
+    let Ok(url) = base.join(target.trim()) else {
+        return Err(super::dom::dom_error(vm, "SecurityError", "Invalid URL"));
+    };
+    if url.origin() != cur.origin() {
+        return Err(super::dom::dom_error(
+            vm,
+            "SecurityError",
+            &format!("A history state object with URL '{url}' cannot be created in a document with origin '{}'.", cur.origin().ascii_serialization()),
+        ));
+    }
+    write(vm, |h| h.page.url = url);
+    Ok(Value::Undefined)
+}
+
+/// `__native.navigatePost(url, content-type, corpo)`: envio de formulário por POST.
+fn navigate_post(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let target = arg_string(vm, a, 0)?;
+    let ct = arg_string(vm, a, 1)?;
+    let body = match bytes_of(&a.arg(2)) {
+        Some(b) => b,
+        None => arg_string(vm, a, 2)?.into_bytes(),
+    };
+    let base = read(vm, |h| h.page.base.clone());
+    let Ok(url) = base.join(target.trim()) else {
+        return Err(super::dom::dom_error(vm, "SyntaxError", &format!("'{target}' is not a valid URL.")));
+    };
+    write(vm, |h| {
+        h.navigate = Some(url);
+        h.post = Some((ct, body));
+    });
+    Ok(Value::Undefined)
+}
+
