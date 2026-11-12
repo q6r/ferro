@@ -1372,3 +1372,67 @@ impl Vm {
         }
     }
 
+    /// Grava no elemento `i` de um typed array (convertendo o valor).
+    pub fn typed_set(&mut self, o: &ObjRef, i: usize, v: &Value) -> Result<(), Value> {
+        let is_big = match &o.borrow().kind {
+            Kind::TypedArray(t) => t.kind.is_bigint(),
+            _ => return Ok(()),
+        };
+        if is_big {
+            let b = crate::builtins::bigint::to_bigint(self, v)?;
+            if let Kind::TypedArray(t) = &o.borrow().kind {
+                t.set_bigint(i, &b);
+            }
+        } else {
+            let n = match v {
+                Value::Number(n) => *n,
+                _ => self.to_number(v)?,
+            };
+            if let Kind::TypedArray(t) = &o.borrow().kind {
+                t.set_number(i, n);
+            }
+        }
+        Ok(())
+    }
+
+    /// Array.prototype.includes / Map usam SameValueZero.
+    pub fn same_value_zero(&self, a: &Value, b: &Value) -> bool {
+        same_value_zero(a, b)
+    }
+}
+
+fn set_done(rec: &ObjRef) {
+    if let Kind::IterRecord { done, .. } = &mut rec.borrow_mut().kind {
+        *done = true;
+    }
+}
+
+/// Propriedade de dados na cadeia, sem chamar getters (para mensagens).
+pub fn data_in_chain(o: &ObjRef, name: &str) -> Option<Value> {
+    let key = PropKey::str(name);
+    let mut cur = Some(o.clone());
+    let mut depth = 0;
+    while let Some(c) = cur {
+        if let Some(Property {
+            slot: Slot::Data { value, .. },
+            ..
+        }) = c.borrow().own(&key)
+        {
+            return Some(value);
+        }
+        depth += 1;
+        if depth > 50 {
+            return None;
+        }
+        cur = c.proto();
+    }
+    None
+}
+
+pub fn readonly(v: Value) -> Property {
+    Property {
+        slot: Slot::Data { value: v, writable: false },
+        enumerable: false,
+        configurable: true,
+    }
+}
