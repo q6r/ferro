@@ -685,3 +685,58 @@ impl EngineHandle {
         EngineHandle { tx, latest }
     }
 
+    pub fn navigate(&self, nav: u64, url: Url) {
+        self.navigate_post(nav, url, None);
+    }
+
+    pub fn navigate_post(&self, nav: u64, url: Url, post: Option<crate::script::PostData>) {
+        self.latest.store(nav, Ordering::SeqCst);
+        let _ = self.tx.send(Command::Navigate { nav, url, post });
+    }
+
+    pub fn resize(&self, width: f32, height: f32) {
+        let _ = self.tx.send(Command::Resize { width, height });
+    }
+
+    pub fn click(&self, nav: u64, x: f32, y: f32) {
+        let _ = self.tx.send(Command::Click { nav, x, y });
+    }
+
+    pub fn scroll(&self, nav: u64, y: f32) {
+        let _ = self.tx.send(Command::Scroll { nav, y });
+    }
+
+    pub fn scroll_element(&self, nav: u64, node: NodeId, dx: f32, dy: f32) {
+        let _ = self.tx.send(Command::ScrollElement { nav, node, dx, dy });
+    }
+
+    pub fn mouse_move(&self, nav: u64, point: Option<(f32, f32)>) {
+        let _ = self.tx.send(Command::MouseMove { nav, point });
+    }
+
+    pub fn exit_fullscreen(&self, nav: u64) {
+        let _ = self.tx.send(Command::ExitFullscreen { nav });
+    }
+
+    pub fn select_choose(&self, nav: u64, node: NodeId, index: usize) {
+        let _ = self.tx.send(Command::SelectChoose { nav, node, index });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn key(&self, nav: u64, key: String, text: Option<String>, ctrl: bool, shift: bool, alt: bool, meta: bool) {
+        let _ = self.tx.send(Command::Key { nav, key, text, ctrl, shift, alt, meta });
+    }
+
+    /// Cancela a navegação em andamento.
+    pub fn stop(&self) {
+        self.latest.fetch_add(1 << 40, Ordering::SeqCst);
+    }
+}
+
+impl Drop for EngineHandle {
+    fn drop(&mut self) {
+        self.stop();
+        let _ = self.tx.send(Command::Quit);
+    }
+}
+
