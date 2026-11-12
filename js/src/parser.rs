@@ -846,3 +846,52 @@ impl Parser {
         Ok(Pattern::Ident(self.binding_ident()?))
     }
 
+    fn parse_binding_element(&mut self) -> PResult<Pattern> {
+        let target = self.parse_binding_target()?;
+        if self.eat("=")? {
+            return Ok(Pattern::Default(Box::new(target), Box::new(self.parse_assign(false)?)));
+        }
+        Ok(target)
+    }
+
+    /// Converte uma expressão (literal de objeto/array, identificador, membro)
+    /// em padrão de atribuição: `[a, b] = ...`, `({x} = o)`.
+    fn expr_to_pattern(&self, e: Expr) -> PResult<Pattern> {
+        Ok(match e {
+            Expr::Ident(n, _) => Pattern::Ident(n),
+            Expr::Member { .. } | Expr::Index { .. } | Expr::PrivateMember(..) | Expr::SuperMember(_) | Expr::SuperIndex(_) => {
+                Pattern::Target(Box::new(e))
+            }
+            Expr::Assign(AssignOp::Assign, target, value) => Pattern::Default(target, value),
+            Expr::Array(elems) => {
+                let mut out = Vec::new();
+                let mut rest = None;
+                let n = elems.len();
+                for (i, el) in elems.into_iter().enumerate() {
+                    match el {
+                        ArrayElem::Hole => out.push(None),
+                        ArrayElem::Expr(x) => out.push(Some(self.expr_to_pattern(x)?)),
+                        ArrayElem::Spread(x) if i == n - 1 => rest = Some(Box::new(self.expr_to_pattern(x)?)),
+                        ArrayElem::Spread(_) => return self.err("rest precisa ser o último elemento"),
+                    }
+                }
+                Pattern::Array { elems: out, rest }
+            }
+            Expr::Object(props) => {
+                let mut out = Vec::new();
+                let mut rest = None;
+                for p in props {
+                    match p.kind {
+                        PropKind::Spread => rest = Some(Box::new(self.expr_to_pattern(p.value)?)),
+                        PropKind::Init => out.push((p.key, self.expr_to_pattern(p.value)?)),
+                        _ => return self.err("padrão de desestruturação inválido"),
+                    }
+                }
+                Pattern::Object { props: out, rest }
+            }
+            _ => return self.err("alvo de atribuição inválido"),
+        })
+    }
+
+    // ---------------------------------------------------------- expressões
+
