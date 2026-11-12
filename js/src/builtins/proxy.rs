@@ -254,3 +254,70 @@ impl Vm {
         }
     }
 
+    pub fn proxy_construct(&mut self, o: &ObjRef, args: Vec<Value>, nt: &ObjRef) -> Result<Value, Value> {
+        let (t, h) = self.proxy_parts(o, "construct")?;
+        let nt = if nt.ptr_eq(o) { t.clone() } else { nt.clone() };
+        match self.trap(&h, "construct")? {
+            Some(f) => {
+                let arr = self.array_value(args);
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), arr, Value::Object(nt)])?;
+                if !matches!(r, Value::Object(_)) {
+                    return Err(self.type_error("proxy [[Construct]] must return an object"));
+                }
+                Ok(r)
+            }
+            None => self.construct(&t, args, &nt),
+        }
+    }
+
+    // ------------------------------------------------- operações gerais
+
+    /// [[GetOwnProperty]] (respeita Proxy).
+    pub fn get_own_property(&mut self, o: &ObjRef, key: &PropKey) -> Result<Option<Property>, Value> {
+        if is_proxy(o) {
+            return self.proxy_get_own_property(o, key);
+        }
+        Ok(o.borrow().own(key))
+    }
+
+    /// [[GetPrototypeOf]] (respeita Proxy).
+    pub fn get_prototype_of(&mut self, o: &ObjRef) -> Result<Option<ObjRef>, Value> {
+        if is_proxy(o) {
+            return self.proxy_get_proto(o);
+        }
+        Ok(o.proto())
+    }
+
+    pub fn is_extensible(&mut self, o: &ObjRef) -> Result<bool, Value> {
+        if is_proxy(o) {
+            return self.proxy_is_extensible(o);
+        }
+        Ok(o.borrow().extensible)
+    }
+
+    pub fn prevent_extensions(&mut self, o: &ObjRef) -> Result<bool, Value> {
+        if is_proxy(o) {
+            return self.proxy_prevent_extensions(o);
+        }
+        o.borrow_mut().extensible = false;
+        Ok(true)
+    }
+
+    /// Propriedade própria e enumerável?
+    pub fn is_enumerable_own(&mut self, o: &ObjRef, k: &PropKey) -> Result<bool, Value> {
+        if is_proxy(o) {
+            return Ok(self.proxy_get_own_property(o, k)?.is_some_and(|p| p.enumerable));
+        }
+        Ok(o.borrow().is_enumerable(k))
+    }
+
+    /// Array.isArray olha através de proxies.
+    pub fn is_array(&mut self, v: &Value) -> Result<bool, Value> {
+        let Value::Object(o) = v else { return Ok(false) };
+        if is_proxy(o) {
+            let (t, _) = self.proxy_parts(o, "IsArray")?;
+            return self.is_array(&Value::Object(t));
+        }
+        Ok(matches!(o.borrow().kind, Kind::Array(_)))
+    }
+}
