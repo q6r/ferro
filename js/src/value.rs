@@ -401,3 +401,47 @@ pub struct Closure {
     pub gc: std::cell::Cell<u64>,
 }
 
+pub enum Func {
+    Closure(Rc<Closure>),
+    Native(Native),
+    Bound { target: ObjRef, this: Value, args: Vec<Value> },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum IterKind {
+    Keys,
+    Values,
+    Entries,
+}
+
+/// Chave de Map/Set (igualdade SameValueZero).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum MapKey {
+    Undefined,
+    Null,
+    Bool(bool),
+    Number(u64),
+    String(JsStr),
+    Symbol(Sym),
+    Object(ObjRef),
+    BigInt(crate::bigint::BigInt),
+}
+
+impl MapKey {
+    pub fn of(v: &Value) -> MapKey {
+        match v {
+            Value::Undefined | Value::Empty => MapKey::Undefined,
+            Value::Null => MapKey::Null,
+            Value::Bool(b) => MapKey::Bool(*b),
+            Value::Number(n) => {
+                let n = if *n == 0.0 { 0.0 } else { *n };
+                MapKey::Number(if n.is_nan() { f64::NAN.to_bits() } else { n.to_bits() })
+            }
+            Value::String(s) => MapKey::String(s.clone()),
+            Value::Symbol(s) => MapKey::Symbol(s.clone()),
+            Value::Object(o) => MapKey::Object(o.clone()),
+            Value::BigInt(b) => MapKey::BigInt((**b).clone()),
+        }
+    }
+}
+
