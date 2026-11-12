@@ -359,3 +359,71 @@ fn geradores_promessas_async() {
     );
 }
 
+/// Módulos: dois módulos ligados à mão (como o navegador faz), com ciclo,
+/// ligação viva, default, namespace, reexportação e await no topo.
+#[test]
+fn modulos_es() {
+    let out = std::thread::Builder::new()
+        .stack_size(512 << 20)
+        .spawn(|| {
+            let lines = Rc::new(RefCell::new(Vec::<String>::new()));
+            let mut e = Engine::new();
+            let sink = lines.clone();
+            e.set_output(move |_, s| sink.borrow_mut().push(s.to_string()));
+            e.eval(
+                r#"globalThis.__ferroExport = (ns, n, get) => Object.defineProperty(ns, n, { get, enumerable: true });
+                   globalThis.__ferroExportAll = (ns, src) => { for (const k of Object.keys(src)) if (k !== 'default' && !(k in ns)) __ferroExport(ns, k, () => src[k]); };"#,
+                "prep",
+            )
+            .ok();
+            let (req_a, fa) = crate::module::module_function(
+                &mut e.vm,
+                r#"import def, { contador, inc as somar } from "./b.js";
+                   import * as tudo from "./b.js";
+                   export let nome = "a";
+                   export function dobro(x) { return x * 2; }
+                   export * from "./b.js";
+                   console.log("a:", def(), contador, typeof somar);
+                   somar(); somar();
+                   console.log("viva:", contador, tudo.contador, Object.keys(tudo).join());
+                   const v = await Promise.resolve(42);
+                   console.log("await:", v, import.meta.url);"#,
+                "https://x/a.js",
+            )
+            .unwrap_or_else(|err| panic!("{}", e.error_text(&err)));
+            let (req_b, fb) = crate::module::module_function(
+                &mut e.vm,
+                r#"import { dobro } from "./a.js";
+                   export let contador = 0;
+                   export function inc() { contador++; }
+                   export default function () { return "padrão:" + dobro(21); }
+                   export { inc as mais };"#,
+                "https://x/b.js",
+            )
+            .unwrap_or_else(|err| panic!("{}", e.error_text(&err)));
+            assert_eq!(req_a, vec!["./b.js"]);
+            assert_eq!(req_b, vec!["./a.js"]);
+            let ns_a = e.vm.eval_script("Object.create(null)", "ns").ok().unwrap();
+            let ns_b = e.vm.eval_script("Object.create(null)", "ns").ok().unwrap();
+            let meta = e.vm.eval_script("({ url: 'https://x/a.js' })", "meta").ok().unwrap();
+            // b primeiro (dependência), depois a; o ciclo a↔b funciona porque
+            // `dobro` só é usado quando a função default roda
+            if let Err(err) = e.vm.call(&fb, Value::Undefined, vec![ns_b.clone(), ns_a.clone(), Value::Undefined]) {
+                panic!("{}", e.error_text(&err));
+            }
+            if let Err(err) = e.vm.call(&fa, Value::Undefined, vec![ns_a.clone(), ns_b.clone(), meta]) {
+                panic!("{}", e.error_text(&err));
+            }
+            e.run_event_loop();
+            let l = lines.borrow().join("\n");
+            l
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(
+        out,
+        "a: padrão:42 0 function\nviva: 2 2 contador,inc,default,mais\nawait: 42 https://x/a.js"
+    );
+}
+
