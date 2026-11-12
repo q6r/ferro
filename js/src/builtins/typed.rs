@@ -848,3 +848,63 @@ fn dv_read(vm: &mut Vm, a: &CallArgs, n: usize) -> Result<[u8; 8], Value> {
     Ok(out)
 }
 
+fn dv_write(vm: &mut Vm, a: &CallArgs, bytes: &[u8]) -> Result<Value, Value> {
+    let (data, off, len) = this_dv(vm, a)?;
+    let pos = to_index(vm, &a.arg(0), "offset")?;
+    let n = bytes.len();
+    if pos + n > len {
+        return Err(vm.range_error("Offset is outside the bounds of the DataView"));
+    }
+    let little = truthy(&a.arg(2));
+    let mut b = bytes.to_vec();
+    if !little {
+        b.reverse();
+    }
+    data.borrow_mut()[off + pos..off + pos + n].copy_from_slice(&b);
+    Ok(Value::Undefined)
+}
+
+macro_rules! dv_num {
+    ($get:ident, $set:ident, $t:ty, $n:expr, $conv:expr) => {
+        fn $get(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+            let b = dv_read(vm, a, $n)?;
+            let mut arr = [0u8; $n];
+            arr.copy_from_slice(&b[..$n]);
+            Ok(Value::Number(<$t>::from_le_bytes(arr) as f64))
+        }
+        fn $set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+            let n = vm.to_number(&a.arg(1))?;
+            #[allow(clippy::redundant_closure_call)]
+            let v: $t = $conv(n);
+            dv_write(vm, a, &v.to_le_bytes())
+        }
+    };
+}
+
+dv_num!(dv_get_i8, dv_set_i8, i8, 1, |n: f64| crate::conv::to_int32(n) as i8);
+dv_num!(dv_get_u8, dv_set_u8, u8, 1, |n: f64| crate::conv::to_int32(n) as u8);
+dv_num!(dv_get_i16, dv_set_i16, i16, 2, |n: f64| crate::conv::to_int32(n) as i16);
+dv_num!(dv_get_u16, dv_set_u16, u16, 2, |n: f64| crate::conv::to_int32(n) as u16);
+dv_num!(dv_get_i32, dv_set_i32, i32, 4, crate::conv::to_int32);
+dv_num!(dv_get_u32, dv_set_u32, u32, 4, crate::conv::to_uint32);
+dv_num!(dv_get_f32, dv_set_f32, f32, 4, |n: f64| n as f32);
+dv_num!(dv_get_f64, dv_set_f64, f64, 8, |n: f64| n);
+
+fn dv_get_bi64(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let b = dv_read(vm, a, 8)?;
+    Ok(Value::BigInt(Rc::new(BigInt::from_i64(i64::from_le_bytes(b)))))
+}
+
+fn dv_get_bu64(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let b = dv_read(vm, a, 8)?;
+    Ok(Value::BigInt(Rc::new(BigInt::from_u64(u64::from_le_bytes(b)))))
+}
+
+fn dv_set_bi64(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let b = super::bigint::to_bigint(vm, &a.arg(1))?;
+    dv_write(vm, a, &b.to_u64_wrapping().to_le_bytes())
+}
+
+fn dv_set_bu64(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    dv_set_bi64(vm, a)
+}
