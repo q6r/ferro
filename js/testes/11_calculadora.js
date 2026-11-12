@@ -31,3 +31,64 @@ function tokenizar(src) {
   return toks;
 }
 
+class Parser {
+  #toks; #i = 0;
+  constructor(toks) { this.#toks = toks; }
+  get atual() { return this.#toks[this.#i]; }
+  #come(tipo, valor) {
+    const t = this.atual;
+    if (t.tipo !== tipo || (valor !== undefined && t.valor !== valor)) throw new SyntaxError(`esperava ${valor ?? tipo} em ${t.pos}, veio ${t.valor ?? t.tipo}`);
+    this.#i++;
+    return t;
+  }
+  programa() {
+    if (this.atual.tipo === "id" && this.#toks[this.#i + 1]?.valor === "=") {
+      const nome = this.#come("id").valor; this.#come("op", "=");
+      return { tipo: "atrib", nome, valor: this.expr() };
+    }
+    const e = this.expr(); this.#come("fim"); return e;
+  }
+  expr() {
+    let esq = this.termo();
+    while (this.atual.valor === "+" || this.atual.valor === "-") {
+      const op = this.#come("op").valor;
+      esq = { tipo: "bin", op, esq, dir: this.termo() };
+    }
+    return esq;
+  }
+  termo() {
+    let esq = this.fator();
+    while (["*", "/"].includes(this.atual.valor)) {
+      const op = this.#come("op").valor;
+      esq = { tipo: "bin", op, esq, dir: this.fator() };
+    }
+    return esq;
+  }
+  fator() {
+    const base = this.unario();
+    if (this.atual.valor === "^") { this.#come("op"); return { tipo: "bin", op: "^", esq: base, dir: this.fator() }; }
+    return base;
+  }
+  unario() {
+    if (this.atual.valor === "-") { this.#come("op"); return { tipo: "neg", arg: this.unario() }; }
+    return this.primario();
+  }
+  primario() {
+    const t = this.atual;
+    if (t.tipo === "num") { this.#i++; return { tipo: "num", v: t.valor }; }
+    if (t.tipo === "id") {
+      this.#i++;
+      if (this.atual.valor === "(") {
+        this.#come("op", "(");
+        const args = [];
+        if (this.atual.valor !== ")") { do { args.push(this.expr()); } while (this.atual.valor === "," && this.#come("op", ",")); }
+        this.#come("op", ")");
+        return { tipo: "chamada", nome: t.valor, args };
+      }
+      return { tipo: "var", nome: t.valor };
+    }
+    if (t.valor === "(") { this.#come("op", "("); const e = this.expr(); this.#come("op", ")"); return e; }
+    throw new SyntaxError(`token inesperado ${t.valor ?? t.tipo} em ${t.pos}`);
+  }
+}
+
