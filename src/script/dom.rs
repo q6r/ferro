@@ -1759,3 +1759,71 @@ fn inner_text(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(s(&text))
 }
 
+fn set_inner_text(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let text = if a.arg(0).is_nullish() { String::new() } else { arg_string(vm, a, 0)? };
+    removing_children(vm, n);
+    let kids = write(vm, |h| {
+        h.page.doc.remove_children(n);
+        let mut first = true;
+        for line in text.split('\n') {
+            if !first {
+                let br = h.page.doc.create_element("br");
+                h.page.doc.append(n, br);
+            }
+            first = false;
+            if !line.is_empty() {
+                let t = h.page.doc.create(NodeData::Text(line.to_string()));
+                h.page.doc.append(n, t);
+            }
+        }
+        h.page.doc.node(n).children.clone()
+    });
+    inserted(vm, &kids, n);
+    Ok(Value::Undefined)
+}
+
+fn focus(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let prev = write(vm, |h| {
+        h.repaint = true;
+        let prev = h.focused.replace(n);
+        crate::css::set_dynamic_state(super::dynamic_state(h));
+        prev
+    });
+    if prev == Some(n) {
+        return Ok(Value::Undefined);
+    }
+    let fire = read(vm, |h| h.hooks.get("fire").cloned());
+    if let Some(f) = fire {
+        if let Some(p) = prev {
+            let el = wrap(vm, p);
+            vm.call(&f, Value::Undefined, vec![el, s("blur")])?;
+        }
+        let el = wrap(vm, n);
+        vm.call(&f, Value::Undefined, vec![el.clone(), s("focus")])?;
+        vm.call(&f, Value::Undefined, vec![el, s("focusin"), Value::Bool(true)])?;
+    }
+    Ok(Value::Undefined)
+}
+
+fn blur(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let was = write(vm, |h| {
+        if h.focused == Some(n) {
+            h.repaint = true;
+            h.focused = None;
+            crate::css::set_dynamic_state(super::dynamic_state(h));
+            true
+        } else {
+            false
+        }
+    });
+    if was && let Some(f) = read(vm, |h| h.hooks.get("fire").cloned()) {
+        let el = wrap(vm, n);
+        vm.call(&f, Value::Undefined, vec![el.clone(), s("blur")])?;
+        vm.call(&f, Value::Undefined, vec![el, s("focusout"), Value::Bool(true)])?;
+    }
+    Ok(Value::Undefined)
+}
+
