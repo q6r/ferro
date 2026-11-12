@@ -130,3 +130,38 @@ fn decode(vm: &mut Vm, s: &JsStr, reserved: &str) -> Result<Value, Value> {
     Ok(Value::String(JsStr::from_units(out)))
 }
 
+fn encode_uri_component(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    encode(vm, &s, "")
+}
+
+fn encode_uri(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    encode(vm, &s, URI_RESERVED)
+}
+
+fn decode_uri_component(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    decode(vm, &s, "")
+}
+
+fn decode_uri(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    decode(vm, &s, URI_RESERVED)
+}
+
+fn escape(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    let mut out = String::new();
+    for &c in s.units() {
+        if c < 0x80 && ((c as u8).is_ascii_alphanumeric() || "@*_+-./".contains(c as u8 as char)) {
+            out.push(c as u8 as char);
+        } else if c < 0x100 {
+            out.push_str(&format!("%{c:02X}"));
+        } else {
+            out.push_str(&format!("%u{c:04X}"));
+        }
+    }
+    Ok(Value::str(&out))
+}
+
