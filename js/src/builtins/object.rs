@@ -234,3 +234,180 @@ pub fn from_property(vm: &mut Vm, p: &Property) -> Value {
     Value::Object(o)
 }
 
+/// [[DefineOwnProperty]] (ValidateAndApplyPropertyDescriptor simplificado).
+pub fn define_own_property(vm: &mut Vm, o: &ObjRef, key: PropKey, d: Descriptor) -> Result<bool, Value> {
+    if super::proxy::is_proxy(o) {
+        return vm.proxy_define(o, key, d);
+    }
+    // arrays: índices e length
+    let is_array = matches!(o.borrow().kind, Kind::Array(_));
+    if is_array {
+        if let PropKey::Str(s) = &key
+            && s.eq_str("length")
+        {
+            if let Some(v) = &d.value
+                && !vm.set_array_length(o, v)?
+            {
+                return Ok(false);
+            }
+            if d.writable == Some(false) {
+                o.borrow_mut().frozen = true;
+            }
+            return Ok(true);
+        }
+        if let Some(i) = key.as_index() {
+            let plain = !d.is_accessor()
+                && d.writable != Some(false)
+                && d.enumerable != Some(false)
+                && d.configurable != Some(false);
+            let mut b = o.borrow_mut();
+            let frozen = b.frozen;
+            let ext = b.extensible;
+            if let Kind::Array(vec) = &mut b.kind {
+                let i = i as usize;
+                let exists = i < vec.len() && !matches!(vec[i], Value::Empty);
+                if exists && frozen {
+                    return Ok(false);
+                }
+                if !exists && !ext {
+                    return Ok(false);
+                }
+                if plain && (exists || (d.writable == Some(true) && d.enumerable == Some(true) && d.configurable == Some(true))) {
+                    let v = d.value.clone().unwrap_or_else(|| if exists { vec[i].clone() } else { Value::Undefined });
+                    if i < vec.len() {
+                        vec[i] = v;
+                    } else if i < vec.len() + 1_000_000 {
+                        vec.resize(i, Value::Empty);
+                        vec.push(v);
+                    } else {
+                        drop(b);
+                        o.borrow_mut().props.insert(key, Property::data(v));
+                    }
+                    return Ok(true);
+                }
+                // atributos especiais: o elemento sai do vetor e vai para as propriedades
+                let current = if exists { Some(std::mem::replace(&mut vec[i], Value::Empty)) } else { None };
+                if i >= vec.len() && i < vec.len() + 1_000_000 {
+                    vec.resize(i + 1, Value::Empty);
+                }
+                drop(b);
+                if let Some(v) = current {
+                    o.borrow_mut().props.insert(key.clone(), Property::data(v));
+                }
+            }
+        }
+    }
+    let current = o.borrow().own(&key);
+    let mut b = o.borrow_mut();
+    match current {
+        None => {
+            if !b.extensible {
+                return Ok(false);
+            }
+            let slot = if d.is_accessor() {
+                Slot::Accessor {
+                    get: d.get.clone().flatten(),
+                    set: d.set.clone().flatten(),
+                }
+            } else {
+                Slot::Data {
+                    value: d.value.clone().unwrap_or_default(),
+                    writable: d.writable.unwrap_or(false),
+                }
+            };
+            b.props.insert(
+                key,
+                Property {
+                    slot,
+                    enumerable: d.enumerable.unwrap_or(false),
+                    configurable: d.configurable.unwrap_or(false),
+                },
+            );
+            Ok(true)
+        }
+        Some(cur) => {
+            if !cur.configurable {
+                if d.configurable == Some(true) {
+                    return Ok(false);
+                }
+                if let Some(e) = d.enumerable
+                    && e != cur.enumerable
+                {
+                    return Ok(false);
+                }
+                match &cur.slot {
+                    Slot::Data { value, writable } => {
+                        if d.is_accessor() {
+                            return Ok(false);
+                        }
+                        if !*writable {
+                            if d.writable == Some(true) {
+                                return Ok(false);
+                            }
+                            if let Some(v) = &d.value
+                                && !same_value(v, value)
+                            {
+                                return Ok(false);
+                            }
+                        }
+                    }
+                    Slot::Accessor { get, set } => {
+                        if d.value.is_some() || d.writable.is_some() {
+                            return Ok(false);
+                        }
+                        if let Some(g) = &d.get
+                            && g.as_ref().map(|x| x.id()) != get.as_ref().map(|x| x.id())
+                        {
+                            return Ok(false);
+                        }
+                        if let Some(s) = &d.set
+                            && s.as_ref().map(|x| x.id()) != set.as_ref().map(|x| x.id())
+                        {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            let enumerable = d.enumerable.unwrap_or(cur.enumerable);
+            let configurable = d.configurable.unwrap_or(cur.configurable);
+            let slot = match (&cur.slot, d.is_accessor()) {
+                (Slot::Accessor { get, set }, true) => Slot::Accessor {
+                    get: d.get.clone().unwrap_or_else(|| get.clone()),
+                    set: d.set.clone().unwrap_or_else(|| set.clone()),
+                },
+                (Slot::Data { .. }, true) => Slot::Accessor {
+                    get: d.get.clone().flatten(),
+                    set: d.set.clone().flatten(),
+                },
+                (Slot::Data { value, writable }, false) => Slot::Data {
+                    value: d.value.clone().unwrap_or_else(|| value.clone()),
+                    writable: d.writable.unwrap_or(*writable),
+                },
+                (Slot::Accessor { .. }, false) => {
+                    if d.value.is_some() || d.writable.is_some() {
+                        Slot::Data {
+                            value: d.value.clone().unwrap_or_default(),
+                            writable: d.writable.unwrap_or(false),
+                        }
+                    } else {
+                        cur.slot.clone()
+                    }
+                }
+            };
+            // propriedades de string/array "virtuais" não vão para props
+            if matches!(b.kind, Kind::String(_)) && key.as_index().is_some() {
+                return Ok(true);
+            }
+            b.props.insert(
+                key,
+                Property {
+                    slot,
+                    enumerable,
+                    configurable,
+                },
+            );
+            Ok(true)
+        }
+    }
+}
+
