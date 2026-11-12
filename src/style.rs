@@ -1358,3 +1358,12 @@ impl Cascade<'_> {
         (style, true)
     }
 
+    fn units(&self, style: &ComputedStyle) -> Units {
+        Units {
+            em: style.font_size,
+            rem: self.root_font,
+            vw: self.media.width,
+            vh: self.media.height,
+        }
+    }
+
