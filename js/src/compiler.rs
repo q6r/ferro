@@ -175,6 +175,17 @@ pub enum Op {
     AsyncDelegate(u32),
     /// yield* async: [reg modo resultado] → [reg modo valor]; acabou: desvia com [reg modo valor]
     AsyncDelegateResult(u32),
+    /// with: [obj] → se o nome existe no objeto (e não está em
+    /// Symbol.unscopables), desvia com [obj]; senão []
+    WithHas(u32, u32),
+    /// with: [obj] → [obj[nome]]
+    WithGet(u32),
+    /// with: [obj valor] → [] (obj[nome] = valor)
+    WithSet(u32),
+    /// with: [obj] → [delete obj[nome]]
+    WithDelete(u32),
+    /// [v] → [ToObject(v)]
+    ToObject,
     /// [valor] → pausa a função async até a promessa resolver
     Await,
     /// [valor modo] → [valor] ou lança
@@ -294,6 +305,7 @@ impl Op {
             | Op::DelegateStep(x)
             | Op::AsyncDelegate(x)
             | Op::AsyncDelegateResult(x)
+            | Op::WithHas(_, x)
             | Op::IterResultValue(x)
             | Op::AsyncIterClose(x)
             | Op::JumpIfNotLt(x)
@@ -324,6 +336,7 @@ impl Op {
             | Op::DelegateStep(x)
             | Op::AsyncDelegate(x)
             | Op::AsyncDelegateResult(x)
+            | Op::WithHas(_, x)
             | Op::IterResultValue(x)
             | Op::AsyncIterClose(x)
             | Op::JumpIfNotLt(x)
@@ -574,6 +587,10 @@ impl Usage {
                 }
             }
             Stmt::Labeled(_, b) => self.stmt(b, d, a),
+            Stmt::With(e, b) => {
+                self.expr(e, d, a);
+                self.stmt(b, d, a);
+            }
             Stmt::Break(..) | Stmt::Continue(..) | Stmt::Empty | Stmt::Debugger => {}
         }
     }
@@ -827,6 +844,7 @@ fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>, annex_b: bool, nested: bool) {
         }
         Stmt::While(_, b) | Stmt::DoWhile(b, _) => var_names_stmt(b, out, annex_b, true),
         Stmt::Labeled(_, b) => var_names_stmt(b, out, annex_b, nested),
+        Stmt::With(_, b) => var_names_stmt(b, out, annex_b, true),
         Stmt::Try {
             block,
             handler,
@@ -901,6 +919,8 @@ pub(crate) enum Decl {
     Func,
     Hidden,
     Callee,
+    /// Objeto de um `with` (escondido).
+    With,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -1067,6 +1087,8 @@ pub struct Compiler {
     captures: Captures,
     /// Importações do módulo (nome local → namespace, nome exportado).
     imports: crate::fxhash::FxHashMap<Name, (Name, Option<Name>)>,
+    /// Quantos `with` envolvem o código sendo compilado agora.
+    with_depth: u32,
 }
 
 fn syntax<T>(msg: impl Into<String>, line: u32) -> CResult<T> {
@@ -1092,6 +1114,7 @@ pub fn compile_script(prog: &Program, file: &str) -> CResult<Rc<Code>> {
         file: file.into(),
         captures: r.out,
         imports: prog.imports.clone(),
+        with_depth: 0,
     };
     let code = c.script(prog)?;
     // depuração: FERRO_BYTECODE=1 mostra as instruções de cada função
@@ -1119,6 +1142,7 @@ pub fn compile_standalone(def: &FunctionDef, file: &str) -> CResult<Rc<Code>> {
         file: file.into(),
         captures: r.out,
         imports: Default::default(),
+        with_depth: 0,
     };
     c.fns.push(FnState::new(FnKind::Normal, false, FxHashSet::default(), true));
     c.push_scope(ScopeKind::Script, 0);
@@ -1324,7 +1348,74 @@ impl Compiler {
             .any(|f| f.scopes.iter().any(|sc| sc.index.contains_key(name)))
     }
 
+    /// Objetos de `with` entre o uso de `name` e a declaração dele, do mais
+    /// interno para o mais externo.
+    fn withs_for(&self, name: &str) -> Vec<Res> {
+        let mut out = Vec::new();
+        if self.with_depth == 0 || name == "this" || name == "new.target" || name.starts_with(['#', '%']) {
+            return out;
+        }
+        let mut hops = 0u32;
+        let nf = self.fns.len();
+        for fi in (0..nf).rev() {
+            let f = &self.fns[fi];
+            for sc in f.scopes.iter().rev() {
+                if sc.index.contains_key(name) {
+                    return out;
+                }
+                if let Some(i) = sc.last(crate::resolve::WITH_OBJ)
+                    && sc.vars[i].decl == Decl::With
+                {
+                    match sc.vars[i].loc {
+                        Loc::Reg(r) if fi == nf - 1 => out.push(Res::Reg(r)),
+                        Loc::Env(s) => out.push(Res::Env(hops, s)),
+                        _ => {}
+                    }
+                }
+                if sc.has_env {
+                    hops += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Para cada `with` em volta: empilha o objeto e testa o nome. Devolve os
+    /// pulos (que chegam com [obj]) para remendar no caminho do objeto.
+    fn with_checks(&mut self, name: &str) -> Vec<usize> {
+        let withs = self.withs_for(name);
+        if withs.is_empty() {
+            return Vec::new();
+        }
+        let n = self.konst(name);
+        let mut hits = Vec::new();
+        for w in withs {
+            match w {
+                Res::Reg(r) => self.emit(Op::GetReg(r)),
+                Res::Env(h, s) => self.emit(Op::GetEnv(h, s)),
+                Res::Global => continue,
+            };
+            hits.push(self.emit(Op::WithHas(n, 0)));
+        }
+        hits
+    }
+
     fn load(&mut self, name: &str) {
+        let hits = self.with_checks(name);
+        if hits.is_empty() {
+            return self.load_plain(name);
+        }
+        self.load_plain(name);
+        let end = self.emit(Op::Jump(0));
+        for h in hits {
+            self.patch(h);
+        }
+        let n = self.konst(name);
+        self.emit(Op::WithGet(n));
+        self.patch(end);
+    }
+
+    fn load_plain(&mut self, name: &str) {
         let found = self.resolve(name);
         match found.res {
             Res::Reg(r) => {
@@ -1363,6 +1454,23 @@ impl Compiler {
 
     /// Atribui o topo da pilha (consumindo) a uma variável.
     fn store(&mut self, name: &str) {
+        let hits = self.with_checks(name);
+        if hits.is_empty() {
+            return self.store_plain(name);
+        }
+        self.store_plain(name);
+        let end = self.emit(Op::Jump(0));
+        for h in hits {
+            self.patch(h);
+        }
+        // [valor obj]
+        self.emit(Op::Swap);
+        let n = self.konst(name);
+        self.emit(Op::WithSet(n));
+        self.patch(end);
+    }
+
+    fn store_plain(&mut self, name: &str) {
         let found = self.resolve(name);
         let n = self.konst(name);
         if matches!(found.res, Res::Global) && self.imports.contains_key(name) {
@@ -1872,6 +1980,19 @@ impl Compiler {
                 }
             }
             Stmt::Block(b) => self.block(b)?,
+            Stmt::With(obj, body) => {
+                self.expr(obj)?;
+                self.emit(Op::ToObject);
+                self.push_scope(ScopeKind::Block, crate::resolve::key_of(&**body));
+                self.declare(crate::resolve::WITH_OBJ.into(), Decl::With, false, true);
+                self.open_env();
+                self.init(crate::resolve::WITH_OBJ);
+                self.with_depth += 1;
+                let r = self.stmt(body);
+                self.with_depth -= 1;
+                r?;
+                self.pop_scope();
+            }
             Stmt::For { init, test, update, body } => self.for_loop(init, test, update, body)?,
             Stmt::ForIn { left, right, body } => self.for_in(left, right, body)?,
             Stmt::ForOf { left, right, body, is_await } => {
@@ -2798,6 +2919,24 @@ impl Compiler {
                 }
                 self.emit(Op::Swap);
             }
+            Expr::Ident(name, _) if self.with_depth > 0 && !self.withs_for(name).is_empty() => {
+                let hits = self.with_checks(name);
+                self.expr(callee)?;
+                if optional {
+                    self.opt_site(0);
+                }
+                self.emit(Op::Undef);
+                let end = self.emit(Op::Jump(0));
+                for h in hits {
+                    self.patch(h);
+                }
+                // [obj] → [função obj]
+                self.emit(Op::Dup);
+                let n = self.konst(name);
+                self.emit(Op::WithGet(n));
+                self.emit(Op::Swap);
+                self.patch(end);
+            }
             _ => {
                 self.expr(callee)?;
                 if optional {
@@ -3196,11 +3335,21 @@ impl Compiler {
                     self.emit(Op::DeleteIndex);
                 }
                 Expr::Ident(n, _) => {
+                    let hits = self.with_checks(n);
                     if matches!(self.resolve(n).res, Res::Global) {
                         let c = self.konst(n);
                         self.emit(Op::DeleteGlobal(c));
                     } else {
                         self.emit(Op::False);
+                    }
+                    if !hits.is_empty() {
+                        let end = self.emit(Op::Jump(0));
+                        for h in hits {
+                            self.patch(h);
+                        }
+                        let c = self.konst(n);
+                        self.emit(Op::WithDelete(c));
+                        self.patch(end);
                     }
                 }
                 Expr::OptionalChain(inner) => {
@@ -3230,15 +3379,34 @@ impl Compiler {
                 }
             },
             UnOp::Typeof => {
+                let hits = match x {
+                    Expr::Ident(n, _) => self.with_checks(n),
+                    _ => Vec::new(),
+                };
                 if let Expr::Ident(n, _) = x
                     && matches!(self.resolve(n).res, Res::Global)
                     && !self.imports.contains_key(n)
                 {
                     let c = self.konst(n);
                     self.emit(Op::TypeofGlobal(c));
+                } else if let (Expr::Ident(n, _), false) = (x, hits.is_empty()) {
+                    self.load_plain(n);
+                    self.emit(Op::Typeof);
                 } else {
                     self.expr(x)?;
                     self.emit(Op::Typeof);
+                }
+                if !hits.is_empty() {
+                    let end = self.emit(Op::Jump(0));
+                    for h in hits {
+                        self.patch(h);
+                    }
+                    if let Expr::Ident(n, _) = x {
+                        let c = self.konst(n);
+                        self.emit(Op::WithGet(c));
+                    }
+                    self.emit(Op::Typeof);
+                    self.patch(end);
                 }
             }
             UnOp::Void => {

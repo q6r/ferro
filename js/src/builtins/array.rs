@@ -17,6 +17,26 @@ pub fn install(r: &Realm) {
     r.method(&c, "from", 1, from);
     r.getter_sym(&c, &r.sym_species, "[Symbol.species]", species);
 
+    // Array.prototype[Symbol.unscopables]: nomes que o `with` não enxerga
+    let unscopables = ObjRef::new(Object::new(None, Kind::Ordinary));
+    for name in [
+        "at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap",
+        "includes", "keys", "toReversed", "toSorted", "toSpliced", "values",
+    ] {
+        unscopables.borrow_mut().props.insert(PropKey::str(name), Property::data(Value::Bool(true)));
+    }
+    proto.borrow_mut().props.insert(
+        PropKey::Sym(r.sym_unscopables.clone()),
+        Property {
+            slot: Slot::Data {
+                value: Value::Object(unscopables),
+                writable: false,
+            },
+            enumerable: false,
+            configurable: true,
+        },
+    );
+
     r.method(proto, "at", 1, at);
     r.method(proto, "concat", 1, concat);
     r.method(proto, "copyWithin", 2, copy_within);

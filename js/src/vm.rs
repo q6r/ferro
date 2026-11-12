@@ -93,6 +93,9 @@ pub struct Vm {
     pub epoch: std::time::Instant,
     /// Padrões de regex já compilados (fonte, flags).
     pub regex_cache: HashMap<(JsStr, JsStr), Rc<crate::regex::Program>>,
+    /// Último casamento de regex (RegExp.$1, lastMatch... do Anexo B): texto e
+    /// posições dos grupos (início/fim de cada um, NONE quando não participou).
+    pub regexp_statics: (JsStr, Vec<usize>),
     /// Idioma padrão (Intl, toLocaleString). O hospedeiro define.
     pub locale: String,
     /// Fusos horários (o hospedeiro define; o padrão só conhece UTC).
@@ -147,6 +150,7 @@ impl Vm {
             timer_seq: 0,
             epoch: std::time::Instant::now(),
             regex_cache: HashMap::new(),
+            regexp_statics: (JsStr::empty(), vec![0, 0]),
             locale: "en-US".into(),
             tz: Box::new(|zone, _| match zone {
                 None | Some("UTC") | Some("Etc/UTC") | Some("GMT") | Some("Etc/GMT") => Some(TzInfo {
@@ -1292,6 +1296,44 @@ impl Vm {
                     } else {
                         f.stack.push(value);
                     }
+                }
+                Op::WithHas(n, t) => {
+                    let obj = pop!();
+                    let Value::Object(o) = &obj else { continue };
+                    let key = PropKey::Str(code.const_str(n));
+                    if self.has_property(o, &key)? {
+                        // Symbol.unscopables pode esconder o nome
+                        let uk = PropKey::Sym(self.realm.sym_unscopables.clone());
+                        let u = self.get(&obj, &uk)?;
+                        let blocked = matches!(u, Value::Object(_)) && truthy(&self.get(&u, &key)?);
+                        if !blocked {
+                            f.stack.push(obj);
+                            f.pc = t as usize;
+                        }
+                    }
+                }
+                Op::WithGet(n) => {
+                    let obj = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    let v = self.get(&obj, &key)?;
+                    f.stack.push(v);
+                }
+                Op::WithSet(n) => {
+                    let v = pop!();
+                    let obj = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    self.put(&obj, key, v, code.strict)?;
+                }
+                Op::WithDelete(n) => {
+                    let obj = pop!();
+                    let key = PropKey::Str(code.const_str(n));
+                    let r = self.delete_value(&obj, &key, code.strict)?;
+                    f.stack.push(Value::Bool(r));
+                }
+                Op::ToObject => {
+                    let v = pop!();
+                    let o = self.to_object(&v)?;
+                    f.stack.push(Value::Object(o));
                 }
                 Op::AsyncDelegate(t) => {
                     use crate::builtins::promise::{RESUME_RETURN, RESUME_THROW};

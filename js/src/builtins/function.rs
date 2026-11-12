@@ -169,10 +169,18 @@ fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let Value::Object(o) = &a.this else {
         return Err(vm.type_error("Function.prototype.toString requires that 'this' be a Function"));
     };
-    let name = match data_in_chain(o, "name") {
+    let mut name = match data_in_chain(o, "name") {
         Some(Value::String(s)) => s.to_rust(),
         _ => String::new(),
     };
+    // NativeFunction: o nome precisa ser um PropertyName válido ("get $&" não é)
+    let bare = name.strip_prefix("get ").or_else(|| name.strip_prefix("set ")).unwrap_or(&name);
+    let ident = bare.chars().enumerate().all(|(i, c)| {
+        c == '$' || c == '_' || c.is_alphabetic() || (i > 0 && c.is_alphanumeric())
+    });
+    if !ident && !bare.starts_with('[') {
+        name.clear();
+    }
     let text = match &o.borrow().kind {
         Kind::Function(Func::Closure(c)) => {
             if c.code.source.is_empty() {
