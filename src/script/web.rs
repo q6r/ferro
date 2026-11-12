@@ -56,3 +56,52 @@ pub(crate) fn bytes_of(v: &Value) -> Option<Vec<u8>> {
     }
 }
 
+fn uint8_array(vm: &mut Vm, bytes: &[u8]) -> R {
+    let o = ferro_js::builtins::typed::new_typed(vm, TaKind::U8, bytes.len(), None)?;
+    if let Kind::TypedArray(t) = &o.borrow().kind {
+        t.data.borrow_mut().copy_from_slice(bytes);
+    }
+    Ok(Value::Object(o))
+}
+
+fn utf8_encode(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = if a.arg(0).is_undefined() { String::new() } else { arg_string(vm, a, 0)? };
+    uint8_array(vm, text.as_bytes())
+}
+
+fn utf8_decode(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let bytes = bytes_of(&a.arg(0)).unwrap_or_default();
+    let label = if a.arg(1).is_undefined() { "utf-8".to_string() } else { arg_string(vm, a, 1)? };
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes);
+    Ok(s(&net::decode_text(bytes, Some(&format!("text/plain; charset={label}")), false)))
+}
+
+// ----------------------------------------------------------------- base64
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn btoa(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?;
+    let mut bytes = Vec::with_capacity(text.len());
+    for c in text.chars() {
+        if c as u32 > 255 {
+            return Err(super::dom::dom_error(
+                vm,
+                "InvalidCharacterError",
+                "Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.",
+            ));
+        }
+        bytes.push(c as u8);
+    }
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(B64[(n >> 18) as usize & 63] as char);
+        out.push(B64[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+    }
+    Ok(s(&out))
+}
+
