@@ -467,3 +467,67 @@ fn promise_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(p))
 }
 
+fn this_promise(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<ObjRef, Value> {
+    match &a.this {
+        Value::Object(o) if matches!(o.borrow().kind, Kind::Promise(_)) => Ok(o.clone()),
+        _ => {
+            let d = vm.describe(&a.this);
+            Err(vm.type_error(format!("Method Promise.prototype.{what} called on incompatible receiver {d}")))
+        }
+    }
+}
+
+/// SpeciesConstructor(p, %Promise%): `p.constructor[Symbol.species]`.
+fn species_constructor(vm: &mut Vm, p: &ObjRef) -> Result<Value, Value> {
+    let default = vm.get_str(&Value::Object(vm.realm.global.clone()), "Promise")?;
+    let ctor = vm.get_obj(p, &PropKey::str("constructor"))?;
+    let c = match ctor {
+        Value::Undefined => return Ok(default),
+        Value::Object(c) => c,
+        _ => return Err(vm.type_error("The .constructor property is not an object")),
+    };
+    let species = vm.realm.sym_species.clone();
+    match vm.get_obj(&c, &PropKey::Sym(species))? {
+        Value::Undefined | Value::Null => Ok(default),
+        Value::Object(s) if s.is_constructor() => Ok(Value::Object(s)),
+        _ => Err(vm.type_error("object.constructor[Symbol.species] is not a constructor")),
+    }
+}
+
+fn then(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let p = this_promise(vm, a, "then")?;
+    let ctor = species_constructor(vm, &p)?;
+    let cap = vm.new_capability(&ctor)?;
+    let result = cap.promise.clone();
+    vm.perform_then(&p, a.arg(0), a.arg(1), Some(cap));
+    Ok(result)
+}
+
+fn catch(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let then = vm.get_str(&a.this, "then")?;
+    vm.call(&then, a.this.clone(), vec![Value::Undefined, a.arg(0)])
+}
+
+fn finally(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let on_finally = a.arg(0);
+    let then = vm.get_str(&a.this, "then")?;
+    if !on_finally.is_callable() {
+        return vm.call(&then, a.this.clone(), vec![on_finally.clone(), on_finally]);
+    }
+    let tf = vm.realm.native("", 1, finally_then);
+    let cf = vm.realm.native("", 1, finally_catch);
+    set_native_data(&tf, on_finally.clone());
+    set_native_data(&cf, on_finally);
+    vm.call(&then, a.this.clone(), vec![Value::Object(tf), Value::Object(cf)])
+}
+
+fn finally_common(vm: &mut Vm, a: &CallArgs, thunk: NativeFn) -> Result<Value, Value> {
+    let on_finally = native_data(&a.callee);
+    let r = vm.call(&on_finally, Value::Undefined, Vec::new())?;
+    let p = vm.promise_resolve_value(r)?;
+    let f = vm.realm.native("", 0, thunk);
+    set_native_data(&f, a.arg(0));
+    let then = vm.get_obj(&p, &PropKey::str("then"))?;
+    vm.call(&then, Value::Object(p), vec![Value::Object(f)])
+}
+
