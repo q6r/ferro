@@ -1099,3 +1099,50 @@ impl Vm {
         Ok(Some(x < y))
     }
 
+    pub fn loose_equals(&mut self, a: &Value, b: &Value) -> Result<bool, Value> {
+        Ok(match (a, b) {
+            (Value::Undefined | Value::Null | Value::Empty, Value::Undefined | Value::Null | Value::Empty) => true,
+            (Value::Number(_), Value::Number(_))
+            | (Value::String(_), Value::String(_))
+            | (Value::Bool(_), Value::Bool(_))
+            | (Value::Symbol(_), Value::Symbol(_))
+            | (Value::Object(_), Value::Object(_)) => strict_equals(a, b),
+            (Value::Number(x), Value::String(s)) | (Value::String(s), Value::Number(x)) => *x == string_to_number(s.units()),
+            (Value::BigInt(x), Value::BigInt(y)) => x == y,
+            (Value::BigInt(b), Value::Number(n)) | (Value::Number(n), Value::BigInt(b)) => b.cmp_f64(*n) == Some(std::cmp::Ordering::Equal),
+            (Value::BigInt(b), Value::String(s)) | (Value::String(s), Value::BigInt(b)) => {
+                crate::bigint::BigInt::parse_js(&s.to_rust()).is_some_and(|x| x == **b)
+            }
+            (Value::Bool(x), _) => return self.loose_equals(&Value::Number(*x as u8 as f64), b),
+            (_, Value::Bool(y)) => return self.loose_equals(a, &Value::Number(*y as u8 as f64)),
+            (Value::Number(_) | Value::String(_) | Value::Symbol(_) | Value::BigInt(_), Value::Object(_)) => {
+                let pb = self.to_primitive(b, Hint::Default)?;
+                return self.loose_equals(a, &pb);
+            }
+            (Value::Object(_), Value::Number(_) | Value::String(_) | Value::Symbol(_) | Value::BigInt(_)) => {
+                let pa = self.to_primitive(a, Hint::Default)?;
+                return self.loose_equals(&pa, b);
+            }
+            _ => false,
+        })
+    }
+
+    pub fn instance_of(&mut self, v: &Value, target: &Value) -> Result<bool, Value> {
+        let Value::Object(t) = target else {
+            return Err(self.type_error("Right-hand side of 'instanceof' is not an object"));
+        };
+        let key = PropKey::Sym(self.realm.sym_has_instance.clone());
+        let h = self.get_obj(t, &key)?;
+        if let Value::Object(ho) = &h {
+            if ho.ptr_eq(&self.realm.function_has_instance) {
+                return self.ordinary_has_instance(t, v);
+            }
+            let r = self.call(&h, target.clone(), vec![v.clone()])?;
+            return Ok(truthy(&r));
+        }
+        if !t.is_callable() {
+            return Err(self.type_error("Right-hand side of 'instanceof' is not callable"));
+        }
+        self.ordinary_has_instance(t, v)
+    }
+
