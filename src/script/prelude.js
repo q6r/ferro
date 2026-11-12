@@ -2295,3 +2295,42 @@ class TreeWalker {
     return null;
   }
 }
+class NodeIterator extends TreeWalker {
+  constructor(root, w, f) { super(root, w, f); this.referenceNode = root; this.started = false; }
+  nextNode() {
+    if (!this.started) { this.started = true; if (acceptNode(this, this.root) === 1) return this.root; }
+    let n = this.currentNode;
+    while ((n = nextInTree(n, this.root))) {
+      this.currentNode = n;
+      if (acceptNode(this, n) === 1) return n;
+    }
+    return null;
+  }
+  detach() {}
+}
+hidden(G, 'TreeWalker', TreeWalker);
+hidden(G, 'NodeIterator', NodeIterator);
+
+// ------------------------------------------------------- location
+class Location {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+const LOC = Object.create(Location.prototype);
+function hashChange(oldURL) {
+  const newURL = N.href();
+  if (oldURL === newURL) return;
+  setTimeout(() => {
+    fireTrusted(G, new G.HashChangeEvent('hashchange', { oldURL, newURL }));
+  }, 0);
+}
+function go(url) {
+  const old = N.href();
+  if (!N.navigate(String(url))) hashChange(old);
+}
+for (const part of ['protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'origin']) {
+  accessor(Location.prototype, part, () => N.urlParse(N.href())[part], part === 'origin' ? undefined : (v) => {
+    let val = String(v);
+    if (part === 'hash' && val && !val.startsWith('#')) val = '#' + val;
+    go(N.urlSet(N.href(), part, val));
+  });
+}
