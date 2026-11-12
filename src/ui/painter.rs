@@ -228,3 +228,77 @@ impl Painter<'_> {
         );
     }
 
+    /// Linha de base para centralizar texto verticalmente em `cy`.
+    pub fn baseline(cy: f32, size: f32) -> f32 {
+        cy + size * 0.36
+    }
+
+    /// Texto que não cabe em `max_w` termina em reticências.
+    pub fn ellipsize(&self, text: &str, size: f32, weight: Weight, max_w: f32) -> String {
+        if self.measure(text, size, weight) <= max_w {
+            return text.to_string();
+        }
+        let ell = self.measure("…", size, weight);
+        let mut out = String::new();
+        let mut w = 0.0;
+        for c in text.chars() {
+            let cw = self.measure(c.encode_utf8(&mut [0; 4]), size, weight);
+            if w + cw + ell > max_w {
+                break;
+            }
+            out.push(c);
+            w += cw;
+        }
+        out.push('…');
+        out
+    }
+
+    /// Ícone de `size` pixels lógicos, centralizado em (cx, cy).
+    pub fn icon(&mut self, cx: f32, cy: f32, icon: Icon, size: f32, color: Color) {
+        let px = (size * self.scale).round().max(4.0) as u32;
+        let Some(img) = self.icons.get(icon, px, color) else { return };
+        let r = Rect {
+            x: (cx * self.scale - px as f32 / 2.0).round(),
+            y: (cy * self.scale - px as f32 / 2.0).round(),
+            w: px as f32,
+            h: px as f32,
+        };
+        let c = self.cut(None);
+        self.canvas.draw_image(&img, r, c);
+    }
+}
+
+pub fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+    Rect { x, y, w, h }
+}
+
+impl Painter<'_> {
+    pub fn rrect_grad(&mut self, r: Rect, radius: f32, top: Color, bottom: Color) {
+        let d = self.dev(r);
+        self.canvas.fill_round_rect_gradient(d, radius * self.scale, top, bottom);
+    }
+
+    /// Desfoca o que está atrás de `r` (vidro fosco).
+    pub fn frost(&mut self, r: Rect, radius: f32, blur: f32) {
+        let d = self.dev(r);
+        self.canvas.frost(d, radius * self.scale, blur * self.scale);
+    }
+
+    /// Arredonda os cantos do que já foi desenhado em `r`.
+    pub fn round_corners(&mut self, r: Rect, radius: f32, outside: Color) {
+        let d = self.dev(r);
+        self.canvas.round_corners(d, radius * self.scale, outside);
+    }
+
+    /// Marca do Ferro: um "F" geométrico de barras arredondadas, com um
+    /// quadradinho de destaque (no espírito do logo do kit).
+    pub fn logo(&mut self, x: f32, y: f32, size: f32, bg: Color, fg: Color, spark: Color) {
+        self.rrect(rect(x, y, size, size), size * 0.28, bg);
+        let u = size / 10.0;
+        let bar = u * 0.55;
+        self.rrect(rect(x + 2.8 * u, y + 2.4 * u, 1.5 * u, 5.2 * u), bar, fg);
+        self.rrect(rect(x + 2.8 * u, y + 2.4 * u, 4.6 * u, 1.5 * u), bar, fg);
+        self.rrect(rect(x + 2.8 * u, y + 4.6 * u, 3.4 * u, 1.4 * u), bar, fg);
+        self.rrect(rect(x + 6.0 * u, y + 6.1 * u, 1.5 * u, 1.5 * u), bar, spark);
+    }
+}
