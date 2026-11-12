@@ -115,3 +115,75 @@ fn with_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
 struct ExitGuard;
 
 impl Drop for ExitGuard {
+    fn drop(&mut self) {
+        let _ = LOCAL.try_with(|l| unsafe {
+            let l = &mut *l.get();
+            with_shared(|s| {
+                for c in 0..NCLASS {
+                    let head = l.free[c];
+                    if head.is_null() {
+                        continue;
+                    }
+                    // emenda a lista da thread no começo da global
+                    let mut tail = head;
+                    while !(*(tail as *mut *mut u8)).is_null() {
+                        tail = *(tail as *mut *mut u8);
+                    }
+                    *(tail as *mut *mut u8) = s.free[c];
+                    s.free[c] = head;
+                    l.free[c] = null_mut();
+                }
+                if !l.bump.is_null() && l.end as usize - l.bump as usize >= 256 && s.nspare < s.spare.len() {
+                    s.spare[s.nspare] = (l.bump, l.end);
+                    s.nspare += 1;
+                }
+                l.bump = null_mut();
+                l.end = null_mut();
+            });
+        });
+    }
+}
+
+pub struct Alloc;
+
+impl Alloc {
+    #[cold]
+    unsafe fn refill(l: &mut Local, c: usize, size: usize) -> *mut u8 {
+        // primeiro, o estoque global
+        let got = with_shared(|s| {
+            let head = s.free[c];
+            if !head.is_null() {
+                s.free[c] = null_mut();
+                return (head, None);
+            }
+            if s.nspare > 0 {
+                s.nspare -= 1;
+                return (null_mut(), Some(s.spare[s.nspare]));
+            }
+            (null_mut(), None)
+        });
+        match got {
+            (head, _) if !head.is_null() => {
+                l.free[c] = unsafe { *(head as *mut *mut u8) };
+                return head;
+            }
+            (_, Some((b, e))) => {
+                l.bump = b;
+                l.end = e;
+            }
+            _ => {}
+        }
+        if (l.end as usize).saturating_sub(l.bump as usize) < size {
+            let chunk = unsafe { System.alloc(Layout::from_size_align_unchecked(CHUNK, 16)) };
+            if chunk.is_null() {
+                return null_mut();
+            }
+            l.bump = chunk;
+            l.end = unsafe { chunk.add(CHUNK) };
+        }
+        let p = l.bump;
+        l.bump = unsafe { p.add(size) };
+        p
+    }
+}
+
