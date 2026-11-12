@@ -562,3 +562,67 @@ fn svg_path(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Object(o))
 }
 
+/// `cvColor(texto)`: cor CSS normalizada como o canvas devolve ("#rrggbb" ou
+/// "rgba(r, g, b, a)"), ou null se não for uma cor.
+fn color(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let t = text(vm, a, 0)?;
+    let Some(c) = crate::style::parse_color(t.trim(), Color::BLACK) else { return Ok(Value::Null) };
+    Ok(Value::str(&if c.a == 255 {
+        format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
+    } else {
+        // menos casas possível que ainda voltam ao mesmo byte (como o Chrome)
+        let two = (c.a as f64 / 255.0 * 100.0).round() / 100.0;
+        let a = if (two * 255.0).round() as u8 == c.a { two } else { (c.a as f64 / 255.0 * 1000.0).round() / 1000.0 };
+        format!("rgba({}, {}, {}, {})", c.r, c.g, c.b, a)
+    }))
+}
+
+/// A largura/altura do `<canvas>` mudou pelo atributo: nova imagem (vazia).
+pub(crate) fn attr_resized(h: &mut Host, n: NodeId) {
+    if !h.canvases.contains_key(&n) {
+        return;
+    }
+    let el = h.page.doc.element(n);
+    let dim = |name: &str, d: usize| {
+        el.and_then(|e| e.attr(name)).and_then(|v| v.trim().parse::<usize>().ok()).unwrap_or(d)
+    };
+    let (w, hh) = (dim("width", 300), dim("height", 150));
+    if let Some(b) = h.canvases.get_mut(&n) {
+        b.resize(w, hh);
+    }
+    h.canvas_dirty.insert(n);
+}
+
+fn bitmap_close(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let id = num(vm, a, 0)? as u32;
+    write(vm, |h| h.bitmaps.remove(&id));
+    Ok(Value::Undefined)
+}
+
+pub(crate) fn install(vm: &Vm, n: &ObjRef) {
+    let r = &vm.realm;
+    for (name, len, f) in [
+        ("cvSize", 3, size as ferro_js::value::NativeFn),
+        ("cvFill", 7, fill),
+        ("cvStroke", 12, stroke),
+        ("cvClip", 3, clip),
+        ("cvSave", 1, save),
+        ("cvRestore", 1, restore),
+        ("cvResetState", 1, reset_state),
+        ("cvClear", 5, clear),
+        ("cvSourceSize", 1, source_size),
+        ("cvImage", 14, image),
+        ("cvMeasure", 2, measure),
+        ("cvText", 12, draw_text),
+        ("cvGetData", 5, get_data),
+        ("cvPutData", 10, put_data),
+        ("cvDataURL", 1, data_url),
+        ("bitmapNew", 1, bitmap_new),
+        ("bitmapClose", 1, bitmap_close),
+        ("bitmapDecode", 1, bitmap_decode),
+        ("cvSvgPath", 1, svg_path),
+        ("cvColor", 1, color),
+    ] {
+        r.method(n, name, len, f);
+    }
+}
