@@ -3281,3 +3281,76 @@ class IntersectionObserver {
     }
   }
 }
+// rolar e redimensionar reavaliam quem está visível
+const ioRecheck = () => { for (const io of IO_ALL) if (io._targets.size) io._schedule(); };
+G.addEventListener('scroll', ioRecheck, true);
+G.addEventListener('resize', ioRecheck);
+hidden(G, 'IntersectionObserver', IntersectionObserver);
+class ResizeObserver {
+  constructor(cb) { this._cb = cb; this._targets = new Set(); }
+  observe(el) {
+    this._targets.add(el);
+    setTimeout(() => {
+      if (!this._targets.has(el)) return;
+      const r = el.getBoundingClientRect();
+      const size = [{ inlineSize: r.width, blockSize: r.height }];
+      const entry = { target: el, contentRect: new DOMRect(0, 0, r.width, r.height), borderBoxSize: size, contentBoxSize: size, devicePixelContentBoxSize: size };
+      try { this._cb([entry], this); } catch (e) { N.reportError(e); }
+    }, 0);
+  }
+  unobserve(el) { this._targets.delete(el); }
+  disconnect() { this._targets.clear(); }
+}
+hidden(G, 'ResizeObserver', ResizeObserver);
+hidden(G, 'ReportingObserver', class ReportingObserver { observe() {} disconnect() {} takeRecords() { return []; } });
+
+// ------------------------------------------------- elementos personalizados
+const DEFINED = new Map();
+const WAITING = new Map();
+const customElements = {
+  define(name, ctor, opts) {
+    name = String(name);
+    if (!/^[a-z][a-z0-9._]*-[a-z0-9._-]*$/.test(name))
+      throw new DOMException(`Failed to execute 'define' on 'CustomElementRegistry': "${name}" is not a valid custom element name`, 'SyntaxError');
+    if (opts && opts.extends) return; // elementos embutidos personalizados: não suportados
+    DEFINED.set(name, ctor);
+    const upgraded = N.defineCustom(name, ctor);
+    for (const el of upgraded) if (el.isConnected) connected(el);
+    const w = WAITING.get(name);
+    if (w) { WAITING.delete(name); w.resolve(ctor); }
+  },
+  get(name) { return DEFINED.get(String(name)); },
+  getName(ctor) { for (const [n, c] of DEFINED) if (c === ctor) return n; return null; },
+  whenDefined(name) {
+    name = String(name);
+    if (DEFINED.has(name)) return Promise.resolve(DEFINED.get(name));
+    let w = WAITING.get(name);
+    if (!w) {
+      let resolve;
+      const promise = new Promise((r) => { resolve = r; });
+      WAITING.set(name, w = { promise, resolve });
+    }
+    return w.promise;
+  },
+  upgrade() {},
+};
+hidden(G, 'customElements', customElements);
+hidden(G, 'CustomElementRegistry', function CustomElementRegistry() { throw new TypeError('Illegal constructor'); });
+function connected(el) {
+  if (typeof el.connectedCallback === 'function') {
+    try { el.connectedCallback(); } catch (e) { N.reportError(e); }
+  }
+}
+function disconnected(el) {
+  if (typeof el.disconnectedCallback === 'function') {
+    try { el.disconnectedCallback(); } catch (e) { N.reportError(e); }
+  }
+}
+function attributeChanged(el, name, old, value) {
+  const ctor = el.constructor;
+  const list = ctor && ctor.observedAttributes;
+  if (typeof el.attributeChangedCallback === 'function' && list && [...list].includes(name)) {
+    try { el.attributeChangedCallback(name, old, value); } catch (e) { N.reportError(e); }
+  }
+}
+
