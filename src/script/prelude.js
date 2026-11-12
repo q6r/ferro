@@ -801,3 +801,44 @@ accessor(INPUT, 'indeterminate', function () { return false; }, function () {});
 accessor(INPUT, 'files', function () { return this.type === 'file' ? [] : null; });
 accessor(INPUT, 'list', function () { const id = this.getAttribute('list'); return id ? document.getElementById(id) : null; });
 
+/// O que todos os controles de formulário têm em comum.
+function formControl(P, extra) {
+  accessor(P, 'form', function () { return formOf(this); });
+  accessor(P, 'labels', function () {
+    const out = [];
+    if (this.id) for (const l of document.querySelectorAll('label')) if (l.htmlFor === this.id) out.push(l);
+    const p = this.closest('label');
+    if (p && !out.includes(p)) out.push(p);
+    return out;
+  });
+  accessor(P, 'validity', () => ({ valid: true, valueMissing: false, typeMismatch: false, patternMismatch: false,
+    tooLong: false, tooShort: false, rangeUnderflow: false, rangeOverflow: false, stepMismatch: false,
+    badInput: false, customError: false }));
+  accessor(P, 'validationMessage', () => '');
+  accessor(P, 'willValidate', () => true);
+  methods(P, {
+    checkValidity() { return true; },
+    reportValidity() { return true; },
+    setCustomValidity() {},
+    ...extra,
+  });
+}
+const SEL = new WeakMap();
+formControl(INPUT, {
+  select() {},
+  setSelectionRange(a, b) { SEL.set(this, [a, b]); },
+  setRangeText() {},
+  stepUp() {}, stepDown() {},
+  showPicker() {},
+});
+accessor(INPUT, 'selectionStart', function () { return (SEL.get(this) || [this.value.length])[0]; }, function (v) { SEL.set(this, [v, v]); });
+accessor(INPUT, 'selectionEnd', function () { const s = SEL.get(this); return s ? s[1] : this.value.length; }, function () {});
+accessor(INPUT, 'selectionDirection', () => 'none', () => {});
+
+const TA = HTMLTextAreaElement.prototype;
+reflectAll(TA, ['name', 'placeholder', 'autocomplete', 'wrap', ['disabled', 'disabled', 'bool'],
+  ['readOnly', 'readonly', 'bool'], ['required', 'required', 'bool'], ['maxLength', 'maxlength', 'int', -1],
+  ['minLength', 'minlength', 'int', -1], ['rows', 'rows', 'int', 2], ['cols', 'cols', 'int', 20]]);
+accessor(TA, 'type', () => 'textarea');
+accessor(TA, 'value', function () { const v = VALUES.get(this); return v !== undefined ? v : this.textContent; },
+  function (v) { v = v === null ? '' : String(v); VALUES.set(this, v); this.textContent = v; });
