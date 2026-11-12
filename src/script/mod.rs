@@ -502,3 +502,65 @@ impl Session {
         }
     }
 
+    /// Começa a rodar os scripts do HTML: pede todos os externos em paralelo.
+    /// Depois, [`Session::step_scripts`] roda os que já chegaram, em ordem.
+    pub fn start_scripts(&mut self) {
+        // import maps primeiro (valem para os módulos)
+        let maps: Vec<String> = {
+            let hb = self.host.borrow();
+            let doc = &hb.page.doc;
+            doc.descendants(Document::ROOT)
+                .into_iter()
+                .filter(|&n| script_type(doc, n).as_deref() == Some("importmap"))
+                .map(|n| doc.text_content(n))
+                .collect()
+        };
+        for m in maps {
+            module::add_import_map(&mut self.js.vm, &m);
+        }
+        let mut hb = self.host.borrow_mut();
+        let srcs: Vec<Url> = {
+            let doc = &hb.page.doc;
+            doc.descendants(Document::ROOT)
+                .into_iter()
+                .filter(|&n| is_classic_script(doc, n))
+                .filter_map(|n| doc.element(n)?.attr("src").and_then(|s| hb.page.base.join(s.trim()).ok()))
+                .collect()
+        };
+        let modules: Vec<(NodeId, Option<String>, String)> = {
+            let doc = &hb.page.doc;
+            doc.descendants(Document::ROOT)
+                .into_iter()
+                .filter(|&n| script_type(doc, n).as_deref() == Some("module"))
+                .map(|n| (n, doc.element(n).and_then(|e| e.attr("src")).map(str::to_string), doc.text_content(n)))
+                .collect()
+        };
+        let mut parser = ParserScripts {
+            texts: HashMap::new(),
+            requested: HashSet::new(),
+            count: 0,
+            started: Instant::now(),
+            modules: modules.clone(),
+            modules_started: false,
+        };
+        for u in srcs {
+            if parser.requested.insert(u.clone()) {
+                request_parser_script(&mut hb, u);
+            }
+        }
+        hb.parser = Some(parser);
+        let base = hb.page.base.clone();
+        drop(hb);
+        // os módulos externos já começam a baixar (com as dependências)
+        for (_, src, _) in &modules {
+            if let Some(u) = src.as_deref().and_then(|s| base.join(s.trim()).ok()) {
+                module::request(&mut self.js.vm, &u);
+            }
+        }
+    }
+
+    /// Ainda há scripts do HTML para rodar?
+    pub fn scripts_pending(&self) -> bool {
+        self.host.borrow().parser.is_some()
+    }
+
