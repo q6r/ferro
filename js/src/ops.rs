@@ -897,3 +897,80 @@ impl Vm {
         Ok(self.get_own_property(obj, key)?.is_some())
     }
 
+    /// [[Delete]]: false se a propriedade não pode ser apagada.
+    pub fn delete_prop(&mut self, obj: &ObjRef, key: &PropKey) -> bool {
+        if let Kind::TypedArray(t) = &obj.borrow().kind
+            && let Some(i) = key.as_index()
+        {
+            return (i as usize) >= t.length;
+        }
+        let mut b = obj.borrow_mut();
+        let frozen = b.frozen;
+        if let Kind::Array(vec) = &mut b.kind {
+            if let Some(i) = key.as_index()
+                && (i as usize) < vec.len()
+            {
+                if frozen {
+                    return false;
+                }
+                vec[i as usize] = Value::Empty;
+                return true;
+            }
+            if let PropKey::Str(s) = key
+                && s.eq_str("length")
+            {
+                return false;
+            }
+        }
+        if let Kind::String(s) = &b.kind {
+            if let Some(i) = key.as_index()
+                && (i as usize) < s.len()
+            {
+                return false;
+            }
+            if let PropKey::Str(n) = key
+                && n.eq_str("length")
+            {
+                return false;
+            }
+        }
+        match b.props.get(key) {
+            Some(p) if !p.configurable => false,
+            Some(_) => {
+                b.props.remove(key);
+                true
+            }
+            None => true,
+        }
+    }
+
+    pub fn delete_value(&mut self, target: &Value, key: &PropKey, strict: bool) -> Result<bool, Value> {
+        match target {
+            Value::Object(o) => {
+                let ok = if crate::builtins::proxy::is_proxy(o) { self.proxy_delete(o, key)? } else { self.delete_prop(o, key) };
+                if !ok && strict {
+                    let d = self.describe(target);
+                    return Err(self.type_error(format!("Cannot delete property '{}' of {d}", key_display(key))));
+                }
+                Ok(ok)
+            }
+            Value::Undefined | Value::Null | Value::Empty => {
+                Err(self.type_error(format!("Cannot convert undefined or null to object (deleting '{}')", key_display(key))))
+            }
+            _ => Ok(true),
+        }
+    }
+
+    /// Chaves próprias (sem nomes privados).
+    pub fn own_keys(&mut self, obj: &ObjRef) -> Result<Vec<PropKey>, Value> {
+        if crate::builtins::proxy::is_proxy(obj) {
+            return self.proxy_own_keys(obj);
+        }
+        Ok(obj
+            .borrow()
+            .own_keys()
+            .into_iter()
+            .filter(|k| !matches!(k, PropKey::Sym(s) if s.is_private()))
+            .collect())
+    }
+
