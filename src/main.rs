@@ -184,3 +184,71 @@ fn main() {
     }
 }
 
+/// `ferro --js [arquivo]`: executa um script ou abre o REPL.
+fn run_js(file: Option<String>) -> i32 {
+    let mut js = ferro_js::Engine::new();
+    js.vm.max_depth = 8000;
+    ferro::jshost::setup(&mut js);
+    match file {
+        Some(path) => {
+            let src = match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("erro: não consegui ler {path}: {e}");
+                    return 2;
+                }
+            };
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(path.clone());
+            let t = Instant::now();
+            let r = js.eval(&src, &name);
+            let code = match r {
+                Ok(_) => 0,
+                Err(e) => {
+                    eprintln!("{}", js.error_text(&e));
+                    1
+                }
+            };
+            js.run_event_loop();
+            if std::env::var("FERRO_TEMPOS").is_ok() {
+                eprintln!("[ferro-js] {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+            }
+            code
+        }
+        None => {
+            use std::io::{BufRead, Write};
+            println!("Ferro JS — console interativo. Digite .sair para sair.");
+            let stdin = std::io::stdin();
+            let mut buf = String::new();
+            loop {
+                print!("{}", if buf.is_empty() { "> " } else { "… " });
+                let _ = std::io::stdout().flush();
+                let mut line = String::new();
+                if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+                    println!();
+                    return 0;
+                }
+                let trimmed = line.trim();
+                if buf.is_empty() && (trimmed == ".sair" || trimmed == ".exit") {
+                    return 0;
+                }
+                buf.push_str(&line);
+                // entrada incompleta (bloco aberto): continua lendo
+                if let Err(e) = ferro_js::parser::parse_program(&buf)
+                    && e.eof
+                {
+                    continue;
+                }
+                let src = std::mem::take(&mut buf);
+                match js.eval(&src, "repl") {
+                    Ok(v) => println!("{}", js.inspect(&v)),
+                    Err(e) => println!("{}", js.error_text(&e)),
+                }
+                js.run_due_timers();
+            }
+        }
+    }
+}
+
