@@ -324,3 +324,46 @@ pub fn relative_index(n: f64, len: usize) -> usize {
     }
 }
 
+/// `toFixed`: arredondamento "meio para cima" como o spec manda.
+pub fn to_fixed(n: f64, digits: usize) -> String {
+    if !n.is_finite() || n.abs() >= 1e21 {
+        return number_to_string(n);
+    }
+    let neg = n < 0.0;
+    let x = n.abs();
+    let mut s = format!("{x:.digits$}");
+    // empate exato (ex.: 2.5, 1.25): o Rust arredonda para par, o JS para cima
+    let exact = format!("{x:.1100}");
+    if let Some(dot) = exact.find('.') {
+        let frac = &exact[dot + 1..];
+        if frac.len() > digits && frac.as_bytes()[digits] == b'5' && frac[digits + 1..].bytes().all(|c| c == b'0') {
+            let int_part = &exact[..dot];
+            let mut t: Vec<u8> = format!("{int_part}{}", &frac[..digits]).into_bytes();
+            let mut i = t.len();
+            loop {
+                if i == 0 {
+                    t.insert(0, b'1');
+                    break;
+                }
+                i -= 1;
+                if t[i] == b'9' {
+                    t[i] = b'0';
+                } else {
+                    t[i] += 1;
+                    break;
+                }
+            }
+            let int_len = t.len() - digits;
+            let t = String::from_utf8(t).unwrap_or_default();
+            s = if digits == 0 { t } else { format!("{}.{}", &t[..int_len], &t[int_len..]) };
+        }
+    }
+    if neg && s.bytes().any(|c| c != b'0' && c != b'.') {
+        format!("-{s}")
+    } else if neg {
+        format!("-{s}")
+    } else {
+        s
+    }
+}
+
