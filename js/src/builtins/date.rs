@@ -340,3 +340,95 @@ fn parse_iso(s: &str) -> Option<(f64, bool)> {
     Some((t, !date_only && offset.is_none()))
 }
 
+fn parse_loose(s: &str) -> Option<(f64, bool)> {
+    let mut year: Option<i64> = None;
+    let mut month: Option<i64> = None;
+    let mut day: Option<i64> = None;
+    let (mut h, mut mi, mut sec) = (0i64, 0i64, 0i64);
+    let mut offset = 0i64;
+    let mut has_tz = false;
+    let mut pm: Option<bool> = None;
+    let cleaned: String = s.chars().map(|c| if c == ',' || c == '(' || c == ')' { ' ' } else { c }).collect();
+    let mut nums: Vec<i64> = Vec::new();
+    for tok in cleaned.split_whitespace() {
+        let lower = tok.to_ascii_lowercase();
+        if let Some(m) = MONTHS.iter().position(|m| lower.starts_with(&m.to_ascii_lowercase())) {
+            month = Some(m as i64);
+            continue;
+        }
+        if DAYS.iter().any(|d| lower.starts_with(&d.to_ascii_lowercase())) {
+            continue;
+        }
+        if lower == "am" || lower == "pm" {
+            pm = Some(lower == "pm");
+            continue;
+        }
+        if lower.starts_with("gmt") || lower.starts_with("utc") || lower == "z" {
+            let rest = &tok[3.min(tok.len())..];
+            if let Some(o) = parse_offset(rest) {
+                offset = o;
+            }
+            has_tz = true;
+            continue;
+        }
+        if (tok.starts_with('+') || tok.starts_with('-')) && tok.len() >= 5 {
+            if let Some(o) = parse_offset(tok) {
+                offset = o;
+            }
+            has_tz = true;
+            continue;
+        }
+        if tok.contains(':') {
+            let p: Vec<&str> = tok.split(':').collect();
+            h = p.first()?.parse().ok()?;
+            mi = p.get(1).and_then(|x| x.parse().ok()).unwrap_or(0);
+            sec = p.get(2).and_then(|x| x.split('.').next()?.parse().ok()).unwrap_or(0);
+            continue;
+        }
+        if tok.contains('/') || (tok.contains('-') && !tok.starts_with('-')) {
+            let sep = if tok.contains('/') { '/' } else { '-' };
+            let p: Vec<i64> = tok.split(sep).filter_map(|x| x.parse().ok()).collect();
+            if p.len() == 3 {
+                if p[0] > 31 {
+                    year = Some(p[0]);
+                    month = Some(p[1] - 1);
+                    day = Some(p[2]);
+                } else {
+                    month = Some(p[0] - 1);
+                    day = Some(p[1]);
+                    year = Some(p[2]);
+                }
+            }
+            continue;
+        }
+        if let Ok(n) = tok.parse::<i64>() {
+            nums.push(n);
+            continue;
+        }
+        return None;
+    }
+    for n in nums {
+        if day.is_none() && n <= 31 && month.is_some() {
+            day = Some(n);
+        } else if year.is_none() {
+            year = Some(n);
+        } else if day.is_none() {
+            day = Some(n);
+        }
+    }
+    let mut year = year?;
+    if (0..50).contains(&year) {
+        year += 2000;
+    } else if (50..100).contains(&year) {
+        year += 1900;
+    }
+    match pm {
+        Some(true) if h < 12 => h += 12,
+        Some(false) if h == 12 => h = 0,
+        _ => {}
+    }
+    let d = make_day(year as f64, month.unwrap_or(0) as f64, day.unwrap_or(1) as f64);
+    let t = d * MS_PER_DAY + make_time(h as f64, mi as f64, sec as f64, 0.0) - offset as f64 * 60_000.0;
+    Some((t, !has_tz))
+}
+
