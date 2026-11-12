@@ -298,3 +298,57 @@ pub(crate) fn wrap(vm: &mut Vm, n: NodeId) -> Value {
     Value::Object(o)
 }
 
+pub(crate) fn wrap_opt(vm: &mut Vm, n: Option<NodeId>) -> Value {
+    match n {
+        Some(n) => wrap(vm, n),
+        None => Value::Null,
+    }
+}
+
+/// Tipo de um `<script>` especial: "module", "importmap" (None para os outros).
+fn script_type(doc: &Document, n: NodeId) -> Option<String> {
+    let el = doc.element(n)?;
+    if el.tag != "script" {
+        return None;
+    }
+    let ty = el.attr("type")?.trim().to_ascii_lowercase();
+    matches!(ty.as_str(), "module" | "importmap").then_some(ty)
+}
+
+/// Tipos de `<script>` que são JavaScript clássico.
+fn is_classic_script(doc: &Document, n: NodeId) -> bool {
+    let Some(el) = doc.element(n) else { return false };
+    if el.tag != "script" {
+        return false;
+    }
+    let ty = el.attr("type").unwrap_or("").trim().to_ascii_lowercase();
+    let lang = el.attr("language").unwrap_or("").trim().to_ascii_lowercase();
+    match ty.as_str() {
+        "" => lang.is_empty() || lang.starts_with("javascript"),
+        "text/javascript" | "application/javascript" | "application/x-javascript" | "text/ecmascript"
+        | "application/ecmascript" | "text/jscript" | "text/livescript" => true,
+        t => t.starts_with("text/javascript") || t.starts_with("application/javascript"),
+    }
+}
+
+fn now_ms(vm: &Vm) -> f64 {
+    vm.now_ms()
+}
+
+pub struct Session {
+    pub js: Engine,
+    pub host: Rc<RefCell<Host>>,
+    last_render: Option<Instant>,
+    render_cost: Duration,
+    /// Última vez que o usuário mexeu na página (o coletor espera ele parar).
+    last_input: Option<Instant>,
+}
+
+/// Pilha das threads das abas (o interpretador é recursivo).
+pub const STACK_SIZE: usize = 512 << 20;
+
+impl Session {
+    pub fn new(page: Loaded, net: Net, fonts: Rc<Fonts>, width: f32, height: f32) -> Session {
+        Session::new_frame(page, net, fonts, width, height, 0, String::new())
+    }
+
