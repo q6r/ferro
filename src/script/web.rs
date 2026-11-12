@@ -332,3 +332,51 @@ fn url_set(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(s(u.as_str()))
 }
 
+/// application/x-www-form-urlencoded: decodifica um componente.
+fn form_decode(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?.replace('+', " ");
+    Ok(s(&String::from_utf8_lossy(&net::percent_decode(&text))))
+}
+
+fn form_encode(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?;
+    let mut out = String::with_capacity(text.len());
+    for b in text.bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    Ok(s(&out))
+}
+
+// --------------------------------------------------------------- location
+
+fn location_href(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(s(read(vm, |h| h.page.url.to_string()).as_str()))
+}
+
+/// `__native.navigate(url)`: a aba carrega outra página (ou só muda o #).
+fn navigate(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let target = arg_string(vm, a, 0)?;
+    let (cur, base) = read(vm, |h| (h.page.url.clone(), h.page.base.clone()));
+    let Ok(url) = base.join(target.trim()) else {
+        return Err(super::dom::dom_error(vm, "SyntaxError", &format!("'{target}' is not a valid URL.")));
+    };
+    let mut a_no = url.clone();
+    a_no.set_fragment(None);
+    let mut b_no = cur.clone();
+    b_no.set_fragment(None);
+    if a_no == b_no && url.fragment().is_some() {
+        // só o fragmento: sem recarregar
+        write(vm, |h| h.page.url = url);
+        return Ok(Value::Bool(false));
+    }
+    if url.scheme() == "javascript" {
+        return Ok(Value::Bool(false));
+    }
+    write(vm, |h| h.navigate = Some(url));
+    Ok(Value::Bool(true))
+}
+
