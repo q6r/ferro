@@ -601,3 +601,52 @@ impl App {
 
     // ----------------------------------------------------------- abas
 
+    fn new_tab(&mut self, url: Option<Url>, activate: bool) {
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+        let proxy = self.proxy.clone();
+        let (vw, vh) = self.viewport_css();
+        let engine = EngineHandle::spawn(
+            move |update| {
+                let _ = proxy.send_event(UserEvent::Engine { tab: id, update });
+            },
+            vw,
+            vh,
+        );
+        let url = url.unwrap_or_else(|| Url::parse(NEW_TAB_URL).unwrap());
+        let tab = Tab {
+            id,
+            engine,
+            history: vec![Entry {
+                url,
+                title: String::new(),
+                scroll: 0.0,
+            }],
+            index: 0,
+            frame: None,
+            nav: 0,
+            loading: false,
+            progress: 0.0,
+            scroll: 0.0,
+            fresh: false,
+            fragment: None,
+            error: None,
+            sent_scroll: -1.0,
+            editing: false,
+            cursor: crate::style::Cursor::Auto,
+            sent_mouse: None,
+            pending_post: None,
+        };
+        let idx = if activate || self.tabs.is_empty() {
+            self.tabs.len()
+        } else {
+            (self.active + 1).min(self.tabs.len())
+        };
+        self.tabs.insert(idx, tab);
+        self.load(idx);
+        if activate {
+            self.activate(idx);
+        }
+        self.request_redraw();
+    }
+
