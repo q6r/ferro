@@ -1294,3 +1294,43 @@ impl Parser {
         Ok(e)
     }
 
+    fn parse_new(&mut self) -> PResult<Expr> {
+        let line = self.line();
+        self.expect_kw("new")?;
+        if self.eat(".")? {
+            let n = self.ident_name()?;
+            if &*n != "target" {
+                return self.err("esperava new.target");
+            }
+            return Ok(Expr::NewTarget);
+        }
+        let mut callee = if self.is_kw("new") { self.parse_new()? } else { self.parse_primary()? };
+        loop {
+            if self.eat(".")? {
+                if let Tok::Private(n) = self.tok.tok.clone() {
+                    self.advance()?;
+                    callee = Expr::PrivateMember(Box::new(callee), n);
+                } else {
+                    let prop = self.ident_name()?;
+                    callee = Expr::Member {
+                        obj: Box::new(callee),
+                        prop,
+                        optional: false,
+                    };
+                }
+            } else if self.eat("[")? {
+                let idx = self.parse_expression(false)?;
+                self.expect("]")?;
+                callee = Expr::Index {
+                    obj: Box::new(callee),
+                    index: Box::new(idx),
+                    optional: false,
+                };
+            } else {
+                break;
+            }
+        }
+        let args = if self.is("(") { self.parse_args()? } else { Vec::new() };
+        Ok(Expr::New(Box::new(callee), args, line))
+    }
+
