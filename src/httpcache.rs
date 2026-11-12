@@ -85,3 +85,50 @@ pub enum Lookup {
     Miss,
 }
 
+fn get_entry(url: &str) -> Option<Entry> {
+    {
+        let g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(e) = g.as_ref().and_then(|c| c.map.get(url)) {
+            return Some(e.clone());
+        }
+    }
+    // disco
+    let path = disk_path(url)?;
+    let data = std::fs::read(path).ok()?;
+    let e = decode_disk(url, &data)?;
+    insert_mem(url, e.clone());
+    Some(e)
+}
+
+/// Procura o endereço no cache.
+pub fn lookup(url: &Url) -> Lookup {
+    let key = url.as_str();
+    let Some(e) = get_entry(key) else { return Lookup::Miss };
+    if e.fresh_until > now() {
+        return Lookup::Fresh(e.response(url));
+    }
+    let mut cond = Vec::new();
+    if let Some(tag) = e.header("etag") {
+        cond.push(("If-None-Match".to_string(), tag.to_string()));
+    }
+    if let Some(lm) = e.header("last-modified") {
+        cond.push(("If-Modified-Since".to_string(), lm.to_string()));
+    }
+    if cond.is_empty() { Lookup::Miss } else { Lookup::Stale(cond) }
+}
+
+/// O servidor respondeu 304: a entrada vale de novo. Devolve a resposta guardada.
+pub fn revalidated(url: &Url, headers: &[(String, String)]) -> Option<Response> {
+    let key = url.as_str();
+    let mut e = get_entry(key)?;
+    e.fresh_until = freshness(headers, &e.headers, e.header("content-type").unwrap_or("")).unwrap_or(0);
+    let r = e.response(url);
+    insert_mem(key, e.clone());
+    write_disk(key, &e);
+    Some(r)
+}
+
+fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
+}
+
