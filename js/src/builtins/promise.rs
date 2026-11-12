@@ -512,26 +512,34 @@ fn catch(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn finally(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(p) = &a.this else {
+        let d = vm.describe(&a.this);
+        return Err(vm.type_error(format!("Method Promise.prototype.finally called on incompatible receiver {d}")));
+    };
+    let c = species_constructor(vm, p)?;
     let on_finally = a.arg(0);
     let then = vm.get_str(&a.this, "then")?;
     if !on_finally.is_callable() {
         return vm.call(&then, a.this.clone(), vec![on_finally.clone(), on_finally]);
     }
+    // as duas funções guardam [onFinally, C]
+    let data = vm.array_value(vec![on_finally, c]);
     let tf = vm.realm.native("", 1, finally_then);
     let cf = vm.realm.native("", 1, finally_catch);
-    set_native_data(&tf, on_finally.clone());
-    set_native_data(&cf, on_finally);
+    set_native_data(&tf, data.clone());
+    set_native_data(&cf, data);
     vm.call(&then, a.this.clone(), vec![Value::Object(tf), Value::Object(cf)])
 }
 
 fn finally_common(vm: &mut Vm, a: &CallArgs, thunk: NativeFn) -> Result<Value, Value> {
-    let on_finally = native_data(&a.callee);
+    let data = super::function::list_from_array_like(vm, &native_data(&a.callee))?;
+    let (on_finally, c) = (data.first().cloned().unwrap_or_default(), data.get(1).cloned().unwrap_or_default());
     let r = vm.call(&on_finally, Value::Undefined, Vec::new())?;
-    let p = vm.promise_resolve_value(r)?;
+    let p = promise_resolve_with(vm, &c, r)?;
     let f = vm.realm.native("", 0, thunk);
     set_native_data(&f, a.arg(0));
-    let then = vm.get_obj(&p, &PropKey::str("then"))?;
-    vm.call(&then, Value::Object(p), vec![Value::Object(f)])
+    let then = vm.get_str(&p, "then")?;
+    vm.call(&then, p, vec![Value::Object(f)])
 }
 
 fn finally_then(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -550,9 +558,17 @@ fn thrower_thunk(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Err(native_data(&a.callee))
 }
 
-fn promise_resolve(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let v = a.arg(0);
-    if let (Value::Object(c), Value::Object(o)) = (&a.this, &v)
+/// NewPromiseCapability(C) com `C` vindo do código (precisa ser objeto).
+fn user_capability(vm: &mut Vm, c: &Value, what: &str) -> Result<Capability, Value> {
+    if !matches!(c, Value::Object(_)) {
+        return Err(vm.type_error(format!("{what} called on non-object")));
+    }
+    vm.new_capability(c)
+}
+
+/// PromiseResolve(C, x): a própria promessa se já for de C, senão uma nova.
+fn promise_resolve_with(vm: &mut Vm, c: &Value, v: Value) -> Result<Value, Value> {
+    if let (Value::Object(c), Value::Object(o)) = (c, &v)
         && matches!(o.borrow().kind, Kind::Promise(_))
     {
         let vc = vm.get_obj(o, &PropKey::str("constructor"))?;
@@ -562,19 +578,23 @@ fn promise_resolve(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
             return Ok(v);
         }
     }
-    let cap = vm.new_capability(&a.this)?;
+    let cap = user_capability(vm, c, "PromiseResolve")?;
     vm.call(&cap.resolve, Value::Undefined, vec![v])?;
     Ok(cap.promise)
 }
 
+fn promise_resolve(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    promise_resolve_with(vm, &a.this, a.arg(0))
+}
+
 fn promise_reject(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let cap = vm.new_capability(&a.this)?;
+    let cap = user_capability(vm, &a.this, "Promise.reject")?;
     vm.call(&cap.reject, Value::Undefined, vec![a.arg(0)])?;
     Ok(cap.promise)
 }
 
 fn with_resolvers(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let cap = vm.new_capability(&a.this)?;
+    let cap = user_capability(vm, &a.this, "Promise.withResolvers")?;
     let o = vm.new_object();
     vm.define_data(&o, PropKey::str("promise"), cap.promise);
     vm.define_data(&o, PropKey::str("resolve"), cap.resolve);
@@ -709,49 +729,81 @@ fn make_aggregate(vm: &mut Vm, errors: Vec<Value>) -> Value {
     }
 }
 
-/// Esqueleto comum: itera, resolve cada item e liga os callbacks.
+/// GetPromiseResolve(C): `C.resolve`, que precisa ser função.
+fn get_promise_resolve(vm: &mut Vm, c: &Value) -> Result<Value, Value> {
+    let f = vm.get_str(c, "resolve")?;
+    if !f.is_callable() {
+        let d = vm.describe(&f);
+        return Err(vm.type_error(format!("{d} is not a function")));
+    }
+    Ok(f)
+}
+
+/// Promise.all/allSettled/race/any (mode 0/1/2/3), seguindo o spec: cada
+/// item é resolvido assim que o iterador o entrega; num erro, o iterador é
+/// fechado (se ainda não acabou) e a promessa é rejeitada.
 fn combinator(vm: &mut Vm, a: &CallArgs, mode: u8) -> Result<Value, Value> {
-    let cap = vm.new_capability(&a.this)?;
-    let result = (|| -> Result<(), Value> {
-        let items = vm.iterate_to_vec(&a.arg(0))?;
-        let rec = combinator_record(vm, &cap, items.len());
-        let resolve_m = vm.get_str(&a.this, "resolve")?;
-        for (i, item) in items.into_iter().enumerate() {
-            let p = vm.call(&resolve_m, a.this.clone(), vec![item])?;
-            let (on_f, on_r) = match mode {
-                0 => {
-                    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
-                    (Value::Object(element_fn(vm, &rec, i, 0)), cap.reject.clone())
-                }
-                1 => {
-                    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
-                    settled_pair(vm, &rec, i)
-                }
-                2 => (cap.resolve.clone(), cap.reject.clone()),
-                _ => {
-                    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
-                    (cap.resolve.clone(), Value::Object(element_fn(vm, &rec, i, 3)))
-                }
-            };
-            let then = vm.get_str(&p, "then")?;
-            vm.call(&then, p, vec![on_f, on_r])?;
+    let name = ["all", "allSettled", "race", "any"][mode as usize];
+    let cap = user_capability(vm, &a.this, &format!("Promise.{name}"))?;
+    let resolve_m = match get_promise_resolve(vm, &a.this) {
+        Ok(f) => f,
+        Err(e) => {
+            vm.call(&cap.reject, Value::Undefined, vec![e])?;
+            return Ok(cap.promise);
         }
-        if mode != 2 && rec_done(vm, &rec) {
-            let values = rec_get(&rec, "values");
-            if mode == 3 {
-                let errors = super::function::list_from_array_like(vm, &values)?;
-                let agg = make_aggregate(vm, errors);
-                vm.call(&cap.reject, Value::Undefined, vec![agg])?;
-            } else {
-                vm.call(&cap.resolve, Value::Undefined, vec![values])?;
-            }
+    };
+    let mut iter = match super::iterator::get_iterator(vm, &a.arg(0)) {
+        Ok(r) => r,
+        Err(e) => {
+            vm.call(&cap.reject, Value::Undefined, vec![e])?;
+            return Ok(cap.promise);
         }
-        Ok(())
-    })();
-    if let Err(e) = result {
+    };
+    if let Err(e) = perform_combinator(vm, a, mode, &cap, &resolve_m, &mut iter) {
+        let e = if iter.done { e } else { super::iterator::close_with_error(vm, &iter.iter, e) };
         vm.call(&cap.reject, Value::Undefined, vec![e])?;
     }
     Ok(cap.promise)
+}
+
+fn perform_combinator(vm: &mut Vm, a: &CallArgs, mode: u8, cap: &Capability, resolve_m: &Value, iter: &mut super::iterator::IterRec) -> Result<(), Value> {
+    let rec = combinator_record(vm, cap, 0);
+    let mut index = 0;
+    while let Some(next) = iter.step_value(vm)? {
+        if mode != 2
+            && let Value::Object(values) = rec_get(&rec, "values")
+        {
+            vm.define_data(&values, crate::ops::index_key(index), Value::Undefined);
+        }
+        let p = vm.call(resolve_m, a.this.clone(), vec![next])?;
+        let (on_f, on_r) = match mode {
+            0 => (Value::Object(element_fn(vm, &rec, index, 0)), cap.reject.clone()),
+            1 => settled_pair(vm, &rec, index),
+            2 => (cap.resolve.clone(), cap.reject.clone()),
+            _ => (cap.resolve.clone(), Value::Object(element_fn(vm, &rec, index, 3))),
+        };
+        if mode != 2 {
+            let n = match rec_get(&rec, "remaining") {
+                Value::Number(n) => n + 1.0,
+                _ => 1.0,
+            };
+            vm.define_data(&rec, PropKey::str("remaining"), Value::Number(n));
+        }
+        let then = vm.get_str(&p, "then")?;
+        vm.call(&then, p, vec![on_f, on_r])?;
+        index += 1;
+    }
+    if mode != 2 && rec_done(vm, &rec) {
+        let values = rec_get(&rec, "values");
+        if mode == 3 {
+            let errors = super::function::list_from_array_like(vm, &values)?;
+            let agg = make_aggregate(vm, errors);
+            vm.call(&cap.reject, Value::Undefined, vec![agg])?;
+        } else {
+            vm.call(&cap.resolve, Value::Undefined, vec![values])?;
+        }
+    }
+    Ok(())
 }
 
 fn promise_all(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -770,29 +822,30 @@ fn promise_any(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     combinator(vm, a, 3)
 }
 
-/// Promise.try: chama a função na hora e embrulha o resultado (ou o erro).
+/// Promise.try: chama a função na hora; o valor passa por PromiseResolve(C)
+/// (uma promessa de C volta sem embrulho) e o erro vira uma promessa rejeitada.
 fn promise_try(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     if !matches!(a.this, Value::Object(_)) {
         return Err(vm.type_error("Promise.try called on non-object"));
     }
-    let cap = vm.new_capability(&a.this)?;
     let args = a.args.get(1..).map(|x| x.to_vec()).unwrap_or_default();
     match vm.call(&a.arg(0), Value::Undefined, args) {
-        Ok(v) => vm.call(&cap.resolve, Value::Undefined, vec![v])?,
-        Err(e) => vm.call(&cap.reject, Value::Undefined, vec![e])?,
-    };
-    Ok(cap.promise)
+        Ok(v) => promise_resolve_with(vm, &a.this, v),
+        Err(e) => {
+            let cap = user_capability(vm, &a.this, "Promise.try")?;
+            vm.call(&cap.reject, Value::Undefined, vec![e])?;
+            Ok(cap.promise)
+        }
+    }
 }
 
 /// Promise.allKeyed / allSettledKeyed: como all/allSettled, mas sobre as
 /// propriedades próprias enumeráveis de um objeto.
 fn keyed_combinator(vm: &mut Vm, a: &CallArgs, settled: bool) -> Result<Value, Value> {
-    let cap = vm.new_capability(&a.this)?;
+    let name = if settled { "Promise.allSettledKeyed" } else { "Promise.allKeyed" };
+    let cap = user_capability(vm, &a.this, name)?;
     let result = (|| -> Result<(), Value> {
-        let resolve_m = vm.get_str(&a.this, "resolve")?;
-        if !resolve_m.is_callable() {
-            return Err(vm.type_error("Promise resolve or reject function is not callable"));
-        }
+        let resolve_m = get_promise_resolve(vm, &a.this)?;
         let Value::Object(src) = a.arg(0) else {
             let d = vm.describe(&a.arg(0));
             return Err(vm.type_error(format!("{d} is not an object")));
