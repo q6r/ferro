@@ -243,3 +243,51 @@ impl Session {
         }
     }
 
+    /// O ponto (documento) cai sobre um quadro? Devolve o nó e o ponto no quadro.
+    pub(crate) fn frame_at(&self, target: NodeId, x: f32, y: f32) -> Option<(NodeId, f32, f32)> {
+        let hb = self.host.borrow();
+        let c = hb.frames.get(&target)?;
+        let r = frame_box(&hb, target)?;
+        let fixed = hb.layout.as_ref().is_some_and(|l| l.fixed.contains(&target));
+        let y = if fixed { y - hb.scroll_y } else { y };
+        Some((target, x - r.x, y - r.y + c.scroll))
+    }
+
+    /// Roda do mouse sobre um quadro. `false` se não há quadro ou ele não rola.
+    pub(crate) fn scroll_frame(&mut self, n: NodeId, dy: f32) -> bool {
+        let Some(mut c) = self.host.borrow_mut().frames.remove(&n) else { return false };
+        let max = (c.height - c.size.1).max(0.0);
+        let next = (c.scroll + dy).clamp(0.0, max);
+        let moved = (next - c.scroll).abs() >= 0.5;
+        if moved {
+            c.scroll = next;
+            c.stale = true;
+            // o quadro fica sabendo da rolagem (window.scrollY, eventos)
+            c.session.set_scroll(next);
+        }
+        self.host.borrow_mut().frames.insert(n, c);
+        if moved {
+            self.paint_frames(false);
+        }
+        moved
+    }
+
+    /// Mensagens que chegaram da página-mãe: viram eventos `message`.
+    pub(crate) fn deliver_inbox(&mut self) {
+        let list = std::mem::take(&mut self.host.borrow_mut().inbox);
+        let mine = self.host.borrow().page.url.origin().ascii_serialization();
+        for (data, origin, target) in list {
+            if target != "*" && target != mine && !target.starts_with(&mine) && mine != "null" {
+                continue;
+            }
+            self.hook("parentMessage", vec![Value::str(&data), Value::str(&origin)]);
+        }
+    }
+}
+
+/// Caixa do `<iframe>` no layout (coordenadas do documento).
+pub(crate) fn frame_box(hb: &Host, n: NodeId) -> Option<Rect> {
+    let info = hb.layout.as_ref()?;
+    info.boxes.iter().rev().find(|(id, _)| *id == n).map(|(_, r)| *r)
+}
+
