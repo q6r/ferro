@@ -181,3 +181,42 @@ struct Tab {
     sent_mouse: Option<(f32, f32)>,
 }
 
+impl Tab {
+    fn entry(&self) -> &Entry {
+        &self.history[self.index]
+    }
+
+    fn url(&self) -> &Url {
+        &self.entry().url
+    }
+
+    fn kind(&self) -> Kind {
+        let u = self.url();
+        if u.scheme() != "ferro" {
+            return Kind::Web;
+        }
+        match u.host_str() {
+            Some("configuracoes") => Kind::Settings(match u.fragment() {
+                Some("sobre") => Section::About,
+                Some("layout") => Section::Layout,
+                _ => Section::Appearance,
+            }),
+            _ => Kind::NewTab,
+        }
+    }
+
+    fn title(&self) -> String {
+        match self.kind() {
+            Kind::NewTab => "Nova aba".into(),
+            Kind::Settings(_) => "Configurações".into(),
+            Kind::Web => {
+                let t = &self.entry().title;
+                if !t.is_empty() {
+                    t.clone()
+                } else {
+                    self.url().host_str().unwrap_or(self.url().as_str()).to_string()
+                }
+            }
+        }
+    }
+
