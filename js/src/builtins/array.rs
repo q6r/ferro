@@ -65,3 +65,52 @@ pub fn install(r: &Realm) {
     r.method_sym(&r.iterator_proto, &r.sym_iterator, "[Symbol.iterator]", 0, return_this);
 }
 
+pub fn return_this(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(a.this.clone())
+}
+
+fn species(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(a.this.clone())
+}
+
+/// Objeto `{ value, done }` dos iteradores.
+pub fn iter_result(vm: &mut Vm, value: Value, done: bool) -> Value {
+    let o = vm.new_object();
+    {
+        let mut b = o.borrow_mut();
+        b.props.insert(PropKey::str("value"), Property::data(value));
+        b.props.insert(PropKey::str("done"), Property::data(Value::Bool(done)));
+    }
+    Value::Object(o)
+}
+
+// ------------------------------------------------------ auxiliares
+
+fn get_i(vm: &mut Vm, o: &ObjRef, i: usize) -> Result<Value, Value> {
+    if let Kind::Array(v) = &o.borrow().kind
+        && let Some(x) = v.get(i)
+        && !matches!(x, Value::Empty)
+    {
+        return Ok(x.clone());
+    }
+    vm.get_obj(o, &index_key(i))
+}
+
+fn has_i(vm: &mut Vm, o: &ObjRef, i: usize) -> bool {
+    if let Kind::Array(v) = &o.borrow().kind
+        && let Some(x) = v.get(i)
+        && !matches!(x, Value::Empty)
+    {
+        return true;
+    }
+    vm.has_property(o, &index_key(i)).unwrap_or(false)
+}
+
+fn set_i(vm: &mut Vm, o: &ObjRef, i: usize, v: Value) -> Result<(), Value> {
+    vm.put(&Value::Object(o.clone()), index_key(i), v, true)
+}
+
+fn set_len(vm: &mut Vm, o: &ObjRef, n: usize) -> Result<(), Value> {
+    vm.put(&Value::Object(o.clone()), PropKey::str("length"), Value::Number(n as f64), true)
+}
+
