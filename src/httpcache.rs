@@ -132,3 +132,65 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
     headers.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())
 }
 
+/// Até quando a resposta vale (None = não pode guardar).
+fn freshness(headers: &[(String, String)], fallback: &[(String, String)], content_type: &str) -> Option<u64> {
+    let h = |n: &str| header(headers, n).or_else(|| header(fallback, n));
+    let cc = h("cache-control").unwrap_or("").to_ascii_lowercase();
+    if cc.contains("no-store") {
+        return None;
+    }
+    let t = now();
+    if cc.contains("no-cache") {
+        return Some(0);
+    }
+    for part in cc.split(',') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("max-age=")
+            && let Ok(s) = v.trim_matches('"').parse::<u64>()
+        {
+            return Some(t + s);
+        }
+    }
+    if let Some(exp) = h("expires").and_then(crate::cookies::parse_http_date) {
+        return Some((exp as u64).max(t.saturating_sub(1)));
+    }
+    // heurística (10% da idade) só para o que não é documento
+    if !content_type.contains("html")
+        && let Some(lm) = h("last-modified").and_then(crate::cookies::parse_http_date)
+    {
+        let age = t.saturating_sub(lm as u64);
+        return Some(t + (age / 10).min(24 * 3600));
+    }
+    if h("etag").is_some() {
+        return Some(0);
+    }
+    None
+}
+
+/// Guarda a resposta, se as regras deixarem.
+pub fn store(url: &Url, res: &Response) {
+    if res.status != 200 || res.url != *url || res.body.len() > MAX_ENTRY {
+        return;
+    }
+    if header(&res.headers, "vary").is_some_and(|v| v.trim() == "*") {
+        return;
+    }
+    let ct = res.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    let Some(fresh_until) = freshness(&res.headers, &[], &ct) else { return };
+    // HTML só com validade explícita
+    let cc = header(&res.headers, "cache-control").unwrap_or("").to_ascii_lowercase();
+    if ct.contains("html") && !cc.contains("max-age") {
+        return;
+    }
+    // não guarda cookies nem cabeçalhos de conexão
+    let headers: Vec<(String, String)> = res
+        .headers
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "set-cookie" | "connection" | "transfer-encoding" | "content-encoding" | "content-length"))
+        .cloned()
+        .collect();
+    let e = Entry { status: res.status, headers, body: Arc::new(res.body.clone()), fresh_until };
+    insert_mem(url.as_str(), e.clone());
+    write_disk(url.as_str(), &e);
+}
+
