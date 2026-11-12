@@ -809,3 +809,67 @@ impl Object {
         }
     }
 
+    pub fn own(&self, k: &PropKey) -> Option<Property> {
+        if let Kind::TypedArray(t) = &self.kind
+            && let Some(i) = k.as_index()
+        {
+            return t.get(i as usize).map(Property::data);
+        }
+        if let Kind::Array(v) = &self.kind {
+            if let Some(i) = k.as_index() {
+                match v.get(i as usize) {
+                    Some(Value::Empty) | None => {}
+                    Some(x) => {
+                        return Some(Property {
+                            slot: Slot::Data {
+                                value: x.clone(),
+                                writable: !self.frozen,
+                            },
+                            enumerable: true,
+                            configurable: !self.frozen,
+                        });
+                    }
+                }
+            }
+            if let PropKey::Str(s) = k
+                && s.eq_str("length")
+            {
+                return Some(Property {
+                    slot: Slot::Data {
+                        value: Value::Number(v.len() as f64),
+                        writable: !self.frozen,
+                    },
+                    enumerable: false,
+                    configurable: false,
+                });
+            }
+        }
+        if let Kind::String(s) = &self.kind {
+            if let Some(i) = k.as_index()
+                && (i as usize) < s.len()
+            {
+                return Some(Property {
+                    slot: Slot::Data {
+                        value: Value::String(s.slice(i as usize, i as usize + 1)),
+                        writable: false,
+                    },
+                    enumerable: true,
+                    configurable: false,
+                });
+            }
+            if let PropKey::Str(n) = k
+                && n.eq_str("length")
+            {
+                return Some(Property {
+                    slot: Slot::Data {
+                        value: Value::Number(s.len() as f64),
+                        writable: false,
+                    },
+                    enumerable: false,
+                    configurable: false,
+                });
+            }
+        }
+        self.props.get(k).cloned()
+    }
+
