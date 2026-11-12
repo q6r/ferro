@@ -1503,3 +1503,36 @@ pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'sta
     Ok(out)
 }
 
+fn gmt_offset(min: f64, long: bool) -> String {
+    if min == 0.0 {
+        return "GMT".into();
+    }
+    let sign = if min < 0.0 { '-' } else { '+' };
+    let m = min.abs() as i64;
+    let (h, mm) = (m / 60, m % 60);
+    if long {
+        format!("GMT{sign}{h:02}:{mm:02}")
+    } else if mm == 0 {
+        format!("GMT{sign}{h}")
+    } else {
+        format!("GMT{sign}{h}:{mm:02}")
+    }
+}
+
+pub fn format_date(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<String, Value> {
+    Ok(format_date_parts(vm, o, t)?.into_iter().map(|(_, s)| s).collect())
+}
+
+fn date_arg(vm: &mut Vm, v: &Value) -> Result<f64, Value> {
+    if v.is_undefined() {
+        return Ok(vm.epoch_now_ms());
+    }
+    if let Value::Object(o) = v
+        && let Kind::Date(t) = o.borrow().kind
+    {
+        return Ok(t);
+    }
+    let n = vm.to_number(v)?;
+    Ok(super::date::time_clip(n))
+}
+
