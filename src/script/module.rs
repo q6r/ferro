@@ -99,3 +99,74 @@ pub(crate) fn resolve(vm: &Vm, spec: &str, referrer: &Url) -> Option<Url> {
     })
 }
 
+/// Lê um `<script type=importmap>` (só a parte "imports").
+pub(crate) fn add_import_map(vm: &mut Vm, text: &str) {
+    let base = read(vm, |h| h.page.base.clone());
+    let code = format!("(function(){{ try {{ const m = JSON.parse({}); return Object.entries(m.imports || {{}}).map(e => e[0] + '\\u0000' + e[1]).join('\\u0001'); }} catch (e) {{ return ''; }} }})()", js_string(text));
+    let Ok(Value::String(list)) = vm.eval_script(&code, "importmap") else { return };
+    let list = list.to_rust();
+    write(vm, |h| {
+        for pair in list.split('\u{1}') {
+            if let Some((k, v)) = pair.split_once('\u{0}')
+                && let Ok(u) = base.join(v)
+            {
+                h.import_map.insert(k.to_string(), u);
+            }
+        }
+    });
+}
+
+fn js_string(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Garante que o módulo dessa URL existe (pede à rede se for novo).
+pub(crate) fn request(vm: &mut Vm, url: &Url) {
+    if read(vm, |h| h.modules.recs.contains_key(url)) {
+        return;
+    }
+    let ns = hook(vm, "newNamespace", Vec::new());
+    write(vm, |h| {
+        h.modules.recs.insert(url.clone(), Rec { state: State::Fetching, ns });
+        let net = h.net.clone();
+        let u = url.clone();
+        h.in_flight += 1;
+        h.pool.submit(Box::new(move || {
+            let text = match net.fetch(&u) {
+                Ok(r) if r.status < 400 => Some(crate::net::decode_text(&r.body, r.content_type.as_deref(), false)),
+                _ => None,
+            };
+            Done::Module { url: u, text }
+        }));
+    });
+}
+
+/// Um módulo inline (`<script type=module>texto</script>`): ganha uma URL
+/// própria (a do documento com um fragmento) e é compilado na hora.
+pub(crate) fn add_inline(vm: &mut Vm, text: &str) -> Url {
+    let (mut url, n) = write(vm, |h| {
+        h.modules.inline += 1;
+        (h.page.url.clone(), h.modules.inline)
+    });
+    url.set_fragment(Some(&format!("modulo-{n}")));
+    let ns = hook(vm, "newNamespace", Vec::new());
+    write(vm, |h| {
+        h.modules.recs.insert(url.clone(), Rec { state: State::Fetching, ns });
+    });
+    arrived(vm, url.clone(), Some(text.to_string()));
+    url
+}
+
