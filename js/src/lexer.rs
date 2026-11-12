@@ -88,3 +88,49 @@ pub fn regex_allowed_after(tok: &Tok) -> bool {
     }
 }
 
+impl Lexer {
+    pub fn new(src: &str) -> Lexer {
+        Lexer {
+            src: src.chars().collect(),
+            pos: 0,
+            line: 1,
+            regex_ok: true,
+            names: Default::default(),
+            buf: String::new(),
+        }
+    }
+
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
+    pub fn line(&self) -> u32 {
+        self.line
+    }
+
+    /// Volta para uma posição já vista (o parser usa para reler templates).
+    pub fn reset(&mut self, pos: usize, line: u32, regex_ok: bool) {
+        self.pos = pos;
+        self.line = line;
+        self.regex_ok = regex_ok;
+    }
+
+    pub fn source_slice(&self, start: usize, end: usize) -> String {
+        self.src[start.min(self.src.len())..end.min(self.src.len())].iter().collect()
+    }
+
+    fn peek(&self) -> char {
+        self.src.get(self.pos).copied().unwrap_or('\0')
+    }
+
+    fn peek_at(&self, k: usize) -> char {
+        self.src.get(self.pos + k).copied().unwrap_or('\0')
+    }
+
+    fn err(&self, msg: impl Into<String>) -> LexError {
+        LexError {
+            msg: msg.into(),
+            line: self.line,
+        }
+    }
+
