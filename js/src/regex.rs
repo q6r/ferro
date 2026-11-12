@@ -1792,3 +1792,58 @@ mod tests {
         assert_eq!(whole("\\x41\\u0042\\103", "", "ABC"), Some("ABC".into()));
     }
 
+    #[test]
+    fn grupos_e_referencias() {
+        assert_eq!(m("(\\d+)-(\\d+)", "", "tel 12-345"), Some(vec![Some("12-345".into()), Some("12".into()), Some("345".into())]));
+        assert_eq!(whole("(\\w)\\1", "", "abccd"), Some("cc".into()));
+        assert_eq!(whole("(?<a>x)\\k<a>", "", "axxb"), Some("xx".into()));
+        assert_eq!(m("(a)|(b)", "", "b"), Some(vec![Some("b".into()), None, Some("b".into())]));
+        // capturas de iterações anteriores são limpas
+        assert_eq!(m("(?:(a)|b)+", "", "ab"), Some(vec![Some("ab".into()), None]));
+        assert_eq!(m("(z)((a+)?(b+)?(c))*", "", "zaacbbbcac"), Some(vec![
+            Some("zaacbbbcac".into()),
+            Some("z".into()),
+            Some("ac".into()),
+            Some("a".into()),
+            None,
+            Some("c".into()),
+        ]));
+        // laço vazio não trava
+        assert_eq!(whole("(a*)*b", "", "aab"), Some("aab".into()));
+        assert_eq!(whole("(?:a?)+?b", "", "b"), Some("b".into()));
+    }
+
+    #[test]
+    fn lookaround() {
+        assert_eq!(whole("\\d+(?=px)", "", "10em 20px"), Some("20".into()));
+        assert_eq!(whole("\\d+(?!px|\\d)", "", "20px 30em"), Some("30".into()));
+        assert_eq!(whole("(?<=\\$)\\d+", "", "€10 $25"), Some("25".into()));
+        assert_eq!(whole("(?<!\\$)\\b\\d+", "", "$10 25"), Some("25".into()));
+        assert_eq!(m("(?<=(\\d+)(\\d+))$", "", "1053"), Some(vec![Some("".into()), Some("1".into()), Some("053".into())]));
+        assert_eq!(m("(?=(\\w+))\\1:", "", "abc:"), Some(vec![Some("abc:".into()), Some("abc".into())]));
+    }
+
+    #[test]
+    fn unicode() {
+        assert_eq!(whole(".", "u", "😀x"), Some("😀".into()));
+        assert_eq!(whole("^.$", "", "😀"), None);
+        assert_eq!(whole("^.$", "u", "😀"), Some("😀".into()));
+        assert_eq!(whole("\\u{1F600}", "u", "a😀"), Some("😀".into()));
+        assert_eq!(whole("\\p{L}+", "u", "123 Olá!"), Some("Olá".into()));
+        assert_eq!(whole("\\p{Script=Greek}+", "u", "abc αβγ"), Some("αβγ".into()));
+        assert_eq!(whole("ÇÃO", "i", "ação"), Some("ção".into()));
+        assert!(compile(&u("\\p{L}"), Flags::default()).is_ok());
+        assert!(compile(&u("(a"), Flags::default()).is_err());
+        assert!(compile(&u("a**"), Flags::default()).is_err());
+        assert!(compile(&u("\\q"), Flags::parse("u").unwrap()).is_err());
+    }
+
+    #[test]
+    fn texto_longo_sem_estourar_a_pilha() {
+        let s: String = "a".repeat(200_000) + "b";
+        assert_eq!(whole("a*b", "", &s).map(|x| x.len()), Some(200_001));
+        assert_eq!(whole("(?:a|c)*b", "", &s).map(|x| x.len()), Some(200_001));
+        let curto: String = "a".repeat(3000);
+        assert_eq!(whole(".*x", "", &curto), None);
+    }
+}
