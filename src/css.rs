@@ -322,3 +322,63 @@ fn parse_selector(src: &str) -> Option<Selector> {
     })
 }
 
+fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
+    match (name, arg) {
+        ("first-child", None) => Pseudo::FirstChild,
+        ("last-child", None) => Pseudo::LastChild,
+        ("only-child", None) => Pseudo::OnlyChild,
+        ("first-of-type", None) => Pseudo::FirstOfType,
+        ("last-of-type", None) => Pseudo::LastOfType,
+        ("root", None) => Pseudo::Root,
+        ("link" | "any-link", None) => Pseudo::Link,
+        ("empty", None) => Pseudo::Empty,
+        ("checked", None) => Pseudo::Checked,
+        ("disabled", None) => Pseudo::Disabled,
+        ("enabled", None) => Pseudo::Enabled,
+        ("nth-child", Some(a)) => parse_nth(a).map_or(Pseudo::Never, |(a, b)| Pseudo::NthChild(a, b)),
+        ("nth-last-child", Some(a)) => parse_nth(a).map_or(Pseudo::Never, |(a, b)| Pseudo::NthLastChild(a, b)),
+        ("nth-of-type", Some(a)) => parse_nth(a).map_or(Pseudo::Never, |(a, b)| Pseudo::NthOfType(a, b)),
+        ("not", Some(a)) => parse_selector_list(a).map_or(Pseudo::Never, Pseudo::Not),
+        ("is" | "matches" | "-webkit-any", Some(a)) => {
+            parse_selector_list(a).map_or(Pseudo::Never, Pseudo::Is)
+        }
+        ("where", Some(a)) => parse_selector_list(a).map_or(Pseudo::Never, Pseudo::Where),
+        ("hover", None) => Pseudo::Hover,
+        ("active", None) => Pseudo::Active,
+        ("focus", None) => Pseudo::Focus,
+        ("focus-visible", None) => Pseudo::FocusVisible,
+        ("focus-within", None) => Pseudo::FocusWithin,
+        ("placeholder-shown", None) => Pseudo::PlaceholderShown,
+        ("fullscreen" | "-webkit-full-screen" | "modal", None) => Pseudo::Fullscreen,
+        // :visited, :has(), :first-line...
+        _ => Pseudo::Never,
+    }
+}
+
+/// Microsintaxe An+B (odd, even, 3, 2n+1, -n+3).
+fn parse_nth(s: &str) -> Option<(i32, i32)> {
+    let s: String = s.split_whitespace().collect::<String>().to_ascii_lowercase();
+    match s.as_str() {
+        "odd" => return Some((2, 1)),
+        "even" => return Some((2, 0)),
+        _ => {}
+    }
+    if let Some(npos) = s.find('n') {
+        let a_part = &s[..npos];
+        let a = match a_part {
+            "" | "+" => 1,
+            "-" => -1,
+            x => x.parse().ok()?,
+        };
+        let b_part = &s[npos + 1..];
+        let b = if b_part.is_empty() {
+            0
+        } else {
+            b_part.trim_start_matches('+').parse().ok()?
+        };
+        Some((a, b))
+    } else {
+        Some((0, s.parse().ok()?))
+    }
+}
+
