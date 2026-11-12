@@ -517,3 +517,68 @@ pub enum IntlObj {
     DisplayNames { locale: String, kind: String },
 }
 
+pub fn install(r: &Realm) {
+    let intl = ObjRef::new(Object::new(Some(r.object_proto.clone()), Kind::Ordinary));
+    r.tag(&intl, "Intl");
+    r.method(&intl, "getCanonicalLocales", 1, get_canonical_locales);
+    r.method(&intl, "supportedValuesOf", 1, supported_values_of);
+    let mk = |name: &str, f: NativeFn, len: u32| {
+        let proto = ObjRef::new(Object::new(Some(r.object_proto.clone()), Kind::Ordinary));
+        let c = super::native_fn(&r.function_proto, name, len, f, true);
+        c.borrow_mut().props.insert(
+            PropKey::str("prototype"),
+            Property {
+                slot: Slot::Data {
+                    value: Value::Object(proto.clone()),
+                    writable: false,
+                },
+                enumerable: false,
+                configurable: false,
+            },
+        );
+        proto.borrow_mut().props.insert(PropKey::str("constructor"), Property::hidden(Value::Object(c.clone())));
+        r.tag(&proto, &format!("Intl.{name}"));
+        r.method(&c, "supportedLocalesOf", 1, supported_locales_of);
+        intl.borrow_mut().props.insert(PropKey::str(name), Property::hidden(Value::Object(c)));
+        proto
+    };
+    let nf = mk("NumberFormat", number_format_ctor, 0);
+    r.getter(&nf, "format", nf_format_getter);
+    r.method(&nf, "formatToParts", 1, nf_format_to_parts);
+    r.method(&nf, "resolvedOptions", 0, resolved_options);
+    let df = mk("DateTimeFormat", date_format_ctor, 0);
+    r.getter(&df, "format", df_format_getter);
+    r.method(&df, "formatToParts", 1, df_format_to_parts);
+    r.method(&df, "resolvedOptions", 0, resolved_options);
+    let pr = mk("PluralRules", plural_ctor, 0);
+    r.method(&pr, "select", 1, plural_select);
+    r.method(&pr, "resolvedOptions", 0, resolved_options);
+    let rt = mk("RelativeTimeFormat", relative_ctor, 0);
+    r.method(&rt, "format", 2, relative_format);
+    r.method(&rt, "resolvedOptions", 0, resolved_options);
+    let lf = mk("ListFormat", list_ctor, 0);
+    r.method(&lf, "format", 1, list_format);
+    r.method(&lf, "resolvedOptions", 0, resolved_options);
+    let co = mk("Collator", collator_ctor, 0);
+    r.getter(&co, "compare", collator_compare_getter);
+    r.method(&co, "resolvedOptions", 0, resolved_options);
+    let sg = mk("Segmenter", segmenter_ctor, 0);
+    r.method(&sg, "segment", 1, segment);
+    r.method(&sg, "resolvedOptions", 0, resolved_options);
+    let lo = mk("Locale", locale_ctor, 1);
+    for (name, f) in [
+        ("language", locale_language as NativeFn),
+        ("region", locale_region),
+        ("baseName", locale_base_name),
+        ("script", locale_script),
+    ] {
+        r.getter(&lo, name, f);
+    }
+    r.method(&lo, "toString", 0, locale_to_string);
+    r.method(&lo, "maximize", 0, locale_maximize);
+    r.method(&lo, "minimize", 0, locale_maximize);
+    let dn = mk("DisplayNames", display_names_ctor, 2);
+    r.method(&dn, "of", 1, display_names_of);
+    r.global_value("Intl", Value::Object(intl));
+}
+
