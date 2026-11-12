@@ -650,3 +650,84 @@ impl Parser {
         }
     }
 
+    fn parse_var_decls(&mut self, _kind: VarKind, no_in: bool) -> PResult<Vec<VarDecl>> {
+        let mut decls = Vec::new();
+        loop {
+            let target = self.parse_binding_target()?;
+            let init = if self.eat("=")? { Some(self.parse_assign(no_in)?) } else { None };
+            decls.push(VarDecl { target, init });
+            if !self.eat(",")? {
+                break;
+            }
+        }
+        Ok(decls)
+    }
+
+    fn parse_for(&mut self) -> PResult<Stmt> {
+        self.advance()?;
+        let is_await = self.eat_kw("await")?;
+        self.expect("(")?;
+        let line = self.line();
+        let mut init: Option<ForInit> = None;
+        if self.eat(";")? {
+            // sem inicialização
+        } else {
+            let decl_kind = if self.is_kw("var") {
+                Some(VarKind::Var)
+            } else if self.is_kw("const") {
+                Some(VarKind::Const)
+            } else if self.starts_let_decl()? {
+                Some(VarKind::Let)
+            } else {
+                None
+            };
+            if let Some(kind) = decl_kind {
+                self.advance()?;
+                let target = self.parse_binding_target()?;
+                if self.is_kw("of") || self.is_kw("in") {
+                    let of = self.is_kw("of");
+                    self.advance()?;
+                    let right = if of { self.parse_assign(false)? } else { self.parse_expression(false)? };
+                    self.expect(")")?;
+                    let body = Box::new(self.parse_statement()?);
+                    let left = ForHead::Var(kind, target);
+                    return Ok(if of {
+                        Stmt::ForOf { left, right, body, is_await }
+                    } else {
+                        Stmt::ForIn { left, right, body }
+                    });
+                }
+                let first_init = if self.eat("=")? { Some(self.parse_assign(true)?) } else { None };
+                let mut decls = vec![VarDecl { target, init: first_init }];
+                if self.eat(",")? {
+                    decls.extend(self.parse_var_decls(kind, true)?);
+                }
+                init = Some(ForInit::Var(kind, decls));
+            } else {
+                let e = self.parse_expression(true)?;
+                if self.is_kw("of") || self.is_kw("in") {
+                    let of = self.is_kw("of");
+                    self.advance()?;
+                    let right = if of { self.parse_assign(false)? } else { self.parse_expression(false)? };
+                    self.expect(")")?;
+                    let body = Box::new(self.parse_statement()?);
+                    let left = ForHead::Pattern(self.expr_to_pattern(e)?);
+                    return Ok(if of {
+                        Stmt::ForOf { left, right, body, is_await }
+                    } else {
+                        Stmt::ForIn { left, right, body }
+                    });
+                }
+                init = Some(ForInit::Expr(e));
+            }
+            self.expect(";")?;
+        }
+        let _ = line;
+        let test = if self.is(";") { None } else { Some(self.parse_expression(false)?) };
+        self.expect(";")?;
+        let update = if self.is(")") { None } else { Some(self.parse_expression(false)?) };
+        self.expect(")")?;
+        let body = Box::new(self.parse_statement()?);
+        Ok(Stmt::For { init, test, update, body })
+    }
+
