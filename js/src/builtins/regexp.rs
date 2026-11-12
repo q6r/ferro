@@ -72,3 +72,61 @@ impl Vm {
     }
 }
 
+/// Cria um RegExp (usado por literais `/.../` e pelo construtor).
+pub fn create(vm: &mut Vm, source: JsStr, flags: JsStr, new_target: Option<&ObjRef>) -> Result<Value, Value> {
+    let prog = vm.compile_regex(&source, &flags)?;
+    let def = vm.realm.regexp_proto.clone();
+    let proto = vm.proto_from_ctor(new_target, &def)?;
+    let o = ObjRef::new(Object::new(Some(proto), Kind::RegExp { source, flags, prog }));
+    o.borrow_mut().props.insert(
+        PropKey::str("lastIndex"),
+        Property {
+            slot: Slot::Data {
+                value: Value::Number(0.0),
+                writable: true,
+            },
+            enumerable: false,
+            configurable: false,
+        },
+    );
+    Ok(Value::Object(o))
+}
+
+fn regexp_parts(v: &Value) -> Option<(JsStr, JsStr, Rc<Program>)> {
+    match v {
+        Value::Object(o) => match &o.borrow().kind {
+            Kind::RegExp { source, flags, prog } => Some((source.clone(), flags.clone(), prog.clone())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn regexp_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let pat = a.arg(0);
+    let fl = a.arg(1);
+    let existing = regexp_parts(&pat);
+    if a.new_target.is_none()
+        && existing.is_some()
+        && fl.is_undefined()
+        && let Value::Object(o) = &pat
+    {
+        let ctor = vm.get_obj(o, &PropKey::str("constructor"))?;
+        if let Value::Object(c) = ctor
+            && c.ptr_eq(&a.callee)
+        {
+            return Ok(pat);
+        }
+    }
+    let (src, flags) = match existing {
+        Some((s, f, _)) => (s, if fl.is_undefined() { f } else { vm.to_string(&fl)? }),
+        None => {
+            let s = if pat.is_undefined() { JsStr::empty() } else { vm.to_string(&pat)? };
+            let f = if fl.is_undefined() { JsStr::empty() } else { vm.to_string(&fl)? };
+            (s, f)
+        }
+    };
+    let nt = a.new_target.clone();
+    create(vm, src, flags, nt.as_ref())
+}
+
