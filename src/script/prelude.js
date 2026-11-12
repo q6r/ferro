@@ -2334,3 +2334,76 @@ for (const part of ['protocol', 'username', 'password', 'host', 'hostname', 'por
     go(N.urlSet(N.href(), part, val));
   });
 }
+accessor(Location.prototype, 'href', () => N.href(), (v) => go(v));
+methods(Location.prototype, {
+  assign(u) { go(u); },
+  replace(u) { go(u); },
+  reload() { N.reload(); },
+  toString() { return N.href(); },
+  valueOf() { return this; },
+});
+accessor(Location.prototype, 'ancestorOrigins', () => []);
+hidden(G, 'Location', Location);
+Object.defineProperty(G, 'location', { get: () => LOC, set: (v) => go(v), configurable: false, enumerable: true });
+
+// ------------------------------------------------------- history
+let historyState = null;
+let historyLength = 1;
+class History {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+methods(History.prototype, {
+  pushState(state, title, url) {
+    historyState = state === undefined ? null : structuredClone(state);
+    historyLength++;
+    if (url !== undefined && url !== null) N.setUrl(String(url));
+  },
+  replaceState(state, title, url) {
+    historyState = state === undefined ? null : structuredClone(state);
+    if (url !== undefined && url !== null) N.setUrl(String(url));
+  },
+  back() {}, forward() {}, go() {},
+});
+accessor(History.prototype, 'state', () => historyState);
+accessor(History.prototype, 'length', () => historyLength);
+accessor(History.prototype, 'scrollRestoration', () => 'auto', () => {});
+hidden(G, 'History', History);
+hidden(G, 'history', Object.create(History.prototype));
+
+// ---------------------------------------------------- navigator, screen
+const NAV = {
+  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1',
+  appVersion: '5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1',
+  appName: 'Netscape', appCodeName: 'Mozilla', product: 'Gecko', productSub: '20030107', vendor: '', vendorSub: '',
+  platform: 'Win32', language: 'pt-BR', languages: Object.freeze(['pt-BR', 'pt', 'en-US', 'en']),
+  cookieEnabled: true, onLine: true, hardwareConcurrency: 8, deviceMemory: 8, maxTouchPoints: 0,
+  doNotTrack: null, webdriver: false, pdfViewerEnabled: false, plugins: [], mimeTypes: [],
+  javaEnabled() { return false; },
+  sendBeacon(url, data) {
+    try { G.fetch(url, { method: 'POST', body: data, keepalive: true }).catch(() => {}); } catch (e) {}
+    return true;
+  },
+  vibrate() { return false; },
+  registerProtocolHandler() {},
+  clipboard: { writeText() { return Promise.resolve(); }, readText() { return Promise.resolve(''); }, write() { return Promise.resolve(); }, read() { return Promise.resolve([]); } },
+  permissions: { query() { return Promise.resolve({ state: 'prompt', onchange: null, addEventListener() {} }); } },
+  storage: { estimate() { return Promise.resolve({ quota: 1 << 30, usage: 0 }); }, persist() { return Promise.resolve(false); }, persisted() { return Promise.resolve(false); } },
+  mediaSession: { metadata: null, playbackState: 'none', setActionHandler() {}, setPositionState() {} },
+  getGamepads() { return []; },
+  locks: { request(name, opts, cb) { cb = cb || opts; return Promise.resolve().then(() => cb({ name })); }, query() { return Promise.resolve({ held: [], pending: [] }); } },
+};
+class Navigator {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+hidden(G, 'Navigator', Navigator);
+hidden(G, 'navigator', Object.setPrototypeOf(NAV, Navigator.prototype));
+hidden(G, 'clientInformation', NAV);
+hidden(G, 'screen', {
+  width: 1920, height: 1080, availWidth: 1920, availHeight: 1040, availLeft: 0, availTop: 0,
+  colorDepth: 24, pixelDepth: 24, isExtended: false,
+  orientation: Object.assign(new EventTarget(), { type: 'landscape-primary', angle: 0, onchange: null, lock() { return Promise.reject(new DOMException('', 'NotSupportedError')); }, unlock() {} }),
+});
+hidden(G, 'visualViewport', Object.assign(new EventTarget(), {
+  get width() { return G.innerWidth; }, get height() { return G.innerHeight; }, scale: 1, offsetLeft: 0, offsetTop: 0,
+  get pageLeft() { return 0; }, get pageTop() { return G.scrollY; }, onresize: null, onscroll: null,
+}));
