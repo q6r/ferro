@@ -1462,3 +1462,45 @@ impl Compiler {
 
     // ------------------------------------------------------------- script
 
+    fn script(&mut self, prog: &Program) -> CResult<Rc<Code>> {
+        let mut usage = Usage::default();
+        usage.stmts(&prog.body, 0, true);
+        self.fns.push(FnState::new(FnKind::Normal, prog.strict, usage.inner, true));
+        self.push_scope(ScopeKind::Script, 0);
+        let completion = self.alloc_reg();
+        self.f().completion = Some(completion);
+        let mut vars = Vec::new();
+        var_names(&prog.body, &mut vars, !prog.strict, false);
+        let mut lex = Vec::new();
+        lexical_decls(&prog.body, false, &mut lex);
+        let mut seen = HashSet::new();
+        for v in vars {
+            if seen.insert(v.clone()) {
+                self.declare(v.clone(), Decl::Var, false, true);
+                let n = self.konst(&v);
+                self.emit(Op::DeclareVar(n));
+            }
+        }
+        for (n, d) in lex {
+            self.declare(n.clone(), d, false, false);
+            let k = self.konst(&n);
+            self.emit(Op::DeclareLex(k, d == Decl::Const));
+        }
+        for s in &prog.body {
+            if let Stmt::Function(f) = s {
+                let name = f.name.clone().unwrap_or_else(|| "".into());
+                self.declare(name.clone(), Decl::Func, false, true);
+                let idx = self.function(f, None, None, false)?;
+                self.emit(Op::Closure(idx));
+                let n = self.konst(&name);
+                self.emit(Op::DeclareFunc(n));
+            }
+        }
+        self.f().max_regs = self.f().max_regs.max(1);
+        self.stmts(&prog.body)?;
+        self.emit(Op::GetReg(completion));
+        self.emit(Op::Return);
+        let st = self.fns.pop().unwrap();
+        Ok(Rc::new(self.finish(st, JsStr::empty(), 0, 0, 1, FnKind::Normal, false, false, "".into(), 1)))
+    }
+
