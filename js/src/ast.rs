@@ -246,3 +246,37 @@ pub enum Expr {
     Unsupported(&'static str),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FnKind {
+    Normal,
+    Arrow,
+    Method,
+    Getter,
+    Setter,
+    ClassConstructor,
+    DerivedConstructor,
+    /// Inicializador de campos de classe (corpo sintético).
+    FieldInit,
+}
+
+#[derive(Debug, Clone)]
+pub enum FnBody {
+    Block(Vec<Stmt>),
+    Expr(Box<Expr>),
+}
+
+#[derive(Debug)]
+pub struct FunctionDef {
+    pub name: Option<Name>,
+    pub params: Vec<Pattern>,
+    pub rest: Option<Pattern>,
+    pub body: FnBody,
+    pub kind: FnKind,
+    pub is_async: bool,
+    pub is_generator: bool,
+    pub strict: bool,
+    /// Texto-fonte (para Function.prototype.toString).
+    pub source: Rc<str>,
+    pub line: u32,
+}
+
