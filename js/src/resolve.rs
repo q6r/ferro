@@ -52,3 +52,39 @@ impl Resolver {
         }
     }
 
+    fn strict(&self) -> bool {
+        *self.strict.last().unwrap_or(&false)
+    }
+
+    fn push(&mut self, key: usize, names: Vec<Name>) {
+        self.scopes.push(Scope {
+            key,
+            func: self.func,
+            names: names.into_iter().collect(),
+        });
+    }
+
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn refer(&mut self, n: &Name) {
+        for sc in self.scopes.iter().rev() {
+            if sc.names.contains(n) {
+                if sc.func < self.func {
+                    self.out.insert((sc.key, n.clone()));
+                }
+                return;
+            }
+        }
+        if let Some((ns, _)) = self.imports.get(n).cloned() {
+            self.refer(&ns);
+        }
+    }
+
+    pub fn program(&mut self, p: &Program) {
+        self.imports = p.imports.clone();
+        // nomes do topo do script são globais: não precisam de análise
+        self.stmts(&p.body);
+    }
+
