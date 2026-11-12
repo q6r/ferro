@@ -985,3 +985,43 @@ fn after(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn replace_with(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let nodes = nodes_from_args(vm, a)?;
+    let Some(p) = read(vm, |h| h.page.doc.node(n).parent) else { return Ok(Value::Undefined) };
+    let next = read(vm, |h| {
+        let mut x = sibling(&h.page.doc, n, 1, false);
+        while let Some(c) = x {
+            if !nodes.contains(&c) {
+                break;
+            }
+            x = sibling(&h.page.doc, c, 1, false);
+        }
+        x
+    });
+    if !nodes.contains(&n) {
+        removing(vm, n);
+        write(vm, |h| h.page.doc.detach(n));
+    }
+    insert_all(vm, p, nodes, next)?;
+    Ok(Value::Undefined)
+}
+
+fn remove(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    removing(vm, n);
+    write(vm, |h| h.page.doc.detach(n));
+    Ok(Value::Undefined)
+}
+
+// ---------------------------------------------------------------- Element
+
+fn tag_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    node_name(vm, a)
+}
+
+fn local_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(read(vm, |h| h.page.doc.tag(n).map_or(Value::Null, s)))
+}
+
