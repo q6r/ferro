@@ -732,3 +732,56 @@ impl App {
         self.request_redraw();
     }
 
+    fn go(&mut self, delta: i32) {
+        let i = self.active;
+        let scroll_now = self.effective_scroll(i);
+        let tab = &mut self.tabs[i];
+        let ni = tab.index as i32 + delta;
+        if ni < 0 || ni >= tab.history.len() as i32 {
+            return;
+        }
+        tab.history[tab.index].scroll = scroll_now;
+        let old = tab.url().clone();
+        tab.index = ni as usize;
+        let new = tab.url().clone();
+        if tab.frame.is_some() && new.scheme() != "ferro" && same_document(&old, &new) {
+            tab.scroll = tab.entry().scroll;
+        } else {
+            self.load(i);
+        }
+        self.close_palette();
+        self.request_redraw();
+    }
+
+    fn reload(&mut self) {
+        let i = self.active;
+        let s = self.effective_scroll(i);
+        let tab = &mut self.tabs[i];
+        tab.history[tab.index].scroll = s;
+        self.load(i);
+        self.request_redraw();
+    }
+
+    fn stop(&mut self) {
+        let tab = &mut self.tabs[self.active];
+        tab.engine.stop();
+        tab.loading = false;
+        self.request_redraw();
+    }
+
+    fn open_internal(&mut self, url: &str) {
+        let url = Url::parse(url).unwrap();
+        let host = url.host_str().map(str::to_string);
+        if let Some(i) = self
+            .tabs
+            .iter()
+            .position(|t| t.url().scheme() == "ferro" && t.url().host_str() == host.as_deref())
+        {
+            self.activate(i);
+        } else if self.tab().kind() == Kind::NewTab {
+            self.navigate(self.active, url);
+        } else {
+            self.new_tab(Some(url), true);
+        }
+    }
+
