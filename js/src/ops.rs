@@ -166,3 +166,65 @@ impl Vm {
         Value::Object(self.new_array(v))
     }
 
+    pub fn make_closure(&mut self, code: Rc<Code>, env: Option<Env>, home: Option<ObjRef>) -> ObjRef {
+        let is_ctor = code.kind == FnKind::Normal && !code.is_async && !code.is_generator;
+        let name = Value::String(code.name.clone());
+        let length = code.length;
+        let fproto = match (code.is_async, code.is_generator) {
+            (true, true) => self.realm.async_generator_function_proto.clone(),
+            (true, false) => self.realm.async_function_proto.clone(),
+            (false, true) => self.realm.generator_function_proto.clone(),
+            _ => self.realm.function_proto.clone(),
+        };
+        let fo = ObjRef::new(Object::new(
+            Some(fproto),
+            Kind::Function(Func::Closure(Rc::new(Closure {
+                code,
+                env,
+                this: None,
+                new_target: None,
+                home,
+                fields: None,
+                gc: Default::default(),
+            }))),
+        ));
+        {
+            let mut b = fo.borrow_mut();
+            b.props.insert(PropKey::str("length"), readonly(Value::Number(length as f64)));
+            b.props.insert(PropKey::str("name"), readonly(name));
+        }
+        let is_gen = matches!(&fo.borrow().kind, Kind::Function(Func::Closure(c)) if c.code.is_generator);
+        if is_gen {
+            let is_async_gen = matches!(&fo.borrow().kind, Kind::Function(Func::Closure(c)) if c.code.is_async);
+            let base = if is_async_gen { self.realm.async_generator_proto.clone() } else { self.realm.generator_proto.clone() };
+            let proto = ObjRef::new(Object::new(Some(base), Kind::Ordinary));
+            fo.borrow_mut().props.insert(
+                PropKey::str("prototype"),
+                Property {
+                    slot: Slot::Data {
+                        value: Value::Object(proto),
+                        writable: true,
+                    },
+                    enumerable: false,
+                    configurable: false,
+                },
+            );
+        }
+        if is_ctor {
+            let proto = self.new_object();
+            proto.borrow_mut().props.insert(PropKey::str("constructor"), Property::hidden(Value::Object(fo.clone())));
+            fo.borrow_mut().props.insert(
+                PropKey::str("prototype"),
+                Property {
+                    slot: Slot::Data {
+                        value: Value::Object(proto),
+                        writable: true,
+                    },
+                    enumerable: false,
+                    configurable: false,
+                },
+            );
+        }
+        fo
+    }
+
