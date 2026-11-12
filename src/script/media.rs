@@ -63,3 +63,41 @@ fn ms_duration(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Number(d.unwrap_or(f64::NAN)))
 }
 
+fn ms_end(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let ms = id(vm, a, 0)?;
+    write(vm, |h| {
+        // sem duração definida, vale o fim do que foi carregado
+        let end = h.media.source_buffered(ms).last().map(|r| r.1);
+        if let Some(s) = h.media.sources.get_mut(&ms) {
+            s.ended = true;
+            if !s.duration.is_finite()
+                && let Some(e) = end
+            {
+                s.duration = e;
+            }
+        }
+    });
+    Ok(Value::Undefined)
+}
+
+fn ms_buffered(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let ms = id(vm, a, 0)?;
+    let r = write(vm, |h| h.media.source_buffered(ms));
+    Ok(ranges(vm, r))
+}
+
+fn ms_describe(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let ms = id(vm, a, 0)?;
+    Ok(Value::str(&write(vm, |h| h.media.describe(ms))))
+}
+
+/// `sbNew(fonte, tipo)` → id ou string de erro.
+fn sb_new(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let ms = id(vm, a, 0)?;
+    let mime = vm.to_rust_string(&a.arg(1))?;
+    Ok(match write(vm, |h| h.media.add_buffer(ms, &mime)) {
+        Ok(i) => Value::Number(i as f64),
+        Err(e) => Value::str(&e),
+    })
+}
+
