@@ -331,3 +331,81 @@ impl Fonts {
         self.face(ICONS).map(|_| ICONS)
     }
 
+    /// Face que realmente tem o caractere (com fallback).
+    fn resolve(&self, id: FontId, ch: char) -> FontId {
+        if let Some(f) = self.face(id)
+            && (f.lookup_glyph_index(ch) != 0 || ch.is_control())
+        {
+            return id;
+        }
+        if id >= WEB_FONT_BASE
+            && let Some(sib) = web_sibling(id, ch)
+        {
+            return sib;
+        }
+        if ch.is_whitespace() && self.face(id).is_some() {
+            return id;
+        }
+        // emoji: a fonte colorida antes da de símbolos (que tem versões em preto)
+        if (ch as u32) >= 0x1F000 && self.face(EMOJI).is_some_and(|f| f.lookup_glyph_index(ch) != 0) {
+            return EMOJI;
+        }
+        (FALLBACK_START..self.faces.len())
+            .find(|&i| self.face(i).is_some_and(|f| f.lookup_glyph_index(ch) != 0))
+            .unwrap_or(id)
+    }
+
+    fn key(size: f32) -> u32 {
+        (size * 4.0).round() as u32
+    }
+
+    pub fn advance(&self, id: FontId, ch: char, size: f32) -> f32 {
+        // seletores de variação e ZWJ não ocupam espaço
+        if matches!(ch, '\u{FE00}'..='\u{FE0F}' | '\u{200D}' | '\u{200B}' | '\u{2060}') {
+            return 0.0;
+        }
+        let k = (id, ch, Self::key(size));
+        if let Some(a) = self.advances.borrow().get(&k) {
+            return *a;
+        }
+        let rid = self.resolve(id, ch);
+        let a = self.face(rid).map(|f| f.metrics(ch, size).advance_width).unwrap_or(size * 0.5);
+        self.advances.borrow_mut().insert(k, a);
+        a
+    }
+
+    pub fn measure(&self, id: FontId, size: f32, text: &str) -> f32 {
+        text.chars().map(|c| self.advance(id, c, size)).sum()
+    }
+
+    pub fn line_metrics(&self, id: FontId, size: f32) -> LineMetrics {
+        match self.face(id).and_then(|f| f.horizontal_line_metrics(size)) {
+            Some(m) => LineMetrics {
+                ascent: m.ascent,
+                descent: -m.descent,
+                normal: m.new_line_size,
+            },
+            None => LineMetrics {
+                ascent: size * 0.9,
+                descent: size * 0.25,
+                normal: size * 1.15,
+            },
+        }
+    }
+
+    /// Emoji colorido (camadas COLR), se a face que tem o caractere for colorida.
+    /// `emoji`: o caractere veio com U+FE0F (pede a versão emoji).
+    pub fn color_glyph(&self, id: FontId, ch: char, size: f32, emoji: bool) -> Option<std::rc::Rc<ColorGlyph>> {
+        if (ch as u32) < 0x2000 && !emoji {
+            return None;
+        }
+        let rid = if emoji && self.face(EMOJI).is_some_and(|f| f.lookup_glyph_index(ch) != 0) { EMOJI } else { self.resolve(id, ch) };
+        let k = (rid, ch, Self::key(size));
+        if let Some(g) = self.color_glyphs.borrow().get(&k) {
+            return g.clone();
+        }
+        let g = self.make_color_glyph(rid, ch, size).map(std::rc::Rc::new);
+        self.color_glyphs.borrow_mut().insert(k, g.clone());
+        g
+    }
+
