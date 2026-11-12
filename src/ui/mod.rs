@@ -315,3 +315,65 @@ pub struct App {
     started: Instant,
 }
 
+/// Abre a janela do navegador (ou, com `capture`, só gera a imagem).
+pub fn run(initial: Option<Url>, capture: Option<Capture>) -> Result<(), String> {
+    // cookies e localStorage do perfil (a captura não mexe no perfil)
+    if capture.is_none()
+        && let Some(dir) = crate::dados::default_dir()
+    {
+        crate::dados::enable(dir);
+    }
+    let event_loop = EventLoop::<UserEvent>::with_user_event()
+        .build()
+        .map_err(|e| e.to_string())?;
+    let config = load_config();
+    let mut app = App {
+        proxy: event_loop.create_proxy(),
+        window: None,
+        context: None,
+        surface: None,
+        surface_size: (0, 0),
+        canvas: Canvas::default(),
+        fonts: Fonts::system()?,
+        icons: IconCache::default(),
+        scale: 1.0,
+        zoom: 1.0,
+        theme: config.0,
+        layout: config.1,
+        panel_collapsed: false,
+        tabs: Vec::new(),
+        active: 0,
+        next_tab_id: 1,
+        next_nav: 0,
+        omni: TextField::default(),
+        palette_open: false,
+        palette_edited: false,
+        suggestions: Vec::new(),
+        suggestion: 0,
+        mods: ModifiersState::empty(),
+        mouse: (0.0, 0.0),
+        hits: Vec::new(),
+        hover: None,
+        hover_link: None,
+        cursor: CursorIcon::Default,
+        cursor_visible: true,
+        scrollbar: None,
+        drag_scroll: None,
+        history: Vec::new(),
+        clipboard: None,
+        initial,
+        last_title: String::new(),
+        tools: Default::default(),
+        toast: None,
+        fullscreen: None,
+        fs_scroll: 0.0,
+        select: None,
+        menu: None,
+        capture,
+        started: Instant::now(),
+    };
+    event_loop.run_app(&mut app).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------- configuração
+
