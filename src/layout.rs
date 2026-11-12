@@ -964,3 +964,73 @@ fn table_grid<'a>(doc: &Document, b: &'a LayoutBox) -> TableGrid<'a> {
     g
 }
 
+/// Um item flex durante o cálculo de tamanhos (eixo principal horizontal).
+struct FlexItem<'a> {
+    b: &'a LayoutBox,
+    margin: [f32; 4],
+    auto_l: bool,
+    auto_r: bool,
+    border: [f32; 4],
+    padding: [f32; 4],
+    extra: f32,
+    base: f32,
+    min: f32,
+    max: f32,
+    size: f32,
+}
+
+impl FlexItem<'_> {
+    fn outer(&self) -> f32 {
+        self.size + self.extra + self.margin[LEFT] + self.margin[RIGHT]
+    }
+}
+
+/// Item de grid já posicionado nas trilhas.
+struct GridItem<'a> {
+    b: &'a LayoutBox,
+    row: usize,
+    col: usize,
+    rspan: usize,
+    cspan: usize,
+}
+
+thread_local! {
+    /// Deslocamento de rolagem dos elementos roláveis (overflow auto/scroll).
+    static SCROLLS: std::cell::RefCell<HashMap<NodeId, (f32, f32)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Diz ao layout quanto cada elemento rolável está rolado.
+pub fn set_scroll_offsets(m: HashMap<NodeId, (f32, f32)>) {
+    SCROLLS.with(|s| *s.borrow_mut() = m);
+}
+
+/// Um elemento que rola por dentro: caixa de preenchimento (coordenadas do
+/// documento), rolagem atual e máxima.
+#[derive(Clone, Copy, Debug)]
+pub struct Scroller {
+    pub node: NodeId,
+    pub rect: Rect,
+    pub x: f32,
+    pub y: f32,
+    pub max_x: f32,
+    pub max_y: f32,
+    /// Dentro de um `position: fixed` (a caixa está em coordenadas da janela).
+    pub fixed: bool,
+}
+
+thread_local! {
+    /// Elemento com o foco (campo de texto ganha cursor e borda de foco).
+    static FOCUSED: std::cell::Cell<Option<NodeId>> = const { std::cell::Cell::new(None) };
+}
+
+/// Diz ao layout qual elemento tem o foco (a sessão da página chama antes de desenhar).
+pub fn set_focus(n: Option<NodeId>) {
+    FOCUSED.with(|f| f.set(n));
+}
+
+thread_local! {
+    /// SVGs embutidos já desenhados: (conteúdo, tamanho, cor) → imagem.
+    static INLINE_SVG: std::cell::RefCell<HashMap<(u64, u32, u32, u32), Option<Arc<ImageData>>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
