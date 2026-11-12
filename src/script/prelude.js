@@ -2542,3 +2542,52 @@ function clone(v, seen) {
   for (const k of Object.keys(v)) out[k] = clone(v[k], seen);
   return out;
 }
+hidden(G, 'structuredClone', function structuredClone(v) { return clone(v, new Map()); });
+
+// ------------------------------------------------- crypto
+let seed = (Date.now() ^ (N.now() * 1e6)) >>> 0 || 0x9e3779b9;
+function rand32() {
+  // xorshift32 misturado com Math.random (não é criptográfico!)
+  seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0;
+  return (seed ^ Math.floor(Math.random() * 0x100000000)) >>> 0;
+}
+hidden(G, 'crypto', {
+  getRandomValues(arr) {
+    if (!ArrayBuffer.isView(arr)) throw new TypeError("Failed to execute 'getRandomValues' on 'Crypto': parameter 1 is not of type 'ArrayBufferView'.");
+    const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = rand32() & 255;
+    return arr;
+  },
+  randomUUID() {
+    const b = G.crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  },
+  subtle: {},
+});
+
+// ------------------------------------------------- texto
+class TextEncoder {
+  get encoding() { return 'utf-8'; }
+  encode(s = '') { return N.utf8Encode(String(s)); }
+  encodeInto(s, dest) {
+    const b = N.utf8Encode(String(s));
+    const n = Math.min(b.length, dest.length);
+    dest.set(b.subarray(0, n));
+    return { read: String(s).length, written: n };
+  }
+}
+class TextDecoder {
+  constructor(label = 'utf-8', opts = {}) {
+    this.encoding = String(label).toLowerCase().replace(/^utf8$/, 'utf-8');
+    this.fatal = !!opts.fatal;
+    this.ignoreBOM = !!opts.ignoreBOM;
+  }
+  decode(buf) { return buf === undefined ? '' : N.utf8Decode(buf, this.encoding); }
+}
+hidden(G, 'TextEncoder', TextEncoder);
+hidden(G, 'TextDecoder', TextDecoder);
+
+// ------------------------------------------------- URL e URLSearchParams
+const URLS = new WeakMap();
