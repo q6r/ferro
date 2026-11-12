@@ -228,3 +228,47 @@ fn graph_ready(h: &Host, root: &Url) -> Option<Result<(), ()>> {
     Some(if failed { Err(()) } else { Ok(()) })
 }
 
+/// Roda o módulo (e antes as dependências). Devolve a promessa do módulo.
+fn evaluate(vm: &mut Vm, url: &Url) -> R {
+    let st = write(vm, |h| {
+        let r = h.modules.recs.get_mut(url)?;
+        Some(match &r.state {
+            State::Ready { .. } => std::mem::replace(&mut r.state, State::Evaluating),
+            State::Evaluated(p) => State::Evaluated(p.clone()),
+            State::Errored(e) => State::Errored(e.clone()),
+            State::Failed(m) => State::Failed(m.clone()),
+            State::Evaluating => State::Evaluating,
+            State::Fetching => State::Fetching,
+        })
+    });
+    let (func, deps) = match st {
+        Some(State::Ready { func, deps }) => (func, deps),
+        Some(State::Evaluated(p)) => return Ok(p),
+        Some(State::Errored(e)) => return Err(e),
+        Some(State::Failed(m)) => return Err(vm.type_error(m)),
+        Some(State::Evaluating) => return Ok(Value::Undefined),
+        _ => return Err(vm.type_error(format!("módulo não carregado: {url}"))),
+    };
+    let mut args = vec![read(vm, |h| h.modules.recs[url].ns.clone())];
+    for d in &deps {
+        if let Err(e) = evaluate(vm, d) {
+            set_state(vm, url, State::Errored(e.clone()));
+            return Err(e);
+        }
+        args.push(read(vm, |h| h.modules.recs[d].ns.clone()));
+    }
+    let meta = hook(vm, "importMeta", vec![Value::str(url.as_str())]);
+    args.push(meta);
+    match vm.call(&func, Value::Undefined, args) {
+        Ok(p) => {
+            vm.run_microtasks();
+            set_state(vm, url, State::Evaluated(p.clone()));
+            Ok(p)
+        }
+        Err(e) => {
+            set_state(vm, url, State::Errored(e.clone()));
+            Err(e)
+        }
+    }
+}
+
