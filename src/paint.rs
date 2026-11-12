@@ -96,3 +96,47 @@ pub enum DisplayItem {
     Hit { rect: Rect, node: usize },
 }
 
+/// Coordenadas CSS → pixels do dispositivo: `p * scale + d`.
+#[derive(Clone, Copy, Debug)]
+pub struct Transform {
+    pub scale: f32,
+    pub dx: f32,
+    pub dy: f32,
+}
+
+impl Transform {
+    pub const IDENTITY: Transform = Transform {
+        scale: 1.0,
+        dx: 0.0,
+        dy: 0.0,
+    };
+
+    pub fn rect(&self, r: Rect) -> Rect {
+        Rect {
+            x: r.x * self.scale + self.dx,
+            y: r.y * self.scale + self.dy,
+            w: r.w * self.scale,
+            h: r.h * self.scale,
+        }
+    }
+}
+
+/// Retângulo inteiro [x0, x1) × [y0, y1) em pixels.
+#[derive(Clone, Copy)]
+struct Clip {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
+impl Clip {
+    fn intersect(self, o: Clip) -> Clip {
+        Clip {
+            x0: self.x0.max(o.x0),
+            y0: self.y0.max(o.y0),
+            x1: self.x1.min(o.x1),
+            y1: self.y1.min(o.y1),
+        }
+    }
+
