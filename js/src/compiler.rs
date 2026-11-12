@@ -1235,3 +1235,46 @@ impl Compiler {
         loc
     }
 
+    /// A declaração `name` do escopo atual é usada por alguma função interna?
+    fn is_captured(&self, name: &Name) -> bool {
+        let key = self.fr().scopes.last().map_or(0, |s| s.key);
+        self.captures.contains(&(key, name.clone()))
+    }
+
+    /// Abre o ambiente do escopo atual se ele tiver variáveis capturadas, e
+    /// zera os registradores léxicos (podem ter sobras de um bloco anterior).
+    fn open_env(&mut self) {
+        let (has, size, regs) = {
+            let sc = self.fr().scopes.last().unwrap();
+            let regs: Vec<u32> = if sc.kind == ScopeKind::Function {
+                Vec::new()
+            } else {
+                sc.vars
+                    .iter()
+                    .filter(|v| matches!(v.decl, Decl::Let | Decl::Const | Decl::Class | Decl::ClassInner))
+                    .filter_map(|v| match v.loc {
+                        Loc::Reg(r) => Some(r),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            (sc.has_env, sc.env_size, regs)
+        };
+        if has {
+            self.emit(Op::PushEnv(size));
+            self.f().env_depth += 1;
+        }
+        for r in regs {
+            self.emit(Op::ClearReg(r));
+        }
+    }
+
+    fn pop_scope(&mut self) {
+        let sc = self.f().scopes.pop().unwrap();
+        if sc.has_env {
+            self.emit(Op::PopEnv);
+            self.f().env_depth -= 1;
+        }
+        self.f().reg_top = sc.reg_base;
+    }
+
