@@ -532,3 +532,56 @@ fn includes(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(false))
 }
 
+fn index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let start = rel_index(vm, &a.arg(1), len, 0)?;
+    let target = a.arg(0);
+    if let Kind::Array(v) = &o.borrow().kind {
+        let pos = v.iter().enumerate().skip(start).find(|(_, x)| strict_equals(x, &target) && !matches!(x, Value::Empty));
+        return Ok(Value::Number(pos.map_or(-1.0, |(i, _)| i as f64)));
+    }
+    for i in start..len {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            if strict_equals(&v, &target) {
+                return Ok(Value::Number(i as f64));
+            }
+        }
+    }
+    Ok(Value::Number(-1.0))
+}
+
+fn last_index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    if len == 0 {
+        return Ok(Value::Number(-1.0));
+    }
+    let start = if a.args.len() > 1 {
+        let n = vm.to_integer(&a.arg(1))?;
+        if n < 0.0 {
+            let k = len as f64 + n;
+            if k < 0.0 {
+                return Ok(Value::Number(-1.0));
+            }
+            k as usize
+        } else {
+            (n as usize).min(len - 1)
+        }
+    } else {
+        len - 1
+    };
+    let target = a.arg(0);
+    for i in (0..=start).rev() {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            if strict_equals(&v, &target) {
+                return Ok(Value::Number(i as f64));
+            }
+        }
+    }
+    Ok(Value::Number(-1.0))
+}
+
+thread_local! {
