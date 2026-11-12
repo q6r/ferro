@@ -102,3 +102,40 @@ impl ObjRef {
 }
 
 impl PartialEq for ObjRef {
+    fn eq(&self, other: &ObjRef) -> bool {
+        self.ptr_eq(other)
+    }
+}
+
+impl Eq for ObjRef {}
+
+impl Hash for ObjRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id().hash(state)
+    }
+}
+
+pub struct SymData {
+    pub description: Option<JsStr>,
+    /// Nome privado de classe (`#x`): invisível para reflexão.
+    pub private: bool,
+}
+
+#[derive(Clone)]
+pub struct Sym(pub Rc<SymData>);
+
+impl Sym {
+    pub fn new(description: Option<JsStr>) -> Sym {
+        Sym(Rc::new(SymData {
+            description,
+            private: false,
+        }))
+    }
+
+    pub fn new_private(description: JsStr) -> Sym {
+        Sym(Rc::new(SymData {
+            description: Some(description),
+            private: true,
+        }))
+    }
+
