@@ -140,3 +140,69 @@ impl Clip {
         }
     }
 
+    fn from_rect(r: Rect) -> Clip {
+        Clip {
+            x0: r.x.floor() as i32,
+            y0: r.y.floor() as i32,
+            x1: (r.x + r.w).ceil() as i32,
+            y1: (r.y + r.h).ceil() as i32,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.x0 >= self.x1 || self.y0 >= self.y1
+    }
+}
+
+/// Distância (com sinal) do ponto à borda de um retângulo arredondado.
+#[inline]
+fn rr_sdf(px: f32, py: f32, r: Rect, rad: f32) -> f32 {
+    let qx = (px - (r.x + r.w / 2.0)).abs() - (r.w / 2.0 - rad);
+    let qy = (py - (r.y + r.h / 2.0)).abs() - (r.h / 2.0 - rad);
+    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
+    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - rad
+}
+
+#[inline]
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color {
+        r: l(a.r, b.r),
+        g: l(a.g, b.g),
+        b: l(a.b, b.b),
+        a: l(a.a, b.a),
+    }
+}
+
+#[inline]
+fn pack(c: Color) -> u32 {
+    (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
+}
+
+#[inline]
+fn mix(dst: u32, r: u32, g: u32, b: u32, a: u32) -> u32 {
+    let inv = 255 - a;
+    let dr = (dst >> 16) & 0xff;
+    let dg = (dst >> 8) & 0xff;
+    let db = dst & 0xff;
+    let nr = (r * a + dr * inv + 127) / 255;
+    let ng = (g * a + dg * inv + 127) / 255;
+    let nb = (b * a + db * inv + 127) / 255;
+    nr << 16 | ng << 8 | nb
+}
+
+#[derive(Default)]
+pub struct Canvas {
+    pub width: usize,
+    pub height: usize,
+    /// Um u32 por pixel, 0x00RRGGBB (o formato que a janela espera).
+    pub pixels: Vec<u32>,
+    /// Quadro atual de cada `<video>` (pelo nó).
+    pub videos: std::collections::HashMap<usize, Arc<ImageData>>,
+    /// Rolagem atual em pixels do dispositivo: os trechos `fixed` são
+    /// pintados como se ela fosse zero.
+    pub fixed_shift: f32,
+    /// `<video controls>` parados: ganham o botão de tocar por cima.
+    pub paused: std::collections::HashSet<usize>,
+}
+
