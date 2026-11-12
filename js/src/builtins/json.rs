@@ -434,3 +434,57 @@ fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent:
     }))
 }
 
+fn stringify(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut ctx = Ctx {
+        replacer: None,
+        allow: None,
+        gap: String::new(),
+        stack: Vec::new(),
+    };
+    let r = a.arg(1);
+    if r.is_callable() {
+        ctx.replacer = Some(r);
+    } else if let Value::Object(ro) = &r
+        && matches!(ro.borrow().kind, Kind::Array(_))
+    {
+        let mut list: Vec<PropKey> = Vec::new();
+        for item in vm.iterate_to_vec(&r)? {
+            let k = match &item {
+                Value::String(_) | Value::Number(_) => Some(vm.to_property_key(&item)?),
+                Value::Object(o) if matches!(o.borrow().kind, Kind::Number(_) | Kind::String(_)) => {
+                    let s = vm.to_string(&item)?;
+                    Some(PropKey::Str(s))
+                }
+                _ => None,
+            };
+            if let Some(k) = k
+                && !list.contains(&k)
+            {
+                list.push(k);
+            }
+        }
+        ctx.allow = Some(list);
+    }
+    let mut space = a.arg(2);
+    if let Value::Object(o) = &space {
+        let k = match &o.borrow().kind {
+            Kind::Number(n) => Some(Value::Number(*n)),
+            Kind::String(s) => Some(Value::String(s.clone())),
+            _ => None,
+        };
+        if let Some(k) = k {
+            space = k;
+        }
+    }
+    ctx.gap = match &space {
+        Value::Number(n) => " ".repeat(n.clamp(0.0, 10.0) as usize),
+        Value::String(s) => s.to_rust().chars().take(10).collect(),
+        _ => String::new(),
+    };
+    let root = vm.new_object();
+    vm.define_data(&root, PropKey::str(""), a.arg(0));
+    match serialize(vm, &mut ctx, &root, &PropKey::str(""), "")? {
+        Some(s) => Ok(Value::String(JsStr::from_units(s))),
+        None => Ok(Value::Undefined),
+    }
+}
