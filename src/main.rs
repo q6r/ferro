@@ -350,3 +350,70 @@ fn settle(session: &mut ferro::script::Session, a: &Args, budget: std::time::Dur
     }
 }
 
+/// Uma ação de `FERRO_ACOES` ("clique 640 245", "digita texto", "tecla Enter",
+/// "espera 2000", "foco seletor", "js código", "mouse x y"). Devolve a navegação pedida.
+fn act(session: &mut ferro::script::Session, a: &Args, action: &str) -> Option<ferro::script::Nav> {
+    let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
+    log(format!("ação: {action}"));
+    let nav = match verb {
+        "clique" => {
+            let n: Vec<f32> = rest.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+            if n.len() == 2 {
+                let _ = session.render();
+                session.click(n[0], n[1])
+            } else {
+                None
+            }
+        }
+        "mouse" => {
+            let n: Vec<f32> = rest.split_whitespace().filter_map(|v| v.parse().ok()).collect();
+            if n.len() == 2 {
+                let _ = session.render();
+                let t = std::time::Instant::now();
+                let c = session.mouse_move(Some((n[0], n[1])));
+                let _ = session.render();
+                log(format!("mouse: ponteiro {c:?}, eventos + novo layout em {} ms", t.elapsed().as_millis()));
+            }
+            None
+        }
+        "digita" => {
+            for c in rest.chars() {
+                let t = c.to_string();
+                session.key(&t, Some(&t), false, false, false, false);
+            }
+            None
+        }
+        "tecla" => {
+            session.key(rest.trim(), None, false, false, false, false);
+            None
+        }
+        "foco" => {
+            let code = format!("document.querySelector({:?}).focus()", rest.trim());
+            if let Err(e) = session.js.eval(&code, "acao") {
+                log(session.js.error_text(&e));
+            }
+            None
+        }
+        "js" => {
+            match session.js.eval(rest, "acao") {
+                Ok(v) => log(format!("  = {}", session.js.inspect(&v))),
+                Err(e) => log(session.js.error_text(&e)),
+            }
+            None
+        }
+        "espera" => {
+            let ms: u64 = rest.trim().parse().unwrap_or(1000);
+            settle(session, a, std::time::Duration::from_millis(ms), false);
+            None
+        }
+        _ => {
+            log(format!("ação desconhecida: {verb}"));
+            None
+        }
+    };
+    nav.or_else(|| {
+        settle(session, a, std::time::Duration::from_millis(1500), false);
+        session.take_navigation()
+    })
+}
+
