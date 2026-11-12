@@ -607,3 +607,46 @@ fn test_integrity(o: &ObjRef, frozen: bool) -> bool {
     })
 }
 
+fn is_frozen(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(match a.arg(0) {
+        Value::Object(o) => test_integrity(&o, true),
+        _ => true,
+    }))
+}
+
+fn is_sealed(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(match a.arg(0) {
+        Value::Object(o) => test_integrity(&o, false),
+        _ => true,
+    }))
+}
+
+fn is_extensible(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(match a.arg(0) {
+        Value::Object(o) => vm.is_extensible(&o)?,
+        _ => false,
+    }))
+}
+
+fn is(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(same_value(&a.arg(0), &a.arg(1))))
+}
+
+fn from_entries(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = vm.new_object();
+    let items = vm.iterate_to_vec(&a.arg(0))?;
+    for item in items {
+        let k = vm.get_index(&item, &Value::Number(0.0))?;
+        let v = vm.get_index(&item, &Value::Number(1.0))?;
+        let key = vm.to_property_key(&k)?;
+        vm.define_data(&o, key, v);
+    }
+    Ok(Value::Object(o))
+}
+
+fn has_own(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = arg_obj(vm, a, 0)?;
+    let key = vm.to_property_key(&a.arg(1))?;
+    Ok(Value::Bool(vm.has_own(&o, &key)?))
+}
+
