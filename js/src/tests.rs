@@ -197,3 +197,43 @@ fn funcoes_this_bind() {
     );
 }
 
+#[test]
+fn colecoes_iteradores_simbolos() {
+    check(
+        r#"
+        const m = new Map([["a", 1], ["b", 2]]);
+        m.set("c", 3).delete("a");
+        console.log(m.size, m.get("b"), [...m.keys()], m);
+        const s = new Set([1, 2, 2, 3]);
+        console.log(s.size, s.has(2), [...s].join("-"), s);
+        const it = { from: 1, to: 3, [Symbol.iterator]() { let c = this.from, t = this.to; return { next: () => c <= t ? { value: c++, done: false } : { value: undefined, done: true } }; } };
+        console.log([...it], Array.from(it).length);
+        for (const [k, v] of m) console.log(k, v);
+        for (const ch of "aé😀") console.log(ch, ch.length);
+        const sym = Symbol("meu");
+        const o = { [sym]: 1, normal: 2 };
+        console.log(sym.toString(), sym.description, Object.keys(o), o[sym], Symbol.for("x") === Symbol.for("x"));
+        const wm = new WeakMap(); const k = {}; wm.set(k, "v"); console.log(wm.get(k), wm.has({}));
+        "#,
+        "2 2 [ 'b', 'c' ] Map(2) { 'b' => 2, 'c' => 3 }\n3 true 1-2-3 Set(3) { 1, 2, 3 }\n[ 1, 2, 3 ] 3\nb 2\nc 3\na 1\né 1\n😀 2\nSymbol(meu) meu [ 'normal' ] 1 true\nv false",
+    );
+}
+
+#[test]
+fn metodos_de_texto_e_numero() {
+    check(
+        r#"
+        console.log("Olá Mundo".toUpperCase(), "ABC".toLowerCase(), "  x ".trim() + "|", "a-b-c".split("-"), "abc".split(""));
+        console.log("abcdef".slice(1, -1), "abcdef".substring(4, 1), "abc".padStart(5, "*"), "ab".repeat(3), "a,b".replace(",", ";"));
+        console.log("x".charCodeAt(0), String.fromCharCode(72, 105), "abc".indexOf("c"), "aaa".lastIndexOf("a"), "abc".includes("bc"));
+        console.log((255).toString(16), (3.14159).toFixed(2), (1234.5678).toPrecision(6), (0.000001234).toExponential(2), (1234567.891).toLocaleString());
+        console.log(parseInt("42px"), parseFloat("3.5e2x"), Number("0b101"), Number.isInteger(5.0), isNaN("abc"), Number.MAX_SAFE_INTEGER);
+        console.log(Math.round(2.5), Math.round(-2.5), Math.floor(-1.5), Math.trunc(-1.5), Math.sign(-3), Math.abs(-7), Math.hypot(3, 4));
+        console.log("a-b-c".replaceAll("-", "+"), "Hello".startsWith("He"), "Hello".endsWith("lo"), `linha1
+linha2`.split("\n").length);
+        console.log(encodeURIComponent("a b&c/é"), decodeURIComponent("a%20b%C3%A9"), escape("a b"));
+        "#,
+        "OLÁ MUNDO abc x| [ 'a', 'b', 'c' ] [ 'a', 'b', 'c' ]\nbcde bcd **abc ababab a;b\n120 Hi 2 2 true\nff 3.14 1234.57 1.23e-6 1,234,567.891\n42 350 5 true true 9007199254740991\n3 -2 -2 -1 -1 7 5\na+b+c true true 2\na%20b%26c%2F%C3%A9 a bé a%20b",
+    );
+}
+
