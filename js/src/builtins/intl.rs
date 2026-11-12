@@ -1831,3 +1831,47 @@ pub fn collate(a: &str, b: &str, numeric: bool, sensitivity: &str) -> Ordering {
     a.cmp(b)
 }
 
+fn collator_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let numeric = opt_bool(vm, &a.arg(1), "numeric")?.unwrap_or(false);
+    let sensitivity = opt_str(vm, &a.arg(1), "sensitivity", &["base", "accent", "case", "variant"])?.unwrap_or_else(|| "variant".into());
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::Collator { locale, numeric, sensitivity })
+}
+
+fn collator_compare_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    with_intl(vm, &a.this, |x| matches!(x, IntlObj::Collator { .. }).then_some(()))?;
+    let f = vm.realm.native("", 2, collator_bound_compare);
+    set_native_data(&f, a.this.clone());
+    Ok(Value::Object(f))
+}
+
+fn collator_bound_compare(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let this = native_data(&a.callee);
+    let (numeric, sens) = with_intl(vm, &this, |x| match x {
+        IntlObj::Collator { numeric, sensitivity, .. } => Some((*numeric, sensitivity.clone())),
+        _ => None,
+    })?;
+    let x = vm.to_rust_string(&a.arg(0))?;
+    let y = vm.to_rust_string(&a.arg(1))?;
+    Ok(Value::Number(match collate(&x, &y, numeric, &sens) {
+        Ordering::Less => -1.0,
+        Ordering::Equal => 0.0,
+        Ordering::Greater => 1.0,
+    }))
+}
+
+// ------------------------------------------------------------ segmentos
+
+fn segmenter_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.new_target.is_none() {
+        return Err(vm.type_error("Constructor Intl.Segmenter requires 'new'"));
+    }
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let granularity = opt_str(vm, &a.arg(1), "granularity", &["grapheme", "word", "sentence"])?.unwrap_or_else(|| "grapheme".into());
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::Segmenter { locale, granularity })
+}
+
+fn is_extend(c: char) -> bool {
+    matches!(c as u32, 0x300..=0x36F | 0x200D | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0x20D0..=0x20FF)
+}
+
