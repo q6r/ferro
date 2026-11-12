@@ -134,3 +134,56 @@ impl Lexer {
         }
     }
 
+    /// Pula espaços e comentários; devolve se passou por uma quebra de linha.
+    fn skip_trivia(&mut self) -> Result<bool, LexError> {
+        let mut nl = false;
+        loop {
+            let c = self.peek();
+            if c == '\0' && self.pos >= self.src.len() {
+                return Ok(nl);
+            }
+            if is_line_term(c) {
+                if c == '\r' && self.peek_at(1) == '\n' {
+                    self.pos += 1;
+                }
+                self.pos += 1;
+                self.line += 1;
+                nl = true;
+            } else if c.is_whitespace() || c == '\u{FEFF}' {
+                self.pos += 1;
+            } else if c == '/' && self.peek_at(1) == '/' {
+                while self.pos < self.src.len() && !is_line_term(self.peek()) {
+                    self.pos += 1;
+                }
+            } else if c == '/' && self.peek_at(1) == '*' {
+                self.pos += 2;
+                loop {
+                    if self.pos >= self.src.len() {
+                        return Err(self.err("comentário sem fim"));
+                    }
+                    let d = self.peek();
+                    if d == '*' && self.peek_at(1) == '/' {
+                        self.pos += 2;
+                        break;
+                    }
+                    if is_line_term(d) {
+                        self.line += 1;
+                        nl = true;
+                    }
+                    self.pos += 1;
+                }
+            } else if c == '<' && self.peek_at(1) == '!' && self.peek_at(2) == '-' && self.peek_at(3) == '-' {
+                // comentário estilo HTML (legado)
+                while self.pos < self.src.len() && !is_line_term(self.peek()) {
+                    self.pos += 1;
+                }
+            } else if c == '#' && self.peek_at(1) == '!' && self.pos == 0 {
+                while self.pos < self.src.len() && !is_line_term(self.peek()) {
+                    self.pos += 1;
+                }
+            } else {
+                return Ok(nl);
+            }
+        }
+    }
+
