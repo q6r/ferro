@@ -1696,3 +1696,83 @@ impl App {
         self.request_redraw();
     }
 
+    /// Teclas com a busca na página aberta.
+    fn find_key(&mut self, ev: &KeyEvent, ctrl: bool, shift: bool, alt: bool) {
+        let f = &mut self.tools.find;
+        let mut changed = false;
+        match &ev.logical_key {
+            Key::Named(NamedKey::Enter) => return self.find_step(shift),
+            Key::Named(NamedKey::Escape) => return self.close_find(),
+            Key::Named(NamedKey::Backspace) => {
+                f.backspace(ctrl);
+                changed = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                f.delete(ctrl);
+                changed = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => f.left(shift, ctrl),
+            Key::Named(NamedKey::ArrowRight) => f.right(shift, ctrl),
+            Key::Character(c) if ctrl => match c.to_lowercase().as_str() {
+                "a" => f.select_all(),
+                "v" => {
+                    if let Some(text) = self.clipboard().and_then(|cb| cb.get_text().ok()) {
+                        let line = text.lines().next().unwrap_or("").to_string();
+                        self.tools.find.insert(&line);
+                        changed = true;
+                    }
+                }
+                _ => {}
+            },
+            _ => {
+                if !ctrl
+                    && !alt
+                    && let Some(t) = &ev.text
+                    && !t.chars().any(char::is_control)
+                {
+                    f.insert(t);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.tools.current = 0;
+            self.refresh_find(true);
+        }
+        self.request_redraw();
+    }
+
+    /// Entra/sai da tela cheia (F11 alterna).
+    fn toggle_fullscreen(&mut self, by: FullscreenBy) {
+        if self.fullscreen.is_some() {
+            self.set_fullscreen(None);
+        } else {
+            self.set_fullscreen(Some(by));
+        }
+    }
+
+    fn set_fullscreen(&mut self, by: Option<FullscreenBy>) {
+        let was = self.fullscreen;
+        if was == by {
+            return;
+        }
+        // saindo da tela cheia da página: avisa a página e volta a rolagem
+        if was == Some(FullscreenBy::Page) && by.is_none() {
+            let tab = self.tab();
+            tab.engine.exit_fullscreen(tab.nav);
+            let y = self.fs_scroll;
+            self.fullscreen = None;
+            self.scroll_to(y);
+        }
+        if by == Some(FullscreenBy::Page) {
+            self.fs_scroll = self.effective_scroll(self.active);
+            self.scroll_to(0.0);
+        }
+        self.fullscreen = by;
+        if let Some(w) = &self.window {
+            w.set_fullscreen(by.map(|_| winit::window::Fullscreen::Borderless(None)));
+        }
+        self.sync_viewport();
+        self.request_redraw();
+    }
+
