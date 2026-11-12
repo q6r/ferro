@@ -57,3 +57,43 @@ fn this_symbol(vm: &mut Vm, a: &CallArgs) -> Result<Sym, Value> {
     }
 }
 
+fn symbol_for(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let key = vm.to_string(&a.arg(0))?;
+    if let Some(s) = vm.symbol_registry.get(&key) {
+        return Ok(Value::Symbol(s.clone()));
+    }
+    let s = Sym::new(Some(key.clone()));
+    vm.symbol_registry.insert(key, s.clone());
+    Ok(Value::Symbol(s))
+}
+
+fn key_for(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Symbol(s) = a.arg(0) else {
+        let d = vm.describe(&a.arg(0));
+        return Err(vm.type_error(format!("{d} is not a symbol")));
+    };
+    for (k, v) in vm.symbol_registry.iter() {
+        if *v == s {
+            return Ok(Value::String(k.clone()));
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+pub fn symbol_descriptive(s: &Sym) -> String {
+    format!("Symbol({})", s.description().map(|d| d.to_rust()).unwrap_or_default())
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_symbol(vm, a)?;
+    Ok(Value::String(JsStr::new(&symbol_descriptive(&s))))
+}
+
+fn value_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Symbol(this_symbol(vm, a)?))
+}
+
+fn description(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_symbol(vm, a)?;
+    Ok(s.description().map(|d| Value::String(d.clone())).unwrap_or(Value::Undefined))
+}
