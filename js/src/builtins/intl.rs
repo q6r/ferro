@@ -1126,3 +1126,67 @@ fn unit_text(unit: &str, display: &str, v: f64) -> (String, bool) {
     }
 }
 
+pub fn format_number(o: &NumOpts, x: f64) -> String {
+    format_number_parts(o, x).into_iter().map(|(_, s)| s).collect()
+}
+
+fn nf_value(vm: &mut Vm, v: &Value) -> Result<f64, Value> {
+    match vm.to_numeric(v)? {
+        Value::BigInt(b) => Ok(b.to_f64()),
+        n => vm.to_number(&n),
+    }
+}
+
+fn nf_format_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    with_intl(vm, &a.this, |x| matches!(x, IntlObj::NumberFormat(_)).then_some(()))?;
+    let f = vm.realm.native("", 1, nf_bound_format);
+    set_native_data(&f, a.this.clone());
+    Ok(Value::Object(f))
+}
+
+fn nf_bound_format(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let this = native_data(&a.callee);
+    let o = with_intl(vm, &this, |x| match x {
+        IntlObj::NumberFormat(o) => Some(o.clone()),
+        _ => None,
+    })?;
+    let n = nf_value(vm, &a.arg(0))?;
+    Ok(Value::str(&format_number(&o, n)))
+}
+
+fn parts_to_array(vm: &mut Vm, parts: Vec<(&'static str, String)>) -> Value {
+    let mut out = Vec::new();
+    for (t, v) in parts {
+        let p = vm.new_object();
+        vm.define_data(&p, PropKey::str("type"), Value::str(t));
+        vm.define_data(&p, PropKey::str("value"), Value::str(&v));
+        out.push(Value::Object(p));
+    }
+    vm.array_value(out)
+}
+
+fn nf_format_to_parts(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = with_intl(vm, &a.this, |x| match x {
+        IntlObj::NumberFormat(o) => Some(o.clone()),
+        _ => None,
+    })?;
+    let n = nf_value(vm, &a.arg(0))?;
+    let parts = format_number_parts(&o, n);
+    Ok(parts_to_array(vm, parts))
+}
+
+/// Number.prototype.toLocaleString.
+pub fn number_to_locale_string(vm: &mut Vm, n: f64, locales: &Value, options: &Value) -> Result<String, Value> {
+    let locale = resolve_locale(vm, locales)?;
+    let o = make_num_opts(vm, locale, options)?;
+    Ok(format_number(&o, n))
+}
+
+// ----------------------------------------------------------------- datas
+
+fn date_format_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let opts = make_date_opts(vm, locale, &a.arg(1), "any", "date")?;
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::DateTimeFormat(opts))
+}
+
