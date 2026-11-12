@@ -823,3 +823,161 @@ impl App {
         self.request_redraw();
     }
 
+    fn on_update(&mut self, tab_id: u64, update: Update) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == tab_id) else { return };
+        if let Update::SelectPopup { nav, popup } = update {
+            if nav == self.tabs[i].nav && i == self.active {
+                let sel = popup.selected.max(0) as usize;
+                self.select = Some((nav, popup, sel, sel.saturating_sub(4)));
+                self.request_redraw();
+            }
+            return;
+        }
+        if let Update::Fullscreen { nav, on } = update {
+            if nav == self.tabs[i].nav && i == self.active {
+                if on {
+                    self.set_fullscreen(Some(FullscreenBy::Page));
+                } else if self.fullscreen == Some(FullscreenBy::Page) {
+                    // a página saiu sozinha: não precisa avisá-la de volta
+                    let y = self.fs_scroll;
+                    self.fullscreen = None;
+                    if let Some(w) = &self.window {
+                        w.set_fullscreen(None);
+                    }
+                    self.sync_viewport();
+                    self.scroll_to(y);
+                }
+            }
+            return;
+        }
+        if let Update::Downloaded { nav, keep, name, result } = update {
+            let tab = &mut self.tabs[i];
+            if nav != tab.nav {
+                return;
+            }
+            tab.loading = false;
+            tab.progress = 1.0;
+            match keep {
+                // a página anterior continua: desfaz a entrada no histórico
+                Some(k) => {
+                    if tab.index > 0 && tab.history.len() == tab.index + 1 {
+                        tab.history.pop();
+                        tab.index -= 1;
+                    }
+                    tab.nav = k;
+                }
+                None => {
+                    tab.error = Some(match &result {
+                        Ok(p) => format!("Arquivo baixado em {}", p.display()),
+                        Err(e) => format!("Não foi possível baixar {name}: {e}"),
+                    });
+                }
+            }
+            self.toast = Some(pagetools::Toast {
+                text: match &result {
+                    Ok(p) => format!("{name} baixado em {}", p.parent().map(|d| d.display().to_string()).unwrap_or_default()),
+                    Err(e) => format!("Falha ao baixar {name}: {e}"),
+                },
+                since: Instant::now(),
+            });
+            let proxy = self.proxy.clone();
+            // redesenha quando o aviso some
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(5100));
+                let _ = proxy.send_event(UserEvent::Redraw);
+            });
+            self.request_redraw();
+            return;
+        }
+        // o ponteiro muda sem redesenhar nada
+        if let Update::Cursor { nav, cursor } = update {
+            if nav == self.tabs[i].nav {
+                self.tabs[i].cursor = cursor;
+                if i == self.active {
+                    let (x, y) = self.mouse;
+                    self.update_hover(x, y);
+                }
+            }
+            return;
+        }
+        let mut remember = None;
+        let mut go_to = None;
+        let mut refind = false;
+        {
+            let tab = &mut self.tabs[i];
+            match update {
+                Update::Editing { nav, editing } if nav == tab.nav => tab.editing = editing,
+                Update::ScrollTo { nav, y } if nav == tab.nav => {
+                    tab.scroll = y;
+                }
+                Update::VideoFrames { nav, frames } if nav == tab.nav => {
+                    if let Some(f) = tab.frame.as_mut() {
+                        for (n, img) in frames {
+                            f.videos.insert(n, img);
+                        }
+                    }
+                }
+                Update::Navigate { nav, url, post } if nav == tab.nav => {
+                    if matches!(url.scheme(), "http" | "https" | "file" | "data") {
+                        tab.pending_post = post;
+                        go_to = Some(url);
+                    }
+                }
+                Update::Started { nav, .. } if nav == tab.nav => tab.progress = 0.3,
+                Update::Frame { nav, frame } if nav == tab.nav => {
+                    let first = std::mem::take(&mut tab.fresh);
+                    let complete = frame.complete;
+                    let entry = &mut tab.history[tab.index];
+                    let mut url = frame.url.clone();
+                    if url.fragment().is_none() {
+                        url.set_fragment(entry.url.fragment());
+                    }
+                    entry.url = url;
+                    entry.title = frame.title.clone();
+                    if first {
+                        remember = Some((entry.url.clone(), entry.title.clone()));
+                        tab.scroll = entry.scroll;
+                    }
+                    if let Some(frag) = tab.fragment.clone()
+                        && let Some(y) = anchor_y(&frame, &frag)
+                    {
+                        tab.scroll = y;
+                    }
+                    if complete {
+                        tab.fragment = None;
+                    }
+                    tab.loading = !complete;
+                    tab.progress = if complete { 1.0 } else { 0.75 };
+                    tab.error = None;
+                    tab.frame = Some(frame);
+                    refind = i == self.active && self.tools.find_open;
+                }
+                Update::Failed { nav, error, .. } if nav == tab.nav => {
+                    tab.loading = false;
+                    tab.frame = None;
+                    tab.error = Some(error);
+                }
+                _ => return, // resultado de uma navegação antiga
+            }
+        }
+        if let Some((u, t)) = remember {
+            self.remember(&u, &t);
+        }
+        if refind {
+            self.refresh_find(false);
+        }
+        if let Some(url) = go_to {
+            self.navigate(i, url);
+            return;
+        }
+        // a paleta aberta e ainda não editada mostra as abas como estão agora
+        if self.palette_open && !self.palette_edited {
+            let sel = self.suggestion;
+            self.refresh_suggestions();
+            self.suggestion = sel.min(self.suggestions.len().saturating_sub(1));
+        }
+        self.request_redraw();
+    }
+
+    // ------------------------------------------------------------- paleta
+
