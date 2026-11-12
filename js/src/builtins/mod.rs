@@ -209,3 +209,46 @@ impl Realm {
         realm
     }
 
+    pub fn native(&self, name: &str, len: u32, f: NativeFn) -> ObjRef {
+        native_fn(&self.function_proto, name, len, f, false)
+    }
+
+    /// Método não enumerável.
+    pub fn method(&self, target: &ObjRef, name: &str, len: u32, f: NativeFn) -> ObjRef {
+        let fo = self.native(name, len, f);
+        target.borrow_mut().props.insert(PropKey::str(name), Property::hidden(Value::Object(fo.clone())));
+        fo
+    }
+
+    pub fn method_sym(&self, target: &ObjRef, s: &Sym, name: &str, len: u32, f: NativeFn) -> ObjRef {
+        let fo = self.native(name, len, f);
+        target.borrow_mut().props.insert(PropKey::Sym(s.clone()), Property::hidden(Value::Object(fo.clone())));
+        fo
+    }
+
+    pub fn getter(&self, target: &ObjRef, name: &str, f: NativeFn) {
+        let fo = self.native(&format!("get {name}"), 0, f);
+        target.borrow_mut().props.insert(
+            PropKey::str(name),
+            Property {
+                slot: Slot::Accessor { get: Some(fo), set: None },
+                enumerable: false,
+                configurable: true,
+            },
+        );
+    }
+
+    /// Propriedade acessora (getter e/ou setter nativos), não enumerável.
+    pub fn accessor(&self, target: &ObjRef, name: &str, get: Option<NativeFn>, set: Option<NativeFn>) {
+        let g = get.map(|f| self.native(&format!("get {name}"), 0, f));
+        let s = set.map(|f| self.native(&format!("set {name}"), 1, f));
+        target.borrow_mut().props.insert(
+            PropKey::str(name),
+            Property {
+                slot: Slot::Accessor { get: g, set: s },
+                enumerable: true,
+                configurable: true,
+            },
+        );
+    }
+
