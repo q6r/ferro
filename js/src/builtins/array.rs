@@ -114,3 +114,56 @@ fn set_len(vm: &mut Vm, o: &ObjRef, n: usize) -> Result<(), Value> {
     vm.put(&Value::Object(o.clone()), PropKey::str("length"), Value::Number(n as f64), true)
 }
 
+fn del_i(vm: &mut Vm, o: &ObjRef, i: usize) -> Result<(), Value> {
+    vm.delete_value(&Value::Object(o.clone()), &index_key(i), true)?;
+    Ok(())
+}
+
+/// Array comum, mutável: dá para mexer direto no vetor.
+fn is_plain_array(o: &ObjRef) -> bool {
+    let b = o.borrow();
+    matches!(b.kind, Kind::Array(_)) && !b.frozen && b.extensible
+}
+
+fn callback(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<Value, Value> {
+    let f = a.arg(0);
+    if !f.is_callable() {
+        let d = vm.describe(&f);
+        return Err(vm.type_error(format!("{d} is not a function (Array.prototype.{what})")));
+    }
+    Ok(f)
+}
+
+// ------------------------------------------------------ construtor
+
+fn array_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let def = vm.realm.array_proto.clone();
+    let proto = vm.proto_from_ctor(a.new_target.as_ref(), &def)?;
+    let items = if a.args.len() == 1 {
+        match &a.args[0] {
+            Value::Number(n) => {
+                let len = *n as u32;
+                if len as f64 != *n {
+                    return Err(vm.range_error("Invalid array length"));
+                }
+                if len > 50_000_000 {
+                    return Err(vm.range_error("Invalid array length"));
+                }
+                vec![Value::Empty; len as usize]
+            }
+            v => vec![v.clone()],
+        }
+    } else {
+        a.args.clone()
+    };
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Array(items)))))
+}
+
+fn is_array(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(vm.is_array(&a.arg(0))?))
+}
+
+fn of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(vm.array_value(a.args.clone()))
+}
+
