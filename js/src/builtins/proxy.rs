@@ -176,3 +176,81 @@ impl Vm {
         }
     }
 
+    pub fn proxy_define(&mut self, o: &ObjRef, key: PropKey, d: Descriptor) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "defineProperty")?;
+        match self.trap(&h, "defineProperty")? {
+            Some(f) => {
+                let p = Property {
+                    slot: if d.is_accessor() {
+                        Slot::Accessor {
+                            get: d.get.clone().flatten(),
+                            set: d.set.clone().flatten(),
+                        }
+                    } else {
+                        Slot::Data {
+                            value: d.value.clone().unwrap_or_default(),
+                            writable: d.writable.unwrap_or(false),
+                        }
+                    },
+                    enumerable: d.enumerable.unwrap_or(false),
+                    configurable: d.configurable.unwrap_or(false),
+                };
+                let desc = from_property(self, &p);
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value(), desc])?;
+                Ok(truthy(&r))
+            }
+            None => define_own_property(self, &t, key, d),
+        }
+    }
+
+    pub fn proxy_get_proto(&mut self, o: &ObjRef) -> Result<Option<ObjRef>, Value> {
+        let (t, h) = self.proxy_parts(o, "getPrototypeOf")?;
+        match self.trap(&h, "getPrototypeOf")? {
+            Some(f) => match self.call(&f, Value::Object(h), vec![Value::Object(t)])? {
+                Value::Object(p) => Ok(Some(p)),
+                Value::Null => Ok(None),
+                _ => Err(self.type_error("'getPrototypeOf' on proxy: trap returned neither object nor null")),
+            },
+            None => self.get_prototype_of(&t),
+        }
+    }
+
+    pub fn proxy_set_proto(&mut self, o: &ObjRef, p: Option<ObjRef>) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "setPrototypeOf")?;
+        match self.trap(&h, "setPrototypeOf")? {
+            Some(f) => {
+                let pv = p.map(Value::Object).unwrap_or(Value::Null);
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), pv])?;
+                Ok(truthy(&r))
+            }
+            None => super::object::set_proto_checked(self, &t, p),
+        }
+    }
+
+    pub fn proxy_is_extensible(&mut self, o: &ObjRef) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "isExtensible")?;
+        match self.trap(&h, "isExtensible")? {
+            Some(f) => Ok(truthy(&self.call(&f, Value::Object(h), vec![Value::Object(t)])?)),
+            None => self.is_extensible(&t),
+        }
+    }
+
+    pub fn proxy_prevent_extensions(&mut self, o: &ObjRef) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "preventExtensions")?;
+        match self.trap(&h, "preventExtensions")? {
+            Some(f) => Ok(truthy(&self.call(&f, Value::Object(h), vec![Value::Object(t)])?)),
+            None => self.prevent_extensions(&t),
+        }
+    }
+
+    pub fn proxy_call(&mut self, o: &ObjRef, this: Value, args: Vec<Value>) -> Result<Value, Value> {
+        let (t, h) = self.proxy_parts(o, "apply")?;
+        match self.trap(&h, "apply")? {
+            Some(f) => {
+                let arr = self.array_value(args);
+                self.call(&f, Value::Object(h), vec![Value::Object(t), this, arr])
+            }
+            None => self.call_obj(&t, this, args),
+        }
+    }
+
