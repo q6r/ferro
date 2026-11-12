@@ -641,3 +641,52 @@ fn flatten(segs: &[Seg], map: impl Fn((f32, f32)) -> (f32, f32)) -> Vec<(Vec<(f3
     out
 }
 
+/// Cobertura do preenchimento por varredura (4 sub-linhas por pixel, cobertura
+/// horizontal exata).
+fn fill_coverage(polys: &[(Vec<(f32, f32)>, bool)], evenodd: bool, w: usize, h: usize, cov: &mut [f32]) {
+    const SUB: usize = 4;
+    let mut edges: Vec<(f32, f32, f32, f32)> = Vec::new();
+    for (pts, _) in polys {
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()]; // todo subcaminho é fechado para preencher
+            if a.1 != b.1 {
+                edges.push((a.0, a.1, b.0, b.1));
+            }
+        }
+    }
+    let mut xs: Vec<(f32, i32)> = Vec::new();
+    for py in 0..h {
+        for sub in 0..SUB {
+            let ys = py as f32 + (sub as f32 + 0.5) / SUB as f32;
+            xs.clear();
+            for &(x0, y0, x1, y1) in &edges {
+                let (lo, hi) = if y0 < y1 { (y0, y1) } else { (y1, y0) };
+                if ys >= lo && ys < hi {
+                    let x = x0 + (ys - y0) * (x1 - x0) / (y1 - y0);
+                    xs.push((x, if y1 > y0 { 1 } else { -1 }));
+                }
+            }
+            xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut wind = 0;
+            for k in 0..xs.len() {
+                wind += xs[k].1;
+                let inside = if evenodd { wind % 2 != 0 } else { wind != 0 };
+                if inside && k + 1 < xs.len() {
+                    let (xa, xb) = (xs[k].0.max(0.0), xs[k + 1].0.min(w as f32));
+                    if xb <= xa {
+                        continue;
+                    }
+                    let row = py * w;
+                    let mut ix = xa.floor() as usize;
+                    while (ix as f32) < xb && ix < w {
+                        let overlap = (xb.min(ix as f32 + 1.0) - xa.max(ix as f32)).max(0.0);
+                        cov[row + ix] += overlap / SUB as f32;
+                        ix += 1;
+                    }
+                }
+            }
+        }
+    }
+}
+
