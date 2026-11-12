@@ -1678,3 +1678,66 @@ impl Matcher<'_> {
     }
 }
 
+impl Program {
+    /// Tenta casar começando exatamente em `pos`. Devolve as capturas
+    /// (pares início/fim; NONE = grupo não participou).
+    fn matcher<'a>(&'a self, s: &'a [u16]) -> Matcher<'a> {
+        Matcher {
+            prog: self,
+            s,
+            unicode: self.flags.full_unicode(),
+            icase: self.flags.ignore_case,
+            steps: 0,
+            pool: Vec::new(),
+        }
+    }
+
+    pub fn match_at(&self, s: &[u16], pos: usize) -> Option<Vec<usize>> {
+        let mut m = self.matcher(s);
+        let mut regs = vec![NONE; self.nregs as usize];
+        m.run(0, pos, &mut regs)?;
+        regs.truncate(2 * (self.ngroups as usize + 1));
+        Some(regs)
+    }
+
+    /// Procura a partir de `from` (ou só em `from`, se `sticky`).
+    pub fn search(&self, s: &[u16], from: usize, sticky: bool) -> Option<Vec<usize>> {
+        if sticky {
+            return if from <= s.len() { self.match_at(s, from) } else { None };
+        }
+        if self.anchored {
+            return if from == 0 { self.match_at(s, 0) } else { None };
+        }
+        let unicode = self.flags.full_unicode();
+        let mut m = self.matcher(s);
+        let mut regs = vec![NONE; self.nregs as usize];
+        let mut pos = from;
+        while pos <= s.len() {
+            if let Some(f) = &self.first {
+                if pos >= s.len() {
+                    return None;
+                }
+                match f.find(s, pos) {
+                    Some(k) => pos = k,
+                    None => return None,
+                }
+            }
+            regs.fill(NONE);
+            if m.run(0, pos, &mut regs).is_some() {
+                regs.truncate(2 * (self.ngroups as usize + 1));
+                return Some(regs);
+            }
+            pos += if unicode
+                && pos + 1 < s.len()
+                && (0xD800..0xDC00).contains(&s[pos])
+                && (0xDC00..0xE000).contains(&s[pos + 1])
+            {
+                2
+            } else {
+                1
+            };
+        }
+        None
+    }
+}
+
