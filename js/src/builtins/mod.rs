@@ -105,3 +105,107 @@ fn noop(_: &mut Vm, _: &mut CallArgs) -> Result<Value, Value> {
 }
 
 impl Realm {
+    pub fn new() -> Realm {
+        let object_proto = plain(None);
+        let function_proto = ObjRef::new(Object::new(
+            Some(object_proto.clone()),
+            Kind::Function(Func::Native(Native {
+                f: noop,
+                ctor: false,
+                data: Value::Undefined,
+            })),
+        ));
+        let p = Some(&object_proto);
+        let error_proto = plain(p);
+        let iterator_proto = plain(p);
+        let ip = Some(&iterator_proto);
+        let async_iterator_proto = plain(p);
+        let typed_array_proto = plain(p);
+        let mk_native = |name: &str, len: u32, f: NativeFn| native_fn(&function_proto, name, len, f, false);
+        let array_iter_next = mk_native("next", 0, array::array_iter_next);
+        let array_values = mk_native("values", 0, array::values);
+        let function_has_instance = mk_native("[Symbol.hasInstance]", 1, function::has_instance);
+        let regexp_exec = regexp::exec_native(&function_proto);
+        let realm = Realm {
+            global: plain(p),
+            array_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Array(Vec::new()))),
+            string_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::String(JsStr::empty()))),
+            number_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Number(0.0))),
+            boolean_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Boolean(false))),
+            symbol_proto: plain(p),
+            type_error_proto: plain(Some(&error_proto)),
+            range_error_proto: plain(Some(&error_proto)),
+            reference_error_proto: plain(Some(&error_proto)),
+            syntax_error_proto: plain(Some(&error_proto)),
+            eval_error_proto: plain(Some(&error_proto)),
+            uri_error_proto: plain(Some(&error_proto)),
+            array_iter_proto: plain(ip),
+            map_proto: plain(p),
+            set_proto: plain(p),
+            weakmap_proto: plain(p),
+            weakset_proto: plain(p),
+            map_iter_proto: plain(ip),
+            set_iter_proto: plain(ip),
+            string_iter_proto: plain(ip),
+            regexp_proto: plain(p),
+            date_proto: plain(p),
+            generator_proto: plain(ip),
+            promise_proto: plain(p),
+            bigint_proto: plain(p),
+            array_buffer_proto: plain(p),
+            typed_protos: TaKind::ALL.iter().map(|_| plain(Some(&typed_array_proto))).collect(),
+            typed_array_proto,
+            data_view_proto: plain(p),
+            async_function_proto: plain(Some(&function_proto)),
+            generator_function_proto: plain(Some(&function_proto)),
+            async_generator_function_proto: plain(Some(&function_proto)),
+            async_generator_proto: plain(Some(&async_iterator_proto)),
+            async_iterator_proto,
+            array_iter_next,
+            array_values,
+            function_has_instance,
+            regexp_exec,
+            regexp_string_iter_proto: plain(ip),
+            sym_iterator: sym("Symbol.iterator"),
+            sym_async_iterator: sym("Symbol.asyncIterator"),
+            sym_has_instance: sym("Symbol.hasInstance"),
+            sym_to_primitive: sym("Symbol.toPrimitive"),
+            sym_to_string_tag: sym("Symbol.toStringTag"),
+            sym_species: sym("Symbol.species"),
+            sym_is_concat_spreadable: sym("Symbol.isConcatSpreadable"),
+            sym_unscopables: sym("Symbol.unscopables"),
+            sym_match: sym("Symbol.match"),
+            sym_match_all: sym("Symbol.matchAll"),
+            sym_replace: sym("Symbol.replace"),
+            sym_search: sym("Symbol.search"),
+            sym_split: sym("Symbol.split"),
+            error_proto,
+            iterator_proto,
+            object_proto,
+            function_proto,
+        };
+        object::install(&realm);
+        function::install(&realm);
+        array::install(&realm);
+        strings::install(&realm);
+        number::install(&realm);
+        symbol::install(&realm);
+        error::install(&realm);
+        json::install(&realm);
+        collections::install(&realm);
+        global::install(&realm);
+        console::install(&realm);
+        reflect::install(&realm);
+        date::install(&realm);
+        regexp::install(&realm);
+        generator::install(&realm);
+        promise::install(&realm);
+        async_generator::install(&realm);
+        timers::install(&realm);
+        bigint::install(&realm);
+        typed::install(&realm);
+        proxy::install(&realm);
+        intl::install(&realm);
+        realm
+    }
+
