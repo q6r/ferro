@@ -216,3 +216,109 @@ pub fn parse_selector_list(src: &str) -> Option<Vec<Selector>> {
     if out.is_empty() { None } else { Some(out) }
 }
 
+fn parse_selector(src: &str) -> Option<Selector> {
+    let chars: Vec<char> = src.chars().collect();
+    let mut i = 0;
+    let mut compounds = Vec::new();
+    let mut combinators = Vec::new();
+    let mut current = Compound::default();
+    let mut has_current = false;
+    let mut pending_comb: Option<Combinator> = None;
+    let mut pseudo_element: Option<PseudoElement> = None;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() || matches!(c, '>' | '+' | '~') {
+            // combinador
+            let mut comb = Combinator::Descendant;
+            while i < chars.len() && (chars[i].is_whitespace() || matches!(chars[i], '>' | '+' | '~')) {
+                match chars[i] {
+                    '>' => comb = Combinator::Child,
+                    '+' => comb = Combinator::NextSibling,
+                    '~' => comb = Combinator::SubsequentSibling,
+                    _ => {}
+                }
+                i += 1;
+            }
+            if has_current {
+                compounds.push(std::mem::take(&mut current));
+                has_current = false;
+                pending_comb = Some(comb);
+            } else if compounds.is_empty() {
+                // seletor relativo (ex.: "> a") não é suportado aqui
+                return None;
+            }
+            continue;
+        }
+        if let Some(comb) = pending_comb.take() {
+            combinators.push(comb);
+        }
+        has_current = true;
+        match c {
+            '*' => i += 1,
+            '#' => {
+                i += 1;
+                current.id = Some(read_ident(&chars, &mut i)?);
+            }
+            '.' => {
+                i += 1;
+                current.classes.push(read_ident(&chars, &mut i)?);
+            }
+            '[' => {
+                i += 1;
+                current.attrs.push(parse_attr_selector(&chars, &mut i)?);
+            }
+            ':' => {
+                i += 1;
+                let element = chars.get(i) == Some(&':');
+                if element {
+                    i += 1;
+                }
+                let name = read_ident(&chars, &mut i)?.to_ascii_lowercase();
+                let mut arg = None;
+                if chars.get(i) == Some(&'(') {
+                    i += 1;
+                    let start = i;
+                    let mut depth = 1;
+                    while i < chars.len() && depth > 0 {
+                        match chars[i] {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    if depth != 0 {
+                        return None;
+                    }
+                    arg = Some(chars[start..i - 1].iter().collect::<String>());
+                }
+                match name.as_str() {
+                    "before" if arg.is_none() => pseudo_element = Some(PseudoElement::Before),
+                    "after" if arg.is_none() => pseudo_element = Some(PseudoElement::After),
+                    _ if element || matches!(name.as_str(), "first-line" | "first-letter") => {
+                        current.pseudos.push(Pseudo::Never)
+                    }
+                    _ => current.pseudos.push(parse_pseudo(&name, arg.as_deref())),
+                }
+            }
+            _ if is_ident_start(c) => {
+                current.tag = Some(read_ident(&chars, &mut i)?.to_ascii_lowercase());
+            }
+            _ => return None,
+        }
+    }
+    if !has_current {
+        return None;
+    }
+    compounds.push(current);
+    if combinators.len() + 1 != compounds.len() {
+        return None;
+    }
+    Some(Selector {
+        compounds,
+        combinators,
+        pseudo_element,
+    })
+}
+
