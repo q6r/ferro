@@ -498,3 +498,37 @@ fn flat_map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(out))
 }
 
+fn for_each(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let f = callback(vm, a, "forEach")?;
+    let len = vm.length_of(&o)?;
+    let this_arg = a.arg(1);
+    for i in 0..len {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            vm.call(&f, this_arg.clone(), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?;
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+fn includes(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let start = rel_index(vm, &a.arg(1), len, 0)?;
+    let target = a.arg(0);
+    if let Kind::Array(v) = &o.borrow().kind {
+        return Ok(Value::Bool(v.iter().skip(start).any(|x| {
+            let x = if matches!(x, Value::Empty) { &Value::Undefined } else { x };
+            same_value_zero(x, &target)
+        })));
+    }
+    for i in start..len {
+        let v = get_i(vm, &o, i)?;
+        if same_value_zero(&v, &target) {
+            return Ok(Value::Bool(true));
+        }
+    }
+    Ok(Value::Bool(false))
+}
+
