@@ -2274,3 +2274,85 @@ impl<'a> Ctx<'a> {
 
     // ------------------------------------------------------------- flexbox
 
+    fn layout_flex(
+        &mut self,
+        b: &'a LayoutBox,
+        x: f32,
+        y: f32,
+        w: f32,
+        definite_h: Option<f32>,
+        inh: &Inherited,
+    ) -> (f32, Option<f32>) {
+        let mut kids: Vec<&'a LayoutBox> = Vec::new();
+        for c in &b.children {
+            if c.is_out_of_flow() {
+                self.add_pending(c, x, y, inh);
+            } else {
+                kids.push(c);
+            }
+        }
+        kids.sort_by_key(|c| c.style.order);
+        if kids.is_empty() {
+            return (0.0, None);
+        }
+        if b.style.flex_direction.is_column() {
+            self.flex_column(b, &kids, x, y, w, definite_h, inh)
+        } else {
+            self.flex_row(b, &kids, x, y, w, definite_h, inh)
+        }
+    }
+
+    fn flex_item(&mut self, c: &'a LayoutBox, cb_w: f32) -> FlexItem<'a> {
+        let cs = &c.style;
+        let anon = matches!(c.kind, BoxKind::Anonymous);
+        let (border, padding, margin) = if anon {
+            ([0.0; 4], [0.0; 4], [0.0; 4])
+        } else {
+            let m = |l: Len| l.resolve(cb_w).unwrap_or(0.0);
+            (
+                [cs.border(TOP), cs.border(RIGHT), cs.border(BOTTOM), cs.border(LEFT)],
+                cs.padding.map(|p| p.resolve_or_zero(cb_w).max(0.0)),
+                [m(cs.margin[TOP]), m(cs.margin[RIGHT]), m(cs.margin[BOTTOM]), m(cs.margin[LEFT])],
+            )
+        };
+        let extra = padding[LEFT] + padding[RIGHT] + border[LEFT] + border[RIGHT];
+        let content = |v: f32| if cs.border_box { (v - extra).max(0.0) } else { v };
+        let (imin, imax) = self.intrinsic(c);
+        let base = match cs.flex_basis {
+            FlexBasis::Len(l) => l.resolve(cb_w).map(content),
+            FlexBasis::Auto if !anon => cs.width.resolve(cb_w).map(content),
+            _ => None,
+        }
+        .unwrap_or((imax - extra).max(0.0));
+        // tamanho mínimo automático: o min-content (ou a largura dada, se menor)
+        let auto_min = if cs.overflow_clip {
+            0.0
+        } else {
+            let mc = (imin - extra).max(0.0);
+            match cs.width.resolve(cb_w) {
+                Some(wv) if !anon => mc.min(content(wv)),
+                _ => mc,
+            }
+        };
+        let min = if anon { auto_min } else { cs.min_width.resolve(cb_w).map(content).unwrap_or(auto_min) };
+        let max = if anon {
+            f32::INFINITY
+        } else {
+            cs.max_width.resolve(cb_w).map(content).unwrap_or(f32::INFINITY)
+        }
+        .max(min);
+        FlexItem {
+            b: c,
+            margin,
+            auto_l: !anon && cs.margin[LEFT] == Len::Auto,
+            auto_r: !anon && cs.margin[RIGHT] == Len::Auto,
+            border,
+            padding,
+            extra,
+            base,
+            min,
+            max,
+            size: base.clamp(min, max),
+        }
+    }
+
