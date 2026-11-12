@@ -196,3 +196,43 @@ impl Paint {
     }
 }
 
+/// Um pedaço de caminho (coordenadas do dispositivo).
+#[derive(Clone, Copy, Debug)]
+pub enum Cmd {
+    Move(f32, f32),
+    Line(f32, f32),
+    Cubic(f32, f32, f32, f32, f32, f32),
+    Close,
+}
+
+/// Lê o caminho no formato compacto que o prelúdio manda: 0 x y (move),
+/// 1 x y (linha), 2 c1x c1y c2x c2y x y (cúbica), 3 (fecha).
+pub fn decode_path(nums: &[f64]) -> Vec<Cmd> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    let n = |j: usize| nums.get(j).copied().unwrap_or(0.0) as f32;
+    while i < nums.len() {
+        match nums[i] as i32 {
+            0 => {
+                out.push(Cmd::Move(n(i + 1), n(i + 2)));
+                i += 3;
+            }
+            1 => {
+                out.push(Cmd::Line(n(i + 1), n(i + 2)));
+                i += 3;
+            }
+            2 => {
+                out.push(Cmd::Cubic(n(i + 1), n(i + 2), n(i + 3), n(i + 4), n(i + 5), n(i + 6)));
+                i += 7;
+            }
+            _ => {
+                out.push(Cmd::Close);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+type Poly = (Vec<(f32, f32)>, bool);
+
