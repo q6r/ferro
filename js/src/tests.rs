@@ -427,3 +427,44 @@ fn modulos_es() {
     );
 }
 
+/// Coletor de ciclos: ciclos sem dono somem; o que está em uso continua inteiro.
+#[test]
+fn coletor_de_ciclos() {
+    let out = std::thread::Builder::new()
+        .stack_size(512 << 20)
+        .spawn(|| {
+            let lines = Rc::new(RefCell::new(Vec::<String>::new()));
+            let mut e = Engine::new();
+            let sink = lines.clone();
+            e.set_output(move |_, s| sink.borrow_mut().push(s.to_string()));
+            let _ = crate::gc::collect();
+            let base = crate::gc::tracked();
+            e.eval(
+                r#"
+                globalThis.keep = { name: 'vivo' }; keep.self = keep;
+                globalThis.cls = (function () { let n = 0; const f = () => ++n; f.again = f; return f; })();
+                const m = new Map(); m.set(keep, cls); keep.m = m;
+                globalThis.wm = new WeakMap(); globalThis.chave = {}; wm.set(chave, { volta: chave });
+                for (let i = 0; i < 20000; i++) {
+                  const k = {}; wm.set(k, { k });                      // valor aponta a chave (efêmero)
+                  const a = {}; const b = { a }; a.b = b;               // ciclo simples
+                  const fn = function () { return fn; };              // função que se vê pelo ambiente
+                  const p = new Promise(r => { a.r = r; }); p.then(() => a); // promessa ↔ objeto
+                }"#,
+                "gc",
+            )
+            .ok();
+            let before = crate::gc::tracked();
+            let st = crate::gc::collect();
+            let after = crate::gc::tracked();
+            e.eval("console.log(keep.self.self.name, cls(), cls.again(), keep.m.get(keep) === cls, wm.get(chave).volta === chave)", "depois").ok();
+            assert!(before - base > 80_000, "antes {before} base {base}");
+            assert!(after - base < 2_000, "sobrou {} (liberou {})", after - base, st.freed);
+            let l = lines.borrow().join("\n");
+            l
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(out, "vivo 1 2 true true");
+}
