@@ -1136,3 +1136,57 @@ const minv = (m) => {
 };
 const fin = (...a) => a.every(Number.isFinite);
 
+class DOMMatrixReadOnly {
+  constructor(init) {
+    let v = [1, 0, 0, 1, 0, 0];
+    if (Array.isArray(init) && init.length === 6) v = init.map(Number);
+    else if (Array.isArray(init) && init.length === 16) v = [init[0], init[1], init[4], init[5], init[12], init[13]].map(Number);
+    else if (init && typeof init === 'object') v = [init.a ?? init.m11 ?? 1, init.b ?? init.m12 ?? 0, init.c ?? init.m21 ?? 0, init.d ?? init.m22 ?? 1, init.e ?? init.m41 ?? 0, init.f ?? init.m42 ?? 0];
+    [this.a, this.b, this.c, this.d, this.e, this.f] = v;
+  }
+  get m11() { return this.a; } get m12() { return this.b; } get m21() { return this.c; } get m22() { return this.d; }
+  get m41() { return this.e; } get m42() { return this.f; }
+  get m13() { return 0; } get m14() { return 0; } get m23() { return 0; } get m24() { return 0; }
+  get m31() { return 0; } get m32() { return 0; } get m33() { return 1; } get m34() { return 0; } get m43() { return 0; } get m44() { return 1; }
+  get is2D() { return true; }
+  get isIdentity() { return this.a === 1 && this.b === 0 && this.c === 0 && this.d === 1 && this.e === 0 && this.f === 0; }
+  _v() { return [this.a, this.b, this.c, this.d, this.e, this.f]; }
+  multiply(o) { return new DOMMatrix(mmul(this._v(), new DOMMatrix(o)._v())); }
+  translate(x = 0, y = 0) { return new DOMMatrix(mmul(this._v(), [1, 0, 0, 1, x, y])); }
+  scale(sx = 1, sy = sx) { return new DOMMatrix(mmul(this._v(), [sx, 0, 0, sy, 0, 0])); }
+  rotate(deg = 0) { const r = deg * Math.PI / 180, c = Math.cos(r), s = Math.sin(r); return new DOMMatrix(mmul(this._v(), [c, s, -s, c, 0, 0])); }
+  inverse() { return new DOMMatrix(minv(this._v()) || [NaN, NaN, NaN, NaN, NaN, NaN]); }
+  transformPoint(p = {}) { const x = p.x ?? 0, y = p.y ?? 0; return { x: this.a * x + this.c * y + this.e, y: this.b * x + this.d * y + this.f, z: 0, w: 1 }; }
+  toFloat32Array() { return new Float32Array([this.a, this.b, 0, 0, this.c, this.d, 0, 0, 0, 0, 1, 0, this.e, this.f, 0, 1]); }
+  toFloat64Array() { return new Float64Array(this.toFloat32Array()); }
+  toString() { return `matrix(${this._v().join(', ')})`; }
+  static fromMatrix(o) { return new this(o); }
+}
+class DOMMatrix extends DOMMatrixReadOnly {
+  multiplySelf(o) { [this.a, this.b, this.c, this.d, this.e, this.f] = this.multiply(o)._v(); return this; }
+  preMultiplySelf(o) { [this.a, this.b, this.c, this.d, this.e, this.f] = mmul(new DOMMatrix(o)._v(), this._v()); return this; }
+  translateSelf(x, y) { return this.multiplySelf(new DOMMatrix([1, 0, 0, 1, x || 0, y || 0])); }
+  scaleSelf(sx = 1, sy = sx) { return this.multiplySelf(new DOMMatrix([sx, 0, 0, sy, 0, 0])); }
+  rotateSelf(deg = 0) { [this.a, this.b, this.c, this.d, this.e, this.f] = this.rotate(deg)._v(); return this; }
+  invertSelf() { [this.a, this.b, this.c, this.d, this.e, this.f] = this.inverse()._v(); return this; }
+}
+hidden(G, 'DOMMatrixReadOnly', DOMMatrixReadOnly);
+hidden(G, 'DOMMatrix', DOMMatrix);
+if (!G.WebKitCSSMatrix) hidden(G, 'WebKitCSSMatrix', DOMMatrix);
+
+class CanvasGradient {
+  constructor(type, args) { this._type = type; this._args = args; this._stops = []; }
+  addColorStop(offset, color) {
+    offset = Number(offset);
+    if (!(offset >= 0 && offset <= 1)) throw new DOMException(`The provided value (${offset}) is outside the range (0.0, 1.0).`, 'IndexSizeError');
+    if (N.cvColor(String(color)) === null) throw new DOMException(`The value provided ('${color}') could not be parsed as a color.`, 'SyntaxError');
+    this._stops.push([offset, String(color)]);
+  }
+}
+class CanvasPattern {
+  constructor(img, rep) { this._type = 'pattern'; this._img = img; this._rep = rep; this._args = []; }
+  setTransform() {}
+}
+hidden(G, 'CanvasGradient', CanvasGradient);
+hidden(G, 'CanvasPattern', CanvasPattern);
+
