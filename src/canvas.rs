@@ -363,3 +363,56 @@ fn coverage(polys: &[Poly], evenodd: bool, bx: i32, by: i32, bw: usize, bh: usiz
     cov
 }
 
+fn signed_area(p: &[(f32, f32)]) -> f32 {
+    let mut a = 0.0;
+    for i in 0..p.len() {
+        let (x0, y0) = p[i];
+        let (x1, y1) = p[(i + 1) % p.len()];
+        a += x0 * y1 - x1 * y0;
+    }
+    a / 2.0
+}
+
+/// Polígono sempre no mesmo sentido (para a união por "nonzero" funcionar).
+fn oriented(mut p: Vec<(f32, f32)>) -> Poly {
+    if signed_area(&p) < 0.0 {
+        p.reverse();
+    }
+    (p, true)
+}
+
+fn circle(c: (f32, f32), r: f32) -> Poly {
+    let n = ((r * std::f32::consts::TAU / 2.0).ceil() as usize).clamp(8, 96);
+    oriented(
+        (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * std::f32::consts::TAU;
+                (c.0 + r * a.cos(), c.1 + r * a.sin())
+            })
+            .collect(),
+    )
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Cap {
+    Butt,
+    Round,
+    Square,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum Join {
+    Miter,
+    Round,
+    Bevel,
+}
+
+pub struct StrokeStyle {
+    pub width: f32,
+    pub cap: Cap,
+    pub join: Join,
+    pub miter_limit: f32,
+    pub dash: Vec<f32>,
+    pub dash_offset: f32,
+}
+
