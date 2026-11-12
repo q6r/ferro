@@ -3630,3 +3630,15 @@ const hooks = {
   disconnected,
   attributeChanged,
 };
+hidden(G, '__ferroHooks', hooks);
+// usados pelo código que o motor gera para os módulos
+hidden(G, '__ferroExport', (ns, name, get) => Object.defineProperty(ns, name, { get, enumerable: true }));
+hidden(G, '__ferroExportAll', (ns, src) => {
+  for (const k of Object.keys(src)) {
+    if (k !== 'default' && !Object.prototype.hasOwnProperty.call(ns, k)) {
+      Object.defineProperty(ns, k, { get: () => src[k], enumerable: true });
+    }
+  }
+});
+hidden(G, '__ferroImport', (spec, ref) => new Promise((res, rej) => N.importModule(String(spec), String(ref), res, rej)));
+})(__native);
