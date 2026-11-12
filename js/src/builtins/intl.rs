@@ -812,3 +812,59 @@ fn number_format_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     intl_obj(vm, &a.new_target, &a.callee, IntlObj::NumberFormat(opts))
 }
 
+pub fn make_num_opts(vm: &mut Vm, locale: String, o: &Value) -> Result<NumOpts, Value> {
+    let style = opt_str(vm, o, "style", &["decimal", "percent", "currency", "unit"])?.unwrap_or_else(|| "decimal".into());
+    let currency = opt_str(vm, o, "currency", &[])?.map(|c| c.to_ascii_uppercase());
+    if style == "currency" && currency.is_none() {
+        return Err(vm.type_error("Currency code is required with currency style."));
+    }
+    let currency_display = opt_str(vm, o, "currencyDisplay", &["symbol", "narrowSymbol", "code", "name"])?.unwrap_or_else(|| "symbol".into());
+    let unit = opt_str(vm, o, "unit", &[])?;
+    if style == "unit" && unit.is_none() {
+        return Err(vm.type_error("Unit is required with unit style."));
+    }
+    let unit_display = opt_str(vm, o, "unitDisplay", &["short", "narrow", "long"])?.unwrap_or_else(|| "short".into());
+    let notation = opt_str(vm, o, "notation", &["standard", "scientific", "engineering", "compact"])?.unwrap_or_else(|| "standard".into());
+    let compact_display = opt_str(vm, o, "compactDisplay", &["short", "long"])?.unwrap_or_else(|| "short".into());
+    let sign_display = opt_str(vm, o, "signDisplay", &["auto", "never", "always", "exceptZero", "negative"])?.unwrap_or_else(|| "auto".into());
+    let min_int = opt_num(vm, o, "minimumIntegerDigits", 1.0, 21.0)?.unwrap_or(1);
+    let (def_min, def_max) = match style.as_str() {
+        "currency" => {
+            let d = currency_digits(currency.as_deref().unwrap_or("USD"));
+            (d, d)
+        }
+        "percent" => (0, 0),
+        _ => (0, if notation == "compact" { 0 } else { 3 }),
+    };
+    let mnfd = opt_num(vm, o, "minimumFractionDigits", 0.0, 100.0)?;
+    let mxfd = opt_num(vm, o, "maximumFractionDigits", 0.0, 100.0)?;
+    let min_frac = mnfd.unwrap_or_else(|| def_min.min(mxfd.unwrap_or(def_min)));
+    let max_frac = mxfd.unwrap_or_else(|| def_max.max(min_frac));
+    if min_frac > max_frac {
+        return Err(vm.range_error("maximumFractionDigits value is out of range."));
+    }
+    let max_sig = opt_num(vm, o, "maximumSignificantDigits", 1.0, 21.0)?;
+    let min_sig = opt_num(vm, o, "minimumSignificantDigits", 1.0, 21.0)?;
+    let grouping = match opt_str(vm, o, "useGrouping", &[]) {
+        Ok(Some(s)) => s != "false",
+        _ => true,
+    };
+    Ok(NumOpts {
+        locale,
+        style,
+        currency,
+        currency_display,
+        unit,
+        unit_display,
+        min_int,
+        min_frac,
+        max_frac,
+        max_sig,
+        min_sig,
+        grouping,
+        notation,
+        compact_display,
+        sign_display,
+    })
+}
+
