@@ -1313,3 +1313,72 @@ fn select(vm: &mut Vm, root: NodeId, src: &str, first: bool) -> Result<Vec<NodeI
     }))
 }
 
+fn query_selector(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let src = arg_string(vm, a, 0)?;
+    let found = select(vm, n, &src, true)?;
+    Ok(wrap_opt(vm, found.first().copied()))
+}
+
+fn query_selector_all(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let src = arg_string(vm, a, 0)?;
+    let found = select(vm, n, &src, false)?;
+    Ok(list(vm, found, "NodeList"))
+}
+
+fn matches_sel(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let src = arg_string(vm, a, 0)?;
+    let (sels, _) = selector(vm, &src)?;
+    Ok(Value::Bool(read(vm, |h| sels.iter().any(|s| crate::css::matches(&h.page.doc, n, s)))))
+}
+
+fn closest(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let src = arg_string(vm, a, 0)?;
+    let (sels, _) = selector(vm, &src)?;
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        let mut x = Some(n);
+        while let Some(c) = x {
+            if is_element(doc, c) && sels.iter().any(|s| crate::css::matches(doc, c, s)) {
+                return Some(c);
+            }
+            x = doc.node(c).parent;
+        }
+        None
+    });
+    Ok(wrap_opt(vm, found))
+}
+
+fn get_elements_by_tag_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let tag = arg_string(vm, a, 0)?.to_ascii_lowercase();
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.descendants(n)
+            .into_iter()
+            .filter(|&d| is_element(doc, d) && (tag == "*" || doc.tag(d) == Some(tag.as_str())))
+            .collect()
+    });
+    Ok(list(vm, found, "HTMLCollection"))
+}
+
+fn get_elements_by_class_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let names = arg_string(vm, a, 0)?;
+    let wanted: Vec<&str> = names.split_ascii_whitespace().collect();
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        if wanted.is_empty() {
+            return Vec::new();
+        }
+        doc.descendants(n)
+            .into_iter()
+            .filter(|&d| doc.element(d).is_some_and(|e| wanted.iter().all(|w| e.has_class(w))))
+            .collect()
+    });
+    Ok(list(vm, found, "HTMLCollection"))
+}
+
