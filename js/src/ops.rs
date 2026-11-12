@@ -827,3 +827,73 @@ impl Vm {
         }
     }
 
+    pub fn set_array_length(&mut self, obj: &ObjRef, v: &Value) -> Result<bool, Value> {
+        let n = self.to_number(v)?;
+        if n < 0.0 || n != to_uint32(n) as f64 {
+            return Err(self.range_error("Invalid array length"));
+        }
+        let mut b = obj.borrow_mut();
+        if b.frozen {
+            return Ok(false);
+        }
+        if let Kind::Array(vec) = &mut b.kind {
+            let n = n as usize;
+            if n > vec.len() + 50_000_000 {
+                return Err(self.range_error("Invalid array length"));
+            }
+            vec.resize(n, Value::Empty);
+        }
+        Ok(true)
+    }
+
+    /// CreateDataProperty.
+    pub fn define_data(&mut self, obj: &ObjRef, key: PropKey, v: Value) {
+        if matches!(obj.borrow().kind, Kind::TypedArray(_))
+            && let Some(i) = key.as_index()
+        {
+            let _ = self.typed_set(obj, i as usize, &v);
+            return;
+        }
+        let mut b = obj.borrow_mut();
+        if let Kind::Array(vec) = &mut b.kind
+            && let Some(i) = key.as_index()
+        {
+            let i = i as usize;
+            if i < vec.len() {
+                vec[i] = v;
+                return;
+            }
+            if i < vec.len() + 1_000_000 {
+                vec.resize(i, Value::Empty);
+                vec.push(v);
+                return;
+            }
+        }
+        b.props.insert(key, Property::data(v));
+    }
+
+    pub fn has_property(&mut self, obj: &ObjRef, key: &PropKey) -> Result<bool, Value> {
+        let mut cur = obj.clone();
+        loop {
+            let (has, next) = {
+                let b = cur.borrow();
+                if let Kind::Proxy { .. } = b.kind {
+                    drop(b);
+                    return self.proxy_has(&cur, key);
+                }
+                (b.own(key).is_some(), b.proto.clone())
+            };
+            if has {
+                return Ok(true);
+            }
+            match next {
+                Some(n) => cur = n,
+                None => return Ok(false),
+            }
+        }
+    }
+
+    pub fn has_own(&mut self, obj: &ObjRef, key: &PropKey) -> Result<bool, Value> {
+        Ok(self.get_own_property(obj, key)?.is_some())
+    }
+
