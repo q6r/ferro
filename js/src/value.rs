@@ -587,3 +587,63 @@ pub enum TaKind {
     BU64,
 }
 
+impl TaKind {
+    pub const ALL: [TaKind; 11] = [
+        TaKind::I8,
+        TaKind::U8,
+        TaKind::U8C,
+        TaKind::I16,
+        TaKind::U16,
+        TaKind::I32,
+        TaKind::U32,
+        TaKind::F32,
+        TaKind::F64,
+        TaKind::BI64,
+        TaKind::BU64,
+    ];
+
+    pub fn size(self) -> usize {
+        match self {
+            TaKind::I8 | TaKind::U8 | TaKind::U8C => 1,
+            TaKind::I16 | TaKind::U16 => 2,
+            TaKind::I32 | TaKind::U32 | TaKind::F32 => 4,
+            TaKind::F64 | TaKind::BI64 | TaKind::BU64 => 8,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            TaKind::I8 => "Int8Array",
+            TaKind::U8 => "Uint8Array",
+            TaKind::U8C => "Uint8ClampedArray",
+            TaKind::I16 => "Int16Array",
+            TaKind::U16 => "Uint16Array",
+            TaKind::I32 => "Int32Array",
+            TaKind::U32 => "Uint32Array",
+            TaKind::F32 => "Float32Array",
+            TaKind::F64 => "Float64Array",
+            TaKind::BI64 => "BigInt64Array",
+            TaKind::BU64 => "BigUint64Array",
+        }
+    }
+
+    pub fn is_bigint(self) -> bool {
+        matches!(self, TaKind::BI64 | TaKind::BU64)
+    }
+}
+
+/// Bytes de um ArrayBuffer (compartilhados com as vistas).
+pub type Bytes = Rc<RefCell<Vec<u8>>>;
+
+/// Uma vista sobre um ArrayBuffer (typed array ou DataView).
+pub struct TypedArrayData {
+    pub data: Bytes,
+    pub buffer: ObjRef,
+    pub kind: TaKind,
+    /// Em bytes.
+    pub offset: usize,
+    /// Em elementos (DataView: em bytes).
+    pub length: usize,
+}
+
+impl TypedArrayData {
