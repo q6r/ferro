@@ -296,3 +296,70 @@ fn flatten(path: &[Cmd]) -> Vec<Poly> {
 /// Cobertura (0..1) de um conjunto de polígonos num retângulo `bx..bx+bw`,
 /// `by..by+bh`: 4 sub-linhas por pixel, cobertura horizontal exata.
 fn coverage(polys: &[Poly], evenodd: bool, bx: i32, by: i32, bw: usize, bh: usize) -> Vec<f32> {
+    const SUB: usize = 4;
+    let mut cov = vec![0.0f32; bw * bh];
+    // arestas (y de cima, y de baixo, x em cima, dx/dy, sentido)
+    let mut edges: Vec<(f32, f32, f32, f32, i32)> = Vec::new();
+    for (pts, _) in polys {
+        if pts.len() < 2 {
+            continue;
+        }
+        for i in 0..pts.len() {
+            let a = pts[i];
+            let b = pts[(i + 1) % pts.len()];
+            if a.1 == b.1 || !a.0.is_finite() || !a.1.is_finite() || !b.0.is_finite() || !b.1.is_finite() {
+                continue;
+            }
+            let (top, bot, dir) = if a.1 < b.1 { (a, b, 1) } else { (b, a, -1) };
+            let slope = (bot.0 - top.0) / (bot.1 - top.1);
+            edges.push((top.1 - by as f32, bot.1 - by as f32, top.0 - bx as f32, slope, dir));
+        }
+    }
+    edges.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut next = 0;
+    let mut active: Vec<usize> = Vec::new();
+    let mut xs: Vec<(f32, i32)> = Vec::new();
+    let wf = bw as f32;
+    for py in 0..bh {
+        for sub in 0..SUB {
+            let ys = py as f32 + (sub as f32 + 0.5) / SUB as f32;
+            while next < edges.len() && edges[next].0 <= ys {
+                active.push(next);
+                next += 1;
+            }
+            active.retain(|&e| edges[e].1 > ys);
+            if active.is_empty() {
+                continue;
+            }
+            xs.clear();
+            for &e in &active {
+                let (y0, _, x0, slope, dir) = edges[e];
+                if ys >= y0 {
+                    xs.push((x0 + (ys - y0) * slope, dir));
+                }
+            }
+            xs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut wind = 0;
+            let row = py * bw;
+            for k in 0..xs.len() {
+                wind += xs[k].1;
+                let inside = if evenodd { wind % 2 != 0 } else { wind != 0 };
+                if inside && k + 1 < xs.len() {
+                    let (xa, xb) = (xs[k].0.max(0.0), xs[k + 1].0.min(wf));
+                    if xb <= xa {
+                        continue;
+                    }
+                    let (ia, ib) = (xa.floor() as usize, (xb.ceil() as usize).min(bw));
+                    for ix in ia..ib {
+                        let overlap = xb.min(ix as f32 + 1.0) - xa.max(ix as f32);
+                        if overlap > 0.0 {
+                            cov[row + ix] += overlap / SUB as f32;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cov
+}
+
