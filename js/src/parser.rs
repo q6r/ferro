@@ -895,3 +895,61 @@ impl Parser {
 
     // ---------------------------------------------------------- expressões
 
+    pub fn parse_expression(&mut self, no_in: bool) -> PResult<Expr> {
+        let first = self.parse_assign(no_in)?;
+        if !self.is(",") {
+            return Ok(first);
+        }
+        let mut list = vec![first];
+        while self.eat(",")? {
+            list.push(self.parse_assign(no_in)?);
+        }
+        Ok(Expr::Seq(list))
+    }
+
+    fn parse_assign(&mut self, no_in: bool) -> PResult<Expr> {
+        // arrow functions e async arrow
+        if let Some(arrow) = self.try_arrow(no_in)? {
+            return Ok(arrow);
+        }
+        if self.is_kw("yield") && self.ctx.in_generator {
+            self.advance()?;
+            if self.tok.nl_before || matches!(self.tok.tok, Tok::Punct(")" | "]" | "}" | "," | ";" | ":")) || self.tok.tok == Tok::Eof {
+                return Ok(Expr::Yield(None, false));
+            }
+            let delegate = self.eat("*")?;
+            let arg = self.parse_assign(no_in)?;
+            return Ok(Expr::Yield(Some(Box::new(arg)), delegate));
+        }
+        let start_line = self.line();
+        let left = self.parse_conditional(no_in)?;
+        if let Tok::Punct(p) = &self.tok.tok
+            && let Some(op) = assign_op(p)
+        {
+            self.advance()?;
+            let target = if op == AssignOp::Assign {
+                self.expr_to_pattern(left)?
+            } else {
+                match left {
+                    Expr::Ident(..) | Expr::Member { .. } | Expr::Index { .. } | Expr::PrivateMember(..) | Expr::SuperMember(_) | Expr::SuperIndex(_) => {
+                        if let Expr::Ident(n, _) = left {
+                            Pattern::Ident(n)
+                        } else {
+                            Pattern::Target(Box::new(left))
+                        }
+                    }
+                    _ => {
+                        return Err(ParseError {
+                            msg: "alvo de atribuição inválido".into(),
+                            line: start_line,
+                            eof: false,
+                        });
+                    }
+                }
+            };
+            let value = self.parse_assign(no_in)?;
+            return Ok(Expr::Assign(op, Box::new(target), Box::new(value)));
+        }
+        Ok(left)
+    }
+
