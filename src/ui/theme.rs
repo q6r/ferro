@@ -149,3 +149,62 @@ pub const THEMES: [Theme; 5] = [
     },
 ];
 
+pub fn by_id(id: &str) -> usize {
+    THEMES.iter().position(|t| t.id == id).unwrap_or(0)
+}
+
+/// Mistura `a` com `b` (t = 0 → a, t = 1 → b).
+pub fn mix(a: Color, b: Color, t: f32) -> Color {
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color {
+        r: l(a.r, b.r),
+        g: l(a.g, b.g),
+        b: l(a.b, b.b),
+        a: 255,
+    }
+}
+
+pub fn with_alpha(c: Color, a: u8) -> Color {
+    Color { a, ..c }
+}
+
+impl Theme {
+    /// Trilho de ícones do layout lateral (preto no tema claro, como no kit).
+    pub fn rail(&self) -> Color {
+        if self.dark { self.toolbar } else { hex(0x151516) }
+    }
+
+    pub fn rail_active(&self) -> Color {
+        if self.dark { self.selection } else { hex(0x3b3b3e) }
+    }
+
+    pub fn rail_icon(&self) -> Color {
+        if self.dark { self.muted } else { hex(0x9d9da2) }
+    }
+
+    pub fn rail_icon_active(&self) -> Color {
+        if self.dark { self.text } else { Color::WHITE }
+    }
+
+    /// Fundo da aba selecionada na lista e das cápsulas ativas.
+    pub fn row_selected(&self) -> Color {
+        if self.dark { self.toolbar } else { hex(0xe8e9eb) }
+    }
+
+    /// Vidro da paleta de busca: (topo, base, borda).
+    pub fn glass(&self) -> (Color, Color, Color) {
+        if self.dark {
+            (
+                with_alpha(mix(self.popup, Color::WHITE, 0.10), 150),
+                with_alpha(self.popup, 196),
+                Color { r: 255, g: 255, b: 255, a: 42 },
+            )
+        } else {
+            (
+                Color { r: 255, g: 255, b: 255, a: 205 },
+                Color { r: 244, g: 244, b: 246, a: 222 },
+                Color { r: 0, g: 0, b: 0, a: 26 },
+            )
+        }
+    }
+}
