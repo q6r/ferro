@@ -1263,3 +1263,98 @@ impl Cascade<'_> {
         }
     }
 
+    /// Estilo do elemento (ou de um pseudo-elemento dele). Devolve também se
+    /// alguma regra casou.
+    fn style_for(
+        &self,
+        node: NodeId,
+        parent: &ComputedStyle,
+        pseudo: Option<css::PseudoElement>,
+    ) -> (ComputedStyle, bool) {
+        let el = self.doc.element(node).unwrap();
+
+        // 1. coleta as declarações que casam
+        let buckets = if pseudo.is_some() { &self.index.pseudo } else { &self.index.normal };
+        let mut candidates = self.scratch.take();
+        buckets.candidates(el, &mut candidates);
+        let anc = self.ancestor_bits[node].as_deref();
+
+        // (prioridade, especificidade, ordem) → declaração
+        type Key = (u8, (u32, u32, u32, u32), usize);
+        let mut matched: Vec<(Key, &Declaration)> = Vec::new();
+        for &ci in &candidates {
+            let e = &self.index.entries[ci as usize];
+            // um ancestral exigido pelo seletor não existe: nem tenta casar
+            if let Some(anc) = anc
+                && !e.ancestors.iter().all(|&h| bloom_has(anc, h))
+            {
+                continue;
+            }
+            let rule = self.index.rule(e);
+            let selector = &rule.selectors[e.sel as usize];
+            if selector.pseudo_element != pseudo || !css::matches(self.doc, node, selector) {
+                continue;
+            }
+            let spec = (0, e.spec.0, e.spec.1, e.spec.2);
+            for d in &rule.declarations {
+                let prio = match (e.origin, d.important) {
+                    (Origin::UserAgent, false) => 0,
+                    (Origin::Author, false) => 1,
+                    (Origin::Author, true) => 2,
+                    (Origin::UserAgent, true) => 3,
+                };
+                matched.push(((prio, spec, e.order), d));
+            }
+        }
+        self.scratch.replace(candidates);
+        if pseudo.is_some() && matched.is_empty() {
+            return (ComputedStyle::inherit_from(parent), false);
+        }
+        let inline: Vec<Declaration> = if pseudo.is_none() {
+            el.attr("style").map(css::parse_declarations).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for d in &inline {
+            let prio = if d.important { 2 } else { 1 };
+            matched.push(((prio, (1, 0, 0, 0), usize::MAX), d));
+        }
+        matched.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // 2. aplica, começando pelas propriedades customizadas (--x)
+        let mut style = ComputedStyle::inherit_from(parent);
+        let mut own: Option<ferro_js::fxhash::FxHashMap<Rc<str>, Rc<str>>> = None;
+        for (_, d) in &matched {
+            if d.name.starts_with("--") {
+                own.get_or_insert_with(Default::default)
+                    .insert(Rc::from(d.name.as_str()), Rc::from(d.value.as_str()));
+            }
+        }
+        if let Some(own) = own {
+            style.custom = CustomVars::child(&parent.custom, own);
+        }
+
+        // font-size primeiro: em/ex das outras propriedades dependem dele
+        let font_decls: Vec<&Declaration> = matched
+            .iter()
+            .map(|(_, d)| *d)
+            .filter(|d| d.name == "font-size" || d.name == "font")
+            .collect();
+        for d in font_decls {
+            self.apply(&mut style, parent, d);
+        }
+        for (_, d) in &matched {
+            if !d.name.starts_with("--") && d.name != "font-size" && d.name != "font" {
+                self.apply(&mut style, parent, d);
+            }
+        }
+        if pseudo.is_none() {
+            let units = self.units(&style);
+            presentational_hints(el, &mut style, &units);
+        } else if style.display == Display::Block && !matched.iter().any(|(_, d)| d.name == "display") {
+            // pseudo-elementos são em linha por padrão
+            style.display = Display::Inline;
+        }
+        (style, true)
+    }
+
