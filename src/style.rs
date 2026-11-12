@@ -907,3 +907,56 @@ fn split_values(v: &str) -> Vec<String> {
         .collect()
 }
 
+fn border_width_value(v: &str, u: &Units) -> Option<f32> {
+    match v {
+        "thin" => Some(1.0),
+        "medium" => Some(3.0),
+        "thick" => Some(5.0),
+        _ => match parse_len(v, u)? {
+            Len::Px(p) => Some(p.max(0.0)),
+            _ => None,
+        },
+    }
+}
+
+fn border_style_value(v: &str) -> Option<bool> {
+    match v {
+        "none" | "hidden" => Some(false),
+        "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset" => Some(true),
+        _ => None,
+    }
+}
+
+// ------------------------------------------------------------------ cascata
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Origin {
+    UserAgent,
+    Author,
+}
+
+type FxMap<K, V> = ferro_js::fxhash::FxHashMap<K, V>;
+
+/// Bits do filtro de ancestrais (filtro de Bloom com 1024 posições).
+const BLOOM_WORDS: usize = 16;
+type Bloom = [u64; BLOOM_WORDS];
+
+/// Hash de uma característica de seletor: tag, id ou classe.
+fn feature_hash(kind: u8, s: &str) -> u32 {
+    let mut h: u32 = 0x811c_9dc5 ^ kind as u32;
+    for b in s.bytes() {
+        h = (h ^ b as u32).wrapping_mul(0x0100_0193);
+    }
+    h
+}
+
+fn bloom_set(f: &mut Bloom, h: u32) {
+    let bit = (h & 1023) as usize;
+    f[bit / 64] |= 1 << (bit % 64);
+}
+
+fn bloom_has(f: &Bloom, h: u32) -> bool {
+    let bit = (h & 1023) as usize;
+    f[bit / 64] & (1 << (bit % 64)) != 0
+}
+
