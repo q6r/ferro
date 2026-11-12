@@ -306,3 +306,49 @@ fn canvas_2d() {
     });
 }
 
+#[test]
+fn tela_cheia() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0"><div style="height:300px"></div><div id=v style="width:100px;height:50px"></div>
+               <script>window.ev = 0; document.addEventListener('fullscreenchange', () => ev++);</script></body>"#,
+        );
+        eval(&mut s, "v.requestFullscreen()");
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 300 && eval(&mut s, "ev") != "1" {
+            s.tick();
+        }
+        assert_eq!(s.take_fullscreen(), Some(true));
+        assert_eq!(eval(&mut s, "document.fullscreenElement === v && v.matches(':fullscreen')"), "true");
+        let _ = s.render();
+        assert_eq!(eval(&mut s, "const r = v.getBoundingClientRect(); r.width + 'x' + r.height + '@' + r.top"), "800x600@0");
+        // Esc na interface
+        s.exit_fullscreen();
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 300 && eval(&mut s, "ev") != "2" {
+            s.tick();
+        }
+        let _ = s.render();
+        assert_eq!(eval(&mut s, "String(document.fullscreenElement) + v.getBoundingClientRect().width"), "null100");
+    });
+}
+
+#[test]
+fn posicao_fixa_nao_rola() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0"><div id=topo style="position:fixed;top:0;left:0;width:100%;height:40px">topo</div>
+               <div id=longo style="height:3000px;padding-top:40px">conteúdo</div>
+               <script>window.alvo = ''; document.addEventListener('click', e => alvo = e.target.id);</script></body>"#,
+        );
+        let _ = s.render();
+        s.set_scroll(500.0);
+        assert_eq!(eval(&mut s, "topo.getBoundingClientRect().top + ',' + longo.getBoundingClientRect().top"), "0,-500");
+        // clique na faixa do topo, com a página rolada: acerta o cabeçalho
+        s.click(10.0, 510.0);
+        assert_eq!(eval(&mut s, "alvo"), "topo");
+        s.click(10.0, 600.0);
+        assert_eq!(eval(&mut s, "alvo"), "longo");
+    });
+}
+
