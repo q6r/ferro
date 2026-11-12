@@ -23,10 +23,16 @@ pub fn install(r: &Realm) {
     }
     let agg_proto = ObjRef::new(Object::new(Some(r.error_proto.clone()), Kind::Ordinary));
     let agg = r.ctor("AggregateError", 2, aggregate_ctor, &agg_proto);
-    agg.borrow_mut().proto = Some(base);
+    agg.borrow_mut().proto = Some(base.clone());
     set_native_data(&agg, Value::Object(agg_proto.clone()));
     agg_proto.borrow_mut().props.insert(PropKey::str("name"), Property::hidden(Value::str("AggregateError")));
     agg_proto.borrow_mut().props.insert(PropKey::str("message"), Property::hidden(Value::str("")));
+    let sp = &r.suppressed_error_proto;
+    let sup = r.ctor("SuppressedError", 3, suppressed_ctor, sp);
+    sup.borrow_mut().proto = Some(base);
+    set_native_data(&sup, Value::Object(sp.clone()));
+    sp.borrow_mut().props.insert(PropKey::str("name"), Property::hidden(Value::str("SuppressedError")));
+    sp.borrow_mut().props.insert(PropKey::str("message"), Property::hidden(Value::str("")));
 }
 
 fn make(r: &Realm, name: &str, proto: &ObjRef, parent: Option<&ObjRef>) -> ObjRef {
@@ -82,6 +88,31 @@ fn aggregate_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let errors = vm.iterate_to_vec(&a.arg(0))?;
     let arr = vm.array_value(errors);
     o.borrow_mut().props.insert(PropKey::str("errors"), Property::hidden(arr));
+    Ok(Value::Object(o))
+}
+
+/// SuppressedError(error, suppressed, message): mensagem, depois os dois erros.
+fn suppressed_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let default = match native_data(&a.callee) {
+        Value::Object(p) => p,
+        _ => vm.realm.suppressed_error_proto.clone(),
+    };
+    let nt = a.new_target.clone().unwrap_or_else(|| a.callee.clone());
+    let proto = vm.proto_from_ctor(Some(&nt), &default)?;
+    let o = ObjRef::new(Object::new(Some(proto), Kind::Error));
+    let msg = a.arg(2);
+    let mut header = String::from("SuppressedError");
+    if !msg.is_undefined() {
+        let s = vm.to_string(&msg)?;
+        if !s.is_empty() {
+            header = format!("SuppressedError: {}", s.to_rust());
+        }
+        o.borrow_mut().props.insert(PropKey::str("message"), Property::hidden(Value::String(s)));
+    }
+    o.borrow_mut().props.insert(PropKey::str("error"), Property::hidden(a.arg(0)));
+    o.borrow_mut().props.insert(PropKey::str("suppressed"), Property::hidden(a.arg(1)));
+    let stack = vm.stack_trace(&header);
+    o.borrow_mut().props.insert(PropKey::str("stack"), Property::hidden(Value::str(&stack)));
     Ok(Value::Object(o))
 }
 

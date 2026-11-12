@@ -7,6 +7,7 @@ pub mod bigint;
 pub mod collections;
 pub mod console;
 pub mod date;
+pub mod disposable;
 pub mod error;
 pub mod function;
 pub mod generator;
@@ -46,6 +47,7 @@ pub struct Realm {
     pub syntax_error_proto: ObjRef,
     pub eval_error_proto: ObjRef,
     pub uri_error_proto: ObjRef,
+    pub suppressed_error_proto: ObjRef,
     pub iterator_proto: ObjRef,
     /// %IteratorHelperPrototype% (map, filter, Iterator.concat...).
     pub iterator_helper_proto: ObjRef,
@@ -149,6 +151,7 @@ impl Realm {
             syntax_error_proto: plain(Some(&error_proto)),
             eval_error_proto: plain(Some(&error_proto)),
             uri_error_proto: plain(Some(&error_proto)),
+            suppressed_error_proto: plain(Some(&error_proto)),
             iterator_helper_proto: plain(ip),
             wrap_for_valid_iter_proto: plain(ip),
             array_iter_proto: plain(ip),
@@ -215,6 +218,7 @@ impl Realm {
         regexp::install(&realm);
         generator::install(&realm);
         iterator::install(&realm);
+        disposable::install(&realm);
         promise::install(&realm);
         async_generator::install(&realm);
         timers::install(&realm);

@@ -770,6 +770,10 @@ pub enum Kind {
     IterWrap(Box<crate::builtins::iterator::IterRec>),
     /// Estado de um Array.fromAsync em andamento (fora enquanto roda).
     FromAsync(Option<Box<crate::builtins::array_async::FromAsync>>),
+    /// DisposableStack / AsyncDisposableStack.
+    DisposableStack(Box<crate::builtins::disposable::StackData>),
+    /// Descarte assíncrono em andamento (fora enquanto roda).
+    DisposeJob(Option<Box<crate::builtins::disposable::DisposeJob>>),
 }
 
 pub struct Object {
