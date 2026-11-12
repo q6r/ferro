@@ -143,3 +143,62 @@ fn dir(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
+fn assert(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if crate::vm::truthy(&a.arg(0)) {
+        return Ok(Value::Undefined);
+    }
+    let rest: Vec<Value> = a.args.iter().skip(1).cloned().collect();
+    let s = format_args(vm, &rest)?;
+    let msg = if s.is_empty() { "Assertion failed".to_string() } else { format!("Assertion failed: {s}") };
+    emit(vm, Out::Error, &msg);
+    Ok(Value::Undefined)
+}
+
+fn label(vm: &mut Vm, a: &CallArgs) -> Result<String, Value> {
+    if a.arg(0).is_undefined() { Ok("default".into()) } else { vm.to_rust_string(&a.arg(0)) }
+}
+
+fn time(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let l = label(vm, a)?;
+    vm.console_timers.insert(l, std::time::Instant::now());
+    Ok(Value::Undefined)
+}
+
+fn elapsed(vm: &mut Vm, l: &str) -> Option<String> {
+    vm.console_timers.get(l).map(|t| {
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if ms >= 1000.0 { format!("{l}: {:.3}s", ms / 1000.0) } else { format!("{l}: {ms:.3}ms") }
+    })
+}
+
+fn time_end(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let l = label(vm, a)?;
+    if let Some(s) = elapsed(vm, &l) {
+        emit(vm, Out::Log, &s);
+        vm.console_timers.remove(&l);
+    }
+    Ok(Value::Undefined)
+}
+
+fn time_log(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let l = label(vm, a)?;
+    if let Some(s) = elapsed(vm, &l) {
+        let rest: Vec<Value> = a.args.iter().skip(1).cloned().collect();
+        let extra = format_args(vm, &rest)?;
+        let s = if extra.is_empty() { s } else { format!("{s} {extra}") };
+        emit(vm, Out::Log, &s);
+    }
+    Ok(Value::Undefined)
+}
+
+fn count(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let l = label(vm, a)?;
+    let n = {
+        let c = vm.console_counts.entry(l.clone()).or_insert(0);
+        *c += 1;
+        *c
+    };
+    emit(vm, Out::Log, &format!("{l}: {n}"));
+    Ok(Value::Undefined)
+}
+
