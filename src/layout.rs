@@ -1245,3 +1245,72 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn bg_item(&self, s: &ComputedStyle, r: Rect, radius: f32) -> Option<DisplayItem> {
+        if let Some(mask) = &s.mask_image {
+            let img = self.images.urls.get(&**mask)?;
+            let tile = self.tile_rect(img, r, s.mask_size, s.mask_pos);
+            return Some(DisplayItem::BgImage {
+                rect: r,
+                image: img.clone(),
+                tile,
+                repeat: s.mask_repeat,
+                tint: Some(s.background),
+            });
+        }
+        match s.bg_image.as_ref()? {
+            BgImage::Linear(g) => Some(DisplayItem::Gradient {
+                rect: r,
+                radius,
+                angle: g.angle,
+                stops: Arc::new(g.stops.clone()),
+            }),
+            BgImage::Url(u) => {
+                let img = self.images.urls.get(&**u)?;
+                Some(DisplayItem::BgImage {
+                    rect: r,
+                    image: img.clone(),
+                    tile: self.tile_rect(img, r, s.bg_size, s.bg_pos),
+                    repeat: s.bg_repeat,
+                    tint: None,
+                })
+            }
+        }
+    }
+
+    /// Posição e tamanho de uma cópia da imagem de fundo dentro de `r`.
+    fn tile_rect(&self, img: &ImageData, r: Rect, size: BgSize, at: (Len, Len)) -> Rect {
+        {
+            {
+                let (iw, ih) = (img.width.max(1) as f32, img.height.max(1) as f32);
+                let (tw, th) = match size {
+                    BgSize::Auto => (iw, ih),
+                    BgSize::Cover => {
+                        let k = (r.w / iw).max(r.h / ih);
+                        (iw * k, ih * k)
+                    }
+                    BgSize::Contain => {
+                        let k = (r.w / iw).min(r.h / ih);
+                        (iw * k, ih * k)
+                    }
+                    BgSize::Size(w, h) => match (w.resolve(r.w), h.resolve(r.h)) {
+                        (Some(w), Some(h)) => (w, h),
+                        (Some(w), None) => (w, w * ih / iw),
+                        (None, Some(h)) => (h * iw / ih, h),
+                        _ => (iw, ih),
+                    },
+                };
+                let pos = |l: Len, free: f32| match l {
+                    Len::Percent(p) => free * p / 100.0,
+                    Len::Px(v) => v,
+                    Len::Auto => 0.0,
+                };
+                Rect {
+                    x: r.x + pos(at.0, r.w - tw),
+                    y: r.y + pos(at.1, r.h - th),
+                    w: tw,
+                    h: th,
+                }
+            }
+        }
+    }
+
