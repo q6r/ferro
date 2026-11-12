@@ -1082,3 +1082,50 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Move tudo o que foi emitido entre as marcas `a` e `b` (b = None: até agora).
+    fn shift_between(&mut self, a: &Mark, b: Option<&Mark>, dx: f32, dy: f32) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let end = |len: usize, f: fn(&Mark) -> usize| b.map_or(len, f);
+        let ie = end(self.items.len(), |m| m.items);
+        for it in &mut self.items[a.items..ie] {
+            translate(it, dx, dy);
+        }
+        let le = end(self.links.len(), |m| m.links);
+        for (r, _) in &mut self.links[a.links..le] {
+            r.x += dx;
+            r.y += dy;
+        }
+        let be = end(self.boxes.len(), |m| m.boxes);
+        for (_, r) in &mut self.boxes[a.boxes.min(be)..be] {
+            r.x += dx;
+            r.y += dy;
+        }
+        let ae = end(self.anchors.len(), |m| m.anchors);
+        for (_, y) in &mut self.anchors[a.anchors..ae] {
+            *y += dy;
+        }
+        let ye = end(self.layers.len(), |m| m.layers);
+        for l in &mut self.layers[a.layers..ye] {
+            for it in &mut l.items {
+                translate(it, dx, dy);
+            }
+        }
+        let fe = end(self.floats.len(), |m| m.floats).min(self.floats.len());
+        for f in &mut self.floats[a.floats.min(fe)..fe] {
+            f.rect.x += dx;
+            f.rect.y += dy;
+        }
+        for (lvl, &start) in a.abs.iter().enumerate() {
+            let stop = b.and_then(|m| m.abs.get(lvl).copied());
+            if let Some(v) = self.abs.get_mut(lvl) {
+                let stop = stop.unwrap_or(v.len()).min(v.len());
+                for p in &mut v[start.min(stop)..stop] {
+                    p.x += dx;
+                    p.y += dy;
+                }
+            }
+        }
+    }
+
