@@ -322,3 +322,35 @@ fn ta_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(t))
 }
 
+/// (objeto, tipo, tamanho) de `this`, que precisa ser um typed array.
+fn this_ta(vm: &mut Vm, a: &CallArgs) -> Result<(ObjRef, TaKind, usize), Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::TypedArray(t) = &o.borrow().kind
+    {
+        return Ok((o.clone(), t.kind, t.length));
+    }
+    let d = vm.describe(&a.this);
+    Err(vm.type_error(format!("this is not a typed array ({d})")))
+}
+
+fn elem(o: &ObjRef, i: usize) -> Value {
+    match &o.borrow().kind {
+        Kind::TypedArray(t) => t.get(i).unwrap_or_default(),
+        _ => Value::Undefined,
+    }
+}
+
+fn get_buffer(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::TypedArray(t) | Kind::DataView(t) = &o.borrow().kind
+    {
+        return Ok(Value::Object(t.buffer.clone()));
+    }
+    Err(vm.type_error("not a typed array or DataView"))
+}
+
+fn get_byte_length(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, kind, len) = this_ta(vm, a)?;
+    Ok(Value::Number((len * kind.size()) as f64))
+}
+
