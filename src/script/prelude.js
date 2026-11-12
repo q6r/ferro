@@ -992,3 +992,51 @@ methods(FORM, {
   checkValidity() { return true; },
   reportValidity() { return true; },
 });
+reflectAll(HTMLLabelElement.prototype, [['htmlFor', 'for']]);
+accessor(HTMLLabelElement.prototype, 'control', function () {
+  const f = this.htmlFor;
+  return f ? document.getElementById(f) : this.querySelector('input, select, textarea, button');
+});
+accessor(HTMLLabelElement.prototype, 'form', function () { const c = this.control; return c ? c.form : null; });
+
+// script, link, style, meta, base, iframe...
+reflectAll(HTMLScriptElement.prototype, [['src', 'src', 'url'], 'type', 'charset', ['async', 'async', 'bool'],
+  ['defer', 'defer', 'bool'], ['crossOrigin', 'crossorigin'], ['noModule', 'nomodule', 'bool'], 'integrity',
+  ['referrerPolicy', 'referrerpolicy'], 'event', ['htmlFor', 'for'], ['fetchPriority', 'fetchpriority']]);
+accessor(HTMLScriptElement.prototype, 'text', function () { return this.textContent; }, function (v) { this.textContent = v; });
+reflectAll(HTMLLinkElement.prototype, [['href', 'href', 'url'], 'rel', 'type', 'media', 'as', 'sizes', 'hreflang',
+  ['crossOrigin', 'crossorigin'], 'integrity', ['referrerPolicy', 'referrerpolicy'], ['disabled', 'disabled', 'bool'],
+  ['imageSrcset', 'imagesrcset'], ['imageSizes', 'imagesizes'], ['fetchPriority', 'fetchpriority']]);
+accessor(HTMLLinkElement.prototype, 'sheet', function () {
+  return /\bstylesheet\b/i.test(this.rel) ? sheetOf(this) : null;
+});
+reflectAll(HTMLStyleElement.prototype, ['media', 'type', ['disabled', 'disabled', 'bool']]);
+reflectAll(HTMLMetaElement.prototype, ['name', 'content', ['httpEquiv', 'http-equiv'], 'charset', 'media', 'scheme']);
+reflectAll(HTMLBaseElement.prototype, [['href', 'href', 'url'], 'target']);
+reflectAll(HTMLIFrameElement.prototype, [['src', 'src', 'url'], 'srcdoc', 'name', 'width', 'height', 'allow',
+  ['allowFullscreen', 'allowfullscreen', 'bool'], 'loading', ['referrerPolicy', 'referrerpolicy'], 'sandbox']);
+// <iframe>: o quadro roda numa sessão própria; só passa postMessage (em JSON)
+const packMessage = (data) => {
+  try { return JSON.stringify({ v: data === undefined ? null : data }); } catch (e) { return '{"v":null}'; }
+};
+const unpackMessage = (s) => { try { return JSON.parse(s).v; } catch (e) { return null; } };
+const FRAME_WIN = new WeakMap();
+accessor(HTMLIFrameElement.prototype, 'contentWindow', function () {
+  if (!this.isConnected) return null;
+  let w = FRAME_WIN.get(this);
+  if (!w) {
+    const el = this;
+    w = {
+      postMessage(data, origin) {
+        const target = origin && typeof origin === 'object' ? (origin.targetOrigin ?? '/') : String(origin ?? '*');
+        N.framePost(el, packMessage(data), target === '/' ? location.origin : target);
+      },
+      get parent() { return G; }, get top() { return G.top; }, get opener() { return null; },
+      get window() { return w; }, get self() { return w; }, get frames() { return w; },
+      get location() { return { get href() { return N.frameUrl(el); }, replace(u) { el.src = u; }, assign(u) { el.src = u; } }; },
+      get document() { return null; }, closed: false, length: 0, focus() {}, blur() {}, close() {},
+    };
+    FRAME_WIN.set(this, w);
+  }
+  return w;
+});
