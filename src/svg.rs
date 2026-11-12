@@ -690,3 +690,46 @@ fn fill_coverage(polys: &[(Vec<(f32, f32)>, bool)], evenodd: bool, w: usize, h: 
     }
 }
 
+/// Cobertura do traço: distância de cada pixel ao segmento mais próximo.
+fn stroke_coverage(polys: &[(Vec<(f32, f32)>, bool)], width: f32, w: usize, h: usize, cov: &mut [f32]) {
+    let hw = (width / 2.0).max(0.35);
+    for (pts, closed) in polys {
+        let n = pts.len();
+        let segs = if *closed { n } else { n - 1 };
+        for i in 0..segs {
+            let a = pts[i];
+            let b = pts[(i + 1) % n];
+            let x0 = ((a.0.min(b.0) - hw - 1.0).floor().max(0.0)) as usize;
+            let x1 = ((a.0.max(b.0) + hw + 1.0).ceil().min(w as f32)) as usize;
+            let y0 = ((a.1.min(b.1) - hw - 1.0).floor().max(0.0)) as usize;
+            let y1 = ((a.1.max(b.1) + hw + 1.0).ceil().min(h as f32)) as usize;
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len2 = dx * dx + dy * dy;
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    let (cx, cy) = (px as f32 + 0.5, py as f32 + 0.5);
+                    let t = if len2 > 0.0 {
+                        (((cx - a.0) * dx + (cy - a.1) * dy) / len2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let (qx, qy) = (a.0 + t * dx - cx, a.1 + t * dy - cy);
+                    let d = (qx * qx + qy * qy).sqrt();
+                    let c = (hw + 0.5 - d).clamp(0.0, 1.0);
+                    let i = py * w + px;
+                    if c > cov[i] {
+                        cov[i] = c;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Svg {
+    /// Rasteriza em `w`×`h` pixels. Com `color`, toda tinta vira essa cor
+    /// (modo ícone monocromático).
+    pub fn render(&self, w: u32, h: u32, color: Option<Color>) -> ImageData {
+        self.render_with(w, h, color, Color::BLACK)
+    }
+
