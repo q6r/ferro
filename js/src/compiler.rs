@@ -3679,3 +3679,29 @@ impl Compiler {
     }
 }
 
+fn default_constructor(name: &str, derived: bool, line: u32) -> FunctionDef {
+    let (rest, body, kind) = if derived {
+        (
+            Some(Pattern::Ident("args".into())),
+            vec![Stmt::Expr(
+                Expr::SuperCall(vec![ArrayElem::Spread(Expr::Ident("args".into(), line))]),
+                line,
+            )],
+            FnKind::DerivedConstructor,
+        )
+    } else {
+        (None, Vec::new(), FnKind::ClassConstructor)
+    };
+    FunctionDef {
+        name: Some(name.into()),
+        params: Vec::new(),
+        rest,
+        body: FnBody::Block(body),
+        kind,
+        is_async: false,
+        is_generator: false,
+        strict: true,
+        source: "".into(),
+        line,
+    }
+}
