@@ -518,3 +518,64 @@ impl Parser {
         Some((min, max, j + 1 - self.i))
     }
 
+    fn quantifier(&mut self, atom: Node) -> Result<Node, RegexError> {
+        let (min, max) = match char::from_u32(self.peek().unwrap_or(0)) {
+            Some('*') => {
+                self.i += 1;
+                (0, INF)
+            }
+            Some('+') => {
+                self.i += 1;
+                (1, INF)
+            }
+            Some('?') => {
+                self.i += 1;
+                (0, 1)
+            }
+            _ => {
+                let (a, b, len) = self.brace_quantifier().ok_or(RegexError("Nothing to repeat".into()))?;
+                if b < a {
+                    return err("numbers out of order in {} quantifier");
+                }
+                self.i += len;
+                (a, b)
+            }
+        };
+        let greedy = !self.eat('?');
+        if matches!(atom, Node::Start | Node::End | Node::WordB(_)) || matches!(atom, Node::Look { ahead: false, .. }) {
+            return err("Nothing to repeat");
+        }
+        Ok(Node::Repeat {
+            node: Box::new(atom),
+            min,
+            max,
+            greedy,
+        })
+    }
+
+    fn group_name(&mut self) -> Result<String, RegexError> {
+        let mut name = String::new();
+        loop {
+            let Some(c) = self.peek() else { return err("Invalid capture group name") };
+            self.i += 1;
+            if c == '>' as u32 {
+                break;
+            }
+            let ch = if c == '\\' as u32 && self.eat('u') {
+                self.unicode_escape_value(true)?.ok_or(RegexError("Invalid capture group name".into()))?
+            } else {
+                c
+            };
+            let ch = char::from_u32(ch).ok_or(RegexError("Invalid capture group name".into()))?;
+            let ok = if name.is_empty() { ch.is_alphabetic() || ch == '$' || ch == '_' } else { ch.is_alphanumeric() || ch == '$' || ch == '_' || ch == '\u{200C}' || ch == '\u{200D}' };
+            if !ok {
+                return err("Invalid capture group name");
+            }
+            name.push(ch);
+        }
+        if name.is_empty() {
+            return err("Invalid capture group name");
+        }
+        Ok(name)
+    }
+
