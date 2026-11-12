@@ -656,3 +656,68 @@ for (const P of [HTMLElement.prototype, SVGElement.prototype]) {
   });
 }
 
+// ------------------------------------------------ atributos refletidos
+function resolveURL(v) {
+  if (v === null) return '';
+  const p = N.urlParse(v, document.baseURI);
+  return p ? p.href : v;
+}
+function reflect(P, prop, attr, kind, def) {
+  attr = attr || prop.toLowerCase();
+  let get, set;
+  switch (kind) {
+    case 'bool':
+      get = function () { return this.hasAttribute(attr); };
+      set = function (v) { if (v) this.setAttribute(attr, ''); else this.removeAttribute(attr); };
+      break;
+    case 'url':
+      get = function () { const v = this.getAttribute(attr); return v === null ? '' : resolveURL(v.trim()); };
+      set = function (v) { this.setAttribute(attr, String(v)); };
+      break;
+    case 'int':
+      get = function () {
+        const v = parseInt(this.getAttribute(attr), 10);
+        return Number.isFinite(v) ? v : (typeof def === 'function' ? def.call(this) : def ?? 0);
+      };
+      set = function (v) { this.setAttribute(attr, String(Math.trunc(Number(v)) || 0)); };
+      break;
+    case 'lower':
+      get = function () { const v = this.getAttribute(attr); return v === null ? (def ?? '') : v.toLowerCase(); };
+      set = function (v) { this.setAttribute(attr, String(v)); };
+      break;
+    default:
+      get = function () { const v = this.getAttribute(attr); return v === null ? (def ?? '') : v; };
+      set = function (v) { this.setAttribute(attr, v === null ? '' : String(v)); };
+  }
+  accessor(P, prop, get, set);
+}
+function reflectAll(P, list) {
+  for (const spec of list) {
+    if (typeof spec === 'string') reflect(P, spec);
+    else reflect(P, ...spec);
+  }
+}
+const HE = HTMLElement.prototype;
+const FOCUSABLE = new Set(['a', 'button', 'input', 'select', 'textarea', 'iframe', 'summary']);
+reflectAll(HE, ['title', 'lang', 'dir', 'accessKey', 'nonce', 'slot', ['hidden', 'hidden', 'bool'],
+  ['autofocus', 'autofocus', 'bool'], ['inert', 'inert', 'bool'], 'enterKeyHint', 'inputMode', 'popover',
+  ['tabIndex', 'tabindex', 'int', function () { return FOCUSABLE.has(this.localName) || this.isContentEditable ? 0 : -1; }]]);
+reflectAll(SVGElement.prototype, [['tabIndex', 'tabindex', 'int', -1]]);
+accessor(HE, 'draggable', function () { return this.getAttribute('draggable') === 'true' || this.localName === 'img'; },
+  function (v) { this.setAttribute('draggable', v ? 'true' : 'false'); });
+accessor(HE, 'spellcheck', function () { return this.getAttribute('spellcheck') !== 'false'; },
+  function (v) { this.setAttribute('spellcheck', v ? 'true' : 'false'); });
+accessor(HE, 'translate', function () { return this.getAttribute('translate') !== 'no'; },
+  function (v) { this.setAttribute('translate', v ? 'yes' : 'no'); });
+accessor(HE, 'contentEditable', function () {
+  const v = this.getAttribute('contenteditable');
+  return v === null ? 'inherit' : v === '' ? 'true' : v.toLowerCase();
+}, function (v) { this.setAttribute('contenteditable', String(v)); });
+accessor(HE, 'isContentEditable', function () {
+  for (let e = this; e; e = e.parentElement) {
+    const v = e.getAttribute('contenteditable');
+    if (v !== null) return v !== 'false';
+  }
+  return false;
+});
+
