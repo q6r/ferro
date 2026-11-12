@@ -3093,3 +3093,97 @@ impl Compiler {
         Ok(())
     }
 
+    fn unary(&mut self, op: UnOp, x: &Expr) -> CResult<()> {
+        match op {
+            UnOp::Delete => match x {
+                Expr::Member { obj, prop, optional } => {
+                    self.expr(obj)?;
+                    if *optional {
+                        self.opt_site(0);
+                    }
+                    let c = self.konst(prop);
+                    self.emit(Op::DeleteProp(c));
+                }
+                Expr::Index { obj, index, optional } => {
+                    self.expr(obj)?;
+                    if *optional {
+                        self.opt_site(0);
+                    }
+                    self.expr(index)?;
+                    self.emit(Op::DeleteIndex);
+                }
+                Expr::Ident(n, _) => {
+                    if matches!(self.resolve(n).res, Res::Global) {
+                        let c = self.konst(n);
+                        self.emit(Op::DeleteGlobal(c));
+                    } else {
+                        self.emit(Op::False);
+                    }
+                }
+                Expr::OptionalChain(inner) => {
+                    // delete a?.b
+                    self.f().opt.push(Vec::new());
+                    self.unary(UnOp::Delete, inner)?;
+                    let sites = self.f().opt.pop().unwrap_or_default();
+                    if !sites.is_empty() {
+                        let mut ends = vec![self.emit(Op::Jump(0))];
+                        for (pos, extra) in sites {
+                            self.patch(pos);
+                            for _ in 0..=extra {
+                                self.emit(Op::Pop);
+                            }
+                            self.emit(Op::True);
+                            ends.push(self.emit(Op::Jump(0)));
+                        }
+                        for j in ends {
+                            self.patch(j);
+                        }
+                    }
+                }
+                _ => {
+                    self.expr(x)?;
+                    self.emit(Op::Pop);
+                    self.emit(Op::True);
+                }
+            },
+            UnOp::Typeof => {
+                if let Expr::Ident(n, _) = x
+                    && matches!(self.resolve(n).res, Res::Global)
+                    && !self.imports.contains_key(n)
+                {
+                    let c = self.konst(n);
+                    self.emit(Op::TypeofGlobal(c));
+                } else {
+                    self.expr(x)?;
+                    self.emit(Op::Typeof);
+                }
+            }
+            UnOp::Void => {
+                self.expr(x)?;
+                self.emit(Op::Pop);
+                self.emit(Op::Undef);
+            }
+            UnOp::Neg => {
+                if let Expr::Num(n) = x {
+                    self.emit(Op::Num(-n));
+                } else {
+                    self.expr(x)?;
+                    self.emit(Op::Neg);
+                }
+            }
+            UnOp::Plus => {
+                self.expr(x)?;
+                self.emit(Op::Plus);
+            }
+            UnOp::Not => {
+                self.expr(x)?;
+                self.emit(Op::Not);
+            }
+            UnOp::BitNot => {
+                self.expr(x)?;
+                self.emit(Op::BitNot);
+            }
+        }
+        Ok(())
+    }
+
