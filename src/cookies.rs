@@ -303,3 +303,40 @@ pub fn for_script(url: &Url) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn exporta_e_importa() {
+        let u = Url::parse("https://disco.cookie-teste.test/").unwrap();
+        store_from_header(&u, "fica=1; Max-Age=3600; Path=/");
+        store_from_header(&u, "sessao=2; Path=/");
+        let text = export();
+        assert!(text.contains("fica	1	disco.cookie-teste.test"));
+        assert!(!text.contains("sessao"));
+        // apaga e lê de volta
+        store_from_header(&u, "fica=; Max-Age=0; Path=/");
+        assert_eq!(header_for(&u), "sessao=2");
+        import(&text);
+        assert_eq!(header_for(&u), "sessao=2; fica=1");
+    }
+
+    #[test]
+    fn datas() {
+        assert_eq!(parse_date("Wed, 21 Oct 2015 07:28:00 GMT"), Some(1445412480.0));
+        assert_eq!(parse_date("Wednesday, 21-Oct-15 07:28:00 GMT"), Some(1445412480.0));
+        assert_eq!(parse_date("Thu, 01 Jan 1970 00:00:00 GMT"), Some(0.0));
+    }
+
+    #[test]
+    fn pote() {
+        let u = Url::parse("https://www.exemplo-cookie.test/a/b").unwrap();
+        store_from_header(&u, "sid=1; Path=/; HttpOnly");
+        store_from_header(&u, "tema=escuro; Domain=exemplo-cookie.test; Path=/");
+        store_from_script(&u, "local=x");
+        store_from_script(&u, "sid=hack; Path=/");
+        assert_eq!(header_for(&u), "local=x; sid=1; tema=escuro");
+        assert_eq!(for_script(&u), "local=x; tema=escuro");
+        let outro = Url::parse("https://api.exemplo-cookie.test/").unwrap();
+        assert_eq!(header_for(&outro), "tema=escuro");
+        store_from_script(&u, "tema=; Domain=exemplo-cookie.test; Path=/; Max-Age=0");
+        assert_eq!(header_for(&outro), "");
+    }
+}
