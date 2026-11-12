@@ -1840,3 +1840,68 @@ impl App {
         self.request_redraw();
     }
 
+    fn page_key(&mut self, ev: &KeyEvent, ctrl: bool, shift: bool, alt: bool) {
+        // na nova aba, começar a digitar já abre a busca
+        if self.tab().kind() == Kind::NewTab
+            && !ctrl
+            && !alt
+            && let Some(t) = &ev.text
+            && t.chars().any(|c| !c.is_control() && !c.is_whitespace())
+        {
+            self.open_palette(false);
+            self.omni.insert(t);
+            self.palette_edited = true;
+            self.refresh_suggestions();
+            return;
+        }
+        // a página recebe a tecla (eventos JS, campos de texto)
+        if self.tab().kind() == Kind::Web
+            && self.tab().frame.is_some()
+            && self.tab().error.is_none()
+            && let Some(key) = dom_key(&ev.logical_key)
+        {
+            let text = ev.text.as_ref().map(|t| t.to_string());
+            let meta = self.mods.super_key();
+            let tab = self.tab();
+            tab.engine.key(tab.nav, key, text, ctrl, shift, alt, meta);
+            if tab.editing {
+                return;
+            }
+        }
+        if ctrl && !alt && let Key::Character(c) = &ev.logical_key {
+            match c.to_lowercase().as_str() {
+                "c" => {
+                    self.copy_selection();
+                    return;
+                }
+                "a" => {
+                    if let Some(frame) = self.tabs[self.active].frame.as_ref() {
+                        self.tools.sync(&frame.items);
+                    }
+                    self.tools.select_all();
+                    self.request_redraw();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        let page = self.viewport_css().1 * 0.9;
+        match &ev.logical_key {
+            Key::Named(NamedKey::ArrowDown) => self.scroll_by(48.0),
+            Key::Named(NamedKey::ArrowUp) => self.scroll_by(-48.0),
+            Key::Named(NamedKey::PageDown) => self.scroll_by(page),
+            Key::Named(NamedKey::PageUp) => self.scroll_by(-page),
+            Key::Named(NamedKey::Space) => self.scroll_by(if shift { -page } else { page }),
+            Key::Named(NamedKey::Home) if !ctrl => self.scroll_to(0.0),
+            Key::Named(NamedKey::End) if !ctrl => self.scroll_to(f32::MAX),
+            Key::Named(NamedKey::Escape) => {
+                if self.tab().loading {
+                    self.stop();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------- quadro
+
