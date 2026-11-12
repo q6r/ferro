@@ -253,3 +253,72 @@ fn view(o: &ObjRef, buffer: ObjRef, kind: TaKind, offset: usize, length: usize, 
     ))
 }
 
+fn ta_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let kind = kind_of_ctor(&a.callee);
+    let Some(nt) = a.new_target.clone() else {
+        return Err(vm.type_error(format!("Constructor {} requires 'new'", kind.name())));
+    };
+    let idx = TaKind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
+    let def = vm.realm.typed_protos[idx].clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    let first = a.arg(0);
+    let Value::Object(src) = &first else {
+        let len = to_index(vm, &first, "typed array length")?;
+        return Ok(Value::Object(new_typed(vm, kind, len, Some(proto))?));
+    };
+    // sobre um ArrayBuffer existente
+    if let Some(bytes) = buffer_bytes(src) {
+        let blen = bytes.borrow().len();
+        let size = kind.size();
+        let offset = to_index(vm, &a.arg(1), "typed array offset")?;
+        if offset % size != 0 {
+            return Err(vm.range_error(format!("start offset of {} should be a multiple of {size}", kind.name())));
+        }
+        let length = if a.arg(2).is_undefined() {
+            if blen % size != 0 {
+                return Err(vm.range_error(format!("byte length of {} should be a multiple of {size}", kind.name())));
+            }
+            if offset > blen {
+                return Err(vm.range_error(format!("Start offset {offset} is outside the bounds of the buffer")));
+            }
+            (blen - offset) / size
+        } else {
+            let l = to_index(vm, &a.arg(2), "typed array length")?;
+            if offset + l * size > blen {
+                return Err(vm.range_error(format!("Invalid typed array length: {l}")));
+            }
+            l
+        };
+        return Ok(Value::Object(view(src, src.clone(), kind, offset, length, proto)));
+    }
+    // cópia de outro typed array, de um iterável ou de um array-like
+    let from_typed = match &src.borrow().kind {
+        Kind::TypedArray(t) => Some((t.kind.is_bigint(), (0..t.length).filter_map(|i| t.get(i)).collect::<Vec<Value>>())),
+        _ => None,
+    };
+    let values = if let Some((big, vals)) = from_typed {
+        if big != kind.is_bigint() {
+            return Err(vm.type_error("Cannot mix BigInt and other types, use explicit conversions"));
+        }
+        vals
+    } else {
+        let key = PropKey::Sym(vm.realm.sym_iterator.clone());
+        let it = vm.get_obj(src, &key)?;
+        if it.is_callable() {
+            vm.iterate_to_vec(&first)?
+        } else {
+            let len = vm.length_of(src)?;
+            let mut v = Vec::with_capacity(len.min(1 << 20));
+            for i in 0..len {
+                v.push(vm.get_obj(src, &crate::ops::index_key(i))?);
+            }
+            v
+        }
+    };
+    let t = new_typed(vm, kind, values.len(), Some(proto))?;
+    for (i, v) in values.iter().enumerate() {
+        vm.typed_set(&t, i, v)?;
+    }
+    Ok(Value::Object(t))
+}
+
