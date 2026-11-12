@@ -235,3 +235,51 @@ impl App {
         }
     }
 
+    /// Barra de busca na página (canto superior direito da página).
+    pub(super) fn draw_find_bar(&self, p: &mut Painter, t: &Theme, g: &Geo, hits: &mut Hits) {
+        if !self.tools.find_open {
+            return;
+        }
+        let c = g.content;
+        let w = 340.0f32.min(c.w - 24.0);
+        let r = rect(c.x + c.w - w - 16.0, c.y + 10.0, w, 40.0);
+        p.shadow(r, 12.0, 30);
+        p.rrect(r, 12.0, t.popup);
+        p.stroke(r, 12.0, 1.0, t.border);
+        p.icon(r.x + 20.0, r.y + 20.0, Icon::Search, 16.0, t.muted);
+        let count = if self.tools.find.text.is_empty() {
+            String::new()
+        } else if self.tools.matches.is_empty() {
+            "0/0".to_string()
+        } else {
+            format!("{}/{}", self.tools.current + 1, self.tools.matches.len())
+        };
+        let cw = p.measure(&count, 12.0, Weight::Regular);
+        let tx = r.x + 36.0;
+        let field_w = r.w - 36.0 - cw - 52.0;
+        let base = Painter::baseline(r.y + 20.0, 14.0);
+        let text = &self.tools.find.text;
+        let shown = p.ellipsize(text, 14.0, Weight::Regular, field_w);
+        if text.is_empty() {
+            p.text(tx, base, "Buscar na página", 14.0, t.muted, Weight::Regular);
+        } else {
+            p.text(tx, base, &shown, 14.0, t.text, Weight::Regular);
+        }
+        // cursor
+        let caret_x = tx + p.measure(&shown, 14.0, Weight::Regular).min(field_w);
+        p.rect(rect(caret_x + 1.0, r.y + 11.0, 1.5, 18.0), t.text);
+        let muted = if !text.is_empty() && self.tools.matches.is_empty() {
+            Color::rgb(0xe0, 0x45, 0x45)
+        } else {
+            t.muted
+        };
+        p.text(r.x + r.w - 40.0 - cw, base - 1.0, &count, 12.0, muted, Weight::Regular);
+        let close = rect(r.x + r.w - 34.0, r.y + 6.0, 28.0, 28.0);
+        if self.hover == Some(Hit::FindClose) {
+            p.rrect(close, 8.0, t.row_selected());
+        }
+        p.icon(close.x + 14.0, close.y + 14.0, Icon::Close, 14.0, t.text);
+        hits.push((r, Hit::FindBar));
+        hits.push((close, Hit::FindClose));
+    }
+
