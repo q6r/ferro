@@ -534,3 +534,62 @@ impl Vm {
         self.get_with(o, key, &Value::Object(o.clone()))
     }
 
+    /// [[Get]] começando em `start`, com `receiver` como this dos getters.
+    pub fn get_with(&mut self, start: &ObjRef, key: &PropKey, receiver: &Value) -> Result<Value, Value> {
+        let mut cur = start.clone();
+        loop {
+            let (prop, next) = {
+                let b = cur.borrow();
+                if let Kind::Proxy { .. } = b.kind {
+                    drop(b);
+                    return self.proxy_get(&cur, key, receiver);
+                }
+                (b.own(key), b.proto.clone())
+            };
+            match prop {
+                Some(p) => {
+                    return match p.slot {
+                        Slot::Data { value, .. } => Ok(value),
+                        Slot::Accessor { get: Some(g), .. } => self.call_obj(&g, receiver.clone(), Vec::new()),
+                        Slot::Accessor { get: None, .. } => Ok(Value::Undefined),
+                    };
+                }
+                None => match next {
+                    Some(n) => cur = n,
+                    None => return Ok(Value::Undefined),
+                },
+            }
+        }
+    }
+
+    /// Como get, mas distingue "não existe" (None).
+    pub fn get_opt(&mut self, start: &ObjRef, key: &PropKey) -> Result<Option<Value>, Value> {
+        let mut cur = start.clone();
+        loop {
+            let (prop, next) = {
+                let b = cur.borrow();
+                if let Kind::Proxy { .. } = b.kind {
+                    drop(b);
+                    if !self.proxy_has(&cur, key)? {
+                        return Ok(None);
+                    }
+                    return Ok(Some(self.proxy_get(&cur, key, &Value::Object(start.clone()))?));
+                }
+                (b.own(key), b.proto.clone())
+            };
+            match prop {
+                Some(p) => {
+                    return match p.slot {
+                        Slot::Data { value, .. } => Ok(Some(value)),
+                        Slot::Accessor { get: Some(g), .. } => Ok(Some(self.call_obj(&g, Value::Object(start.clone()), Vec::new())?)),
+                        Slot::Accessor { get: None, .. } => Ok(Some(Value::Undefined)),
+                    };
+                }
+                None => match next {
+                    Some(n) => cur = n,
+                    None => return Ok(None),
+                },
+            }
+        }
+    }
+
