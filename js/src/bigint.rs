@@ -499,3 +499,39 @@ impl BigInt {
         self.bitop(o, |x, y| x | y)
     }
 
+    pub fn xor(&self, o: &BigInt) -> BigInt {
+        self.bitop(o, |x, y| x ^ y)
+    }
+
+    pub fn not(&self) -> BigInt {
+        self.neg().sub(&BigInt::from_i64(1))
+    }
+
+    pub fn cmp(&self, o: &BigInt) -> Ordering {
+        match (self.neg, o.neg) {
+            (false, true) => Ordering::Greater,
+            (true, false) => Ordering::Less,
+            (false, false) => mag_cmp(&self.mag, &o.mag),
+            (true, true) => mag_cmp(&o.mag, &self.mag),
+        }
+    }
+
+    /// Comparação exata com um Number (None se for NaN).
+    pub fn cmp_f64(&self, f: f64) -> Option<Ordering> {
+        if f.is_nan() {
+            return None;
+        }
+        if f == f64::INFINITY {
+            return Some(Ordering::Less);
+        }
+        if f == f64::NEG_INFINITY {
+            return Some(Ordering::Greater);
+        }
+        let fl = f.floor();
+        let b = BigInt::from_f64(fl)?;
+        match self.cmp(&b) {
+            Ordering::Equal if f > fl => Some(Ordering::Less),
+            o => Some(o),
+        }
+    }
+
