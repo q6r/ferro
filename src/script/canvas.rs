@@ -293,3 +293,80 @@ fn image(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Bool(true))
 }
 
+/// Fonte CSS do canvas ("bold 16px Arial") → (face, tamanho em px).
+fn parse_font(fonts: &Fonts, spec: &str) -> (FontId, f32) {
+    let mut size = 10.0;
+    let mut weight = 400;
+    let mut italic = false;
+    let mut family_start = None;
+    let toks: Vec<&str> = spec.split_whitespace().collect();
+    for (i, t) in toks.iter().enumerate() {
+        let l = t.to_ascii_lowercase();
+        match l.as_str() {
+            "italic" | "oblique" => italic = true,
+            "bold" | "bolder" => weight = 700,
+            "lighter" => weight = 300,
+            "normal" | "small-caps" => {}
+            _ if l.parse::<u16>().is_ok() && family_start.is_none() && !l.ends_with("px") => {
+                weight = l.parse().unwrap_or(400);
+            }
+            _ => {
+                // tamanho (com /altura-da-linha opcional) e, depois, as famílias
+                let sz = l.split('/').next().unwrap_or("");
+                let parsed = if let Some(v) = sz.strip_suffix("px") {
+                    v.parse::<f32>().ok()
+                } else if let Some(v) = sz.strip_suffix("pt") {
+                    v.parse::<f32>().ok().map(|p| p * 4.0 / 3.0)
+                } else if let Some(v) = sz.strip_suffix("rem").or_else(|| sz.strip_suffix("em")) {
+                    v.parse::<f32>().ok().map(|e| e * 16.0)
+                } else if let Some(v) = sz.strip_suffix('%') {
+                    v.parse::<f32>().ok().map(|p| p / 100.0 * 16.0)
+                } else {
+                    None
+                };
+                if let Some(s) = parsed {
+                    size = s;
+                    family_start = Some(i + 1);
+                    break;
+                }
+            }
+        }
+    }
+    let families = family_start.map(|i| toks[i..].join(" ")).unwrap_or_default();
+    let names: Vec<String> = families
+        .split(',')
+        .map(|f| f.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase())
+        .filter(|f| !f.is_empty())
+        .collect();
+    let mut family = FontFamily::Sans;
+    for n in &names {
+        if let Some(id) = fonts.web_font(n, weight, italic) {
+            return (id, size);
+        }
+        let f = match n.as_str() {
+            "serif" | "times" | "times new roman" | "georgia" | "garamond" => Some(FontFamily::Serif),
+            "monospace" | "courier" | "courier new" | "consolas" | "menlo" | "monaco" => Some(FontFamily::Mono),
+            "system-ui" | "-apple-system" | "segoe ui" | "blinkmacsystemfont" => Some(FontFamily::System),
+            "sans-serif" | "arial" | "helvetica" | "roboto" | "verdana" => Some(FontFamily::Sans),
+            _ => None,
+        };
+        if let Some(f) = f {
+            family = f;
+            break;
+        }
+    }
+    (fonts.pick(family, weight, italic), size.clamp(1.0, 2000.0))
+}
+
+/// `cvMeasure(fonte, texto)` → [largura, subida, descida, subida da fonte, descida da fonte].
+fn measure(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let font = text(vm, a, 0)?;
+    let t = text(vm, a, 1)?;
+    let fonts = read(vm, |h| h.fonts.clone());
+    let (id, size) = parse_font(&fonts, &font);
+    let w = fonts.measure(id, size, &t);
+    let lm = fonts.line_metrics(id, size);
+    let vals = [w, lm.ascent * 0.95, lm.descent * 0.6, lm.ascent, lm.descent];
+    Ok(vm.array_value(vals.iter().map(|v| Value::Number(*v as f64)).collect()))
+}
+
