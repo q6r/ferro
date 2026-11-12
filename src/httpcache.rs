@@ -194,3 +194,46 @@ pub fn store(url: &Url, res: &Response) {
     write_disk(url.as_str(), &e);
 }
 
+fn insert_mem(key: &str, e: Entry) {
+    let mut g = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    let c = g.get_or_insert_with(Cache::default);
+    let size = e.body.len();
+    if let Some(old) = c.map.insert(key.to_string(), e) {
+        c.bytes -= old.body.len();
+    } else {
+        c.order.push_back(key.to_string());
+    }
+    c.bytes += size;
+    // tira os mais antigos até caber
+    while c.bytes > MEM_LIMIT {
+        let Some(k) = c.order.pop_front() else { break };
+        if let Some(old) = c.map.remove(&k) {
+            c.bytes -= old.body.len();
+        }
+    }
+}
+
+/// Formato em disco: linha com a URL, linha "status validade", cabeçalhos
+/// "nome: valor", linha vazia e o corpo.
+fn write_disk(key: &str, e: &Entry) {
+    let Some(path) = disk_path(key) else { return };
+    let mut out = Vec::with_capacity(e.body.len() + 512);
+    out.extend_from_slice(key.as_bytes());
+    out.push(b'\n');
+    out.extend_from_slice(format!("{} {}\n", e.status, e.fresh_until).as_bytes());
+    for (k, v) in &e.headers {
+        if !k.contains('\n') && !v.contains('\n') {
+            out.extend_from_slice(format!("{k}: {v}\n").as_bytes());
+        }
+    }
+    out.push(b'\n');
+    out.extend_from_slice(&e.body);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = path.with_extension("tmp");
+    if std::fs::write(&tmp, &out).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
+}
+
