@@ -1345,3 +1345,44 @@ class PathBuilder {
   }
 }
 
+// Path2D guarda as operações (no espaço do usuário) e as repete com a
+// transformação de quem desenha.
+const PATH_OPS = new WeakMap();
+class Path2D {
+  constructor(src) {
+    const ops = [];
+    PATH_OPS.set(this, ops);
+    if (src instanceof Path2D) ops.push(...PATH_OPS.get(src));
+    else if (typeof src === 'string') ops.push(['addCommands', [Array.from(N.cvSvgPath(src))]]);
+  }
+  addPath(p, t) {
+    if (!(p instanceof Path2D)) throw new TypeError("Failed to execute 'addPath' on 'Path2D': parameter 1 is not of type 'Path2D'.");
+    const m = t ? new DOMMatrix(t)._v() : null;
+    PATH_OPS.get(this).push(['_sub', [PATH_OPS.get(p).slice(), m]]);
+  }
+}
+for (const k of ['moveTo', 'lineTo', 'bezierCurveTo', 'quadraticCurveTo', 'closePath', 'rect', 'arc', 'ellipse', 'arcTo', 'roundRect']) {
+  hidden(Path2D.prototype, k, function (...a) { PATH_OPS.get(this).push([k, a]); });
+}
+hidden(G, 'Path2D', Path2D);
+
+// repete as operações de um Path2D num PathBuilder
+function replayPath(pb, ops, m) {
+  for (const [k, a] of ops) {
+    if (k === '_sub') { replayPath(pb, a[0], a[1] ? mmul(m, a[1]) : m); continue; }
+    if (k === 'closePath') pb.closePath();
+    else if (k === 'arc') pb.ellipse(m, a[0], a[1], a[2], a[2], 0, a[3], a[4], a[5]);
+    else if (k === 'addCommands') pb.addCommands(m, a[0]);
+    else pb[k](m, ...a);
+  }
+}
+
+const CTX_DEFAULTS = () => ({
+  fill: '#000000', stroke: '#000000', lineWidth: 1, lineCap: 'butt', lineJoin: 'miter', miterLimit: 10,
+  dash: [], dashOffset: 0, alpha: 1, op: 'source-over', font: '10px sans-serif', textAlign: 'start',
+  textBaseline: 'alphabetic', direction: 'inherit', smoothing: true, smoothingQuality: 'low', m: IDENT(),
+  shadowBlur: 0, shadowColor: 'rgba(0, 0, 0, 0)', shadowOffsetX: 0, shadowOffsetY: 0, filter: 'none',
+  letterSpacing: '0px', wordSpacing: '0px', fontKerning: 'auto', fontStretch: 'normal', fontVariantCaps: 'normal',
+  textRendering: 'auto',
+});
+
