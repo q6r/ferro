@@ -3101,3 +3101,68 @@ for (const [k, v] of [['UNSENT', 0], ['OPENED', 1], ['HEADERS_RECEIVED', 2], ['L
 for (const P of [XMLHttpRequestEventTarget.prototype]) {
   defineHandlers(P, ['loadstart', 'progress', 'abort', 'error', 'load', 'timeout', 'loadend', 'readystatechange']);
 }
+defineHandlers(AbortSignal.prototype, []);
+hidden(G, 'XMLHttpRequestEventTarget', XMLHttpRequestEventTarget);
+hidden(G, 'XMLHttpRequest', XMLHttpRequest);
+
+// ------------------------------------------------- mensagens
+class MessagePort extends EventTarget {
+  constructor() { super(); this._other = null; this._started = false; }
+  postMessage(data) {
+    const target = this._other;
+    if (!target) return;
+    const ev = new MessageEvent('message', { data: structuredClone(data) });
+    setTimeout(() => fireTrusted(target, ev), 0);
+  }
+  start() {} close() { this._other = null; }
+}
+defineHandlers(MessagePort.prototype, ['message', 'messageerror']);
+class MessageChannel {
+  constructor() {
+    this.port1 = new MessagePort();
+    this.port2 = new MessagePort();
+    this.port1._other = this.port2;
+    this.port2._other = this.port1;
+  }
+}
+hidden(G, 'MessagePort', MessagePort);
+hidden(G, 'MessageChannel', MessageChannel);
+class BroadcastChannel extends EventTarget {
+  constructor(name) { super(); this.name = String(name); }
+  postMessage() {} close() {}
+}
+defineHandlers(BroadcastChannel.prototype, ['message', 'messageerror']);
+hidden(G, 'BroadcastChannel', BroadcastChannel);
+
+// ------------------------------------------------- observers
+const MUTATION_OBSERVERS = [];
+class MutationObserver {
+  constructor(cb) {
+    if (typeof cb !== 'function') throw new TypeError("Failed to construct 'MutationObserver': The callback provided as parameter 1 is not a function.");
+    this._cb = cb;
+    this._targets = [];
+    this._records = [];
+    this._queued = false;
+  }
+  observe(target, opts = {}) {
+    if (!(target instanceof Node)) throw new TypeError("Failed to execute 'observe' on 'MutationObserver': parameter 1 is not of type 'Node'.");
+    const o = {
+      childList: !!opts.childList,
+      attributes: !!(opts.attributes || opts.attributeFilter || opts.attributeOldValue),
+      characterData: !!(opts.characterData || opts.characterDataOldValue),
+      subtree: !!opts.subtree, filter: opts.attributeFilter || null,
+      attributeOldValue: !!opts.attributeOldValue, characterDataOldValue: !!opts.characterDataOldValue,
+    };
+    const i = this._targets.findIndex((t) => t.node === target);
+    if (i >= 0) this._targets[i].opts = o; else this._targets.push({ node: target, opts: o });
+    if (!MUTATION_OBSERVERS.includes(this)) MUTATION_OBSERVERS.push(this);
+    N.observing();
+  }
+  disconnect() {
+    this._targets = [];
+    this._records = [];
+    const i = MUTATION_OBSERVERS.indexOf(this);
+    if (i >= 0) MUTATION_OBSERVERS.splice(i, 1);
+  }
+  takeRecords() { const r = this._records; this._records = []; return r; }
+}
