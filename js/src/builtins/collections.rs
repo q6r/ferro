@@ -206,3 +206,78 @@ fn can_be_weak(v: &Value) -> bool {
     matches!(v, Value::Object(_) | Value::Symbol(_))
 }
 
+fn weakmap_set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !can_be_weak(&a.arg(0)) {
+        let d = vm.describe(&a.arg(0));
+        return Err(vm.type_error(format!("Invalid value used as weak map key: {d}")));
+    }
+    let (k, v) = (a.arg(0), a.arg(1));
+    with_weak(vm, a, "WeakMap.prototype.set", |c| c.set(&k, v))?;
+    Ok(a.this.clone())
+}
+
+fn set_add(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    with_coll(vm, a, "add", |c| {
+        let key = k.clone();
+        c.set(key, k)
+    })?;
+    Ok(a.this.clone())
+}
+
+fn weakset_add(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !can_be_weak(&a.arg(0)) {
+        let d = vm.describe(&a.arg(0));
+        return Err(vm.type_error(format!("Invalid value used in weak set: {d}")));
+    }
+    let k = a.arg(0);
+    with_weak(vm, a, "WeakSet.prototype.add", |c| c.set(&k, Value::Bool(true)))?;
+    Ok(a.this.clone())
+}
+
+fn coll_has(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    Ok(Value::Bool(with_coll(vm, a, "has", |c| c.has(&k))?))
+}
+
+fn coll_delete(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = a.arg(0);
+    Ok(Value::Bool(with_coll(vm, a, "delete", |c| c.delete(&k))?))
+}
+
+fn coll_clear(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    with_coll(vm, a, "clear", |c| c.clear())?;
+    Ok(Value::Undefined)
+}
+
+fn coll_size(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Number(with_coll(vm, a, "size", |c| c.size())? as f64))
+}
+
+fn coll_for_each(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let f = a.arg(0);
+    if !f.is_callable() {
+        let d = vm.describe(&f);
+        return Err(vm.type_error(format!("{d} is not a function")));
+    }
+    let is_set = matches!(&a.this, Value::Object(o) if matches!(o.borrow().kind, Kind::Set(_)));
+    let mut i = 0;
+    loop {
+        // relê a cada passo: o callback pode alterar a coleção
+        let entry = with_coll(vm, a, "forEach", |c| {
+            while i < c.entries.len() {
+                if let Some(e) = &c.entries[i] {
+                    i += 1;
+                    return Some(e.clone());
+                }
+                i += 1;
+            }
+            None
+        })?;
+        let Some((k, v)) = entry else { break };
+        let args = if is_set { vec![k.clone(), k, a.this.clone()] } else { vec![v, k, a.this.clone()] };
+        vm.call(&f, a.arg(1), args)?;
+    }
+    Ok(Value::Undefined)
+}
+
