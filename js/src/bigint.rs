@@ -315,3 +315,74 @@ impl BigInt {
         Some(if neg { v.neg() } else { v })
     }
 
+    pub fn to_string_radix(&self, radix: u32) -> String {
+        if self.mag.is_empty() {
+            return "0".into();
+        }
+        let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+        // divide por radix^k de uma vez (k dígitos por pedaço)
+        let mut k = 1u32;
+        let mut chunk = radix as u64;
+        while chunk * (radix as u64) < (1 << 32) {
+            chunk *= radix as u64;
+            k += 1;
+        }
+        let mut parts: Vec<u32> = Vec::new();
+        let mut cur = self.mag.clone();
+        while !cur.is_empty() {
+            let (q, r) = mag_divrem_small(&cur, chunk as u32);
+            parts.push(r);
+            cur = q;
+        }
+        let mut out = String::new();
+        if self.neg {
+            out.push('-');
+        }
+        for (i, &p) in parts.iter().rev().enumerate() {
+            let mut buf = Vec::new();
+            let mut x = p;
+            for _ in 0..k {
+                buf.push(digits[(x % radix) as usize]);
+                x /= radix;
+            }
+            while i == 0 && buf.len() > 1 && *buf.last().unwrap() == b'0' {
+                buf.pop();
+            }
+            buf.reverse();
+            out.push_str(std::str::from_utf8(&buf).unwrap_or(""));
+        }
+        out
+    }
+
+    pub fn neg(&self) -> BigInt {
+        BigInt::from_parts(!self.neg, self.mag.clone())
+    }
+
+    pub fn add(&self, o: &BigInt) -> BigInt {
+        if self.neg == o.neg {
+            return BigInt::from_parts(self.neg, mag_add(&self.mag, &o.mag));
+        }
+        match mag_cmp(&self.mag, &o.mag) {
+            Ordering::Equal => BigInt::zero(),
+            Ordering::Greater => BigInt::from_parts(self.neg, mag_sub(&self.mag, &o.mag)),
+            Ordering::Less => BigInt::from_parts(o.neg, mag_sub(&o.mag, &self.mag)),
+        }
+    }
+
+    pub fn sub(&self, o: &BigInt) -> BigInt {
+        self.add(&o.neg())
+    }
+
+    pub fn mul(&self, o: &BigInt) -> BigInt {
+        BigInt::from_parts(self.neg != o.neg, mag_mul(&self.mag, &o.mag))
+    }
+
+    /// Divisão truncada (como no JS); None se o divisor for zero.
+    pub fn div(&self, o: &BigInt) -> Option<BigInt> {
+        if o.is_zero() {
+            return None;
+        }
+        let (q, _) = mag_divrem(&self.mag, &o.mag);
+        Some(BigInt::from_parts(self.neg != o.neg, q))
+    }
+
