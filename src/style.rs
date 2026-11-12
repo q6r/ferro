@@ -51,3 +51,52 @@ pub enum Display {
     Contents,
 }
 
+impl Display {
+    pub fn is_block_level(self) -> bool {
+        !matches!(
+            self,
+            Display::Inline
+                | Display::InlineBlock
+                | Display::InlineFlex
+                | Display::InlineGrid
+                | Display::None
+                | Display::Contents
+        )
+    }
+
+    /// Caixa em linha que por dentro é um bloco (inline-block/flex/grid).
+    pub fn is_inline_block(self) -> bool {
+        matches!(self, Display::InlineBlock | Display::InlineFlex | Display::InlineGrid)
+    }
+
+    pub fn is_flex(self) -> bool {
+        matches!(self, Display::Flex | Display::InlineFlex)
+    }
+
+    pub fn is_grid(self) -> bool {
+        matches!(self, Display::Grid | Display::InlineGrid)
+    }
+}
+
+/// Gradiente linear: ângulo em graus (0 = para cima, 180 = para baixo) e
+/// paradas de cor com posição de 0 a 1.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Gradient {
+    pub angle: f32,
+    pub stops: Vec<(Color, f32)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BgImage {
+    Url(Rc<str>),
+    Linear(Rc<Gradient>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BgSize {
+    Auto,
+    Cover,
+    Contain,
+    Size(Len, Len),
+}
+
