@@ -125,3 +125,54 @@ pub fn install(r: &Realm) {
     }
 }
 
+fn false_getter(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(false))
+}
+
+fn abstract_ctor(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    Err(vm.type_error("Abstract class TypedArray not directly constructable"))
+}
+
+/// ToIndex (tamanhos e posições).
+fn to_index(vm: &mut Vm, v: &Value, what: &str) -> Result<usize, Value> {
+    if v.is_undefined() {
+        return Ok(0);
+    }
+    let n = vm.to_integer(v)?;
+    if !(0.0..=9007199254740991.0).contains(&n) {
+        if what == "typed array length" {
+            let d = crate::conv::number_to_string(n);
+            return Err(vm.range_error(format!("Invalid {what}: {d}")));
+        }
+        return Err(vm.range_error(format!("Invalid {what}")));
+    }
+    Ok(n as usize)
+}
+
+pub fn new_buffer(vm: &mut Vm, len: usize) -> Result<ObjRef, Value> {
+    if len > 2_000_000_000 {
+        return Err(vm.range_error("Array buffer allocation failed"));
+    }
+    let data: Bytes = Rc::new(RefCell::new(vec![0u8; len]));
+    Ok(ObjRef::new(Object::new(Some(vm.realm.array_buffer_proto.clone()), Kind::ArrayBuffer(data))))
+}
+
+fn buffer_bytes(o: &ObjRef) -> Option<Bytes> {
+    match &o.borrow().kind {
+        Kind::ArrayBuffer(b) => Some(b.clone()),
+        _ => None,
+    }
+}
+
+fn ab_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Some(nt) = a.new_target.clone() else {
+        return Err(vm.type_error("Constructor ArrayBuffer requires 'new'"));
+    };
+    let len = to_index(vm, &a.arg(0), "array buffer length")?;
+    let b = new_buffer(vm, len)?;
+    let def = vm.realm.array_buffer_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    b.borrow_mut().proto = Some(proto);
+    Ok(Value::Object(b))
+}
+
