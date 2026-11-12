@@ -666,3 +666,49 @@ impl Session {
         }
     }
 
+    /// Todos os scripts do HTML rodaram: DOMContentLoaded.
+    fn scripts_finished(&mut self) {
+        let parser = {
+            let mut hb = self.host.borrow_mut();
+            hb.ready_state = "interactive";
+            hb.parser.take()
+        };
+        let doc = wrap(&mut self.js.vm, Document::ROOT);
+        self.hook("fire", vec![doc.clone(), Value::str("readystatechange")]);
+        self.hook("fire", vec![doc, Value::str("DOMContentLoaded"), Value::Bool(true)]);
+        if std::env::var_os("FERRO_TEMPOS").is_some()
+            && let Some(p) = parser
+        {
+            eprintln!("[ferro] scripts: {} em {:.0} ms", p.count, p.started.elapsed().as_secs_f64() * 1000.0);
+        }
+    }
+
+    /// Fim do carregamento (depois das imagens): `load` na janela.
+    pub fn finish_load(&mut self) {
+        self.host.borrow_mut().ready_state = "complete";
+        let doc = wrap(&mut self.js.vm, Document::ROOT);
+        self.hook("fire", vec![doc, Value::str("readystatechange")]);
+        let win = Value::Object(self.js.vm.realm.global.clone());
+        self.hook("fire", vec![win.clone(), Value::str("load")]);
+        self.hook("fire", vec![win, Value::str("pageshow")]);
+    }
+
+    fn exec_script(&mut self, n: NodeId, text: &str, name: &str) {
+        exec_script(&mut self.js.vm, n, text, name);
+        self.js.vm.run_microtasks();
+        // depuração: FERRO_VIGIA="expressão" avisa quando o valor muda
+        if let Ok(code) = std::env::var("FERRO_VIGIA") {
+            let v = match self.js.vm.eval_script(&code, "vigia") {
+                Ok(v) => self.js.inspect(&v),
+                Err(e) => self.js.error_text(&e),
+            };
+            thread_local!(static LAST: RefCell<String> = const { RefCell::new(String::new()) });
+            LAST.with(|l| {
+                if *l.borrow() != v {
+                    eprintln!("[vigia] depois de {name}: {v}");
+                    *l.borrow_mut() = v;
+                }
+            });
+        }
+    }
+
