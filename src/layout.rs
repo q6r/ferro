@@ -2886,3 +2886,46 @@ impl<'a> Ctx<'a> {
 
     // -------------------------------------------------------------- tabelas
 
+    /// Larguras mínima e máxima de cada coluna (caixas de borda das células).
+    fn table_columns(&mut self, g: &TableGrid<'a>, sp: f32) -> (Vec<f32>, Vec<f32>) {
+        let n = g.ncols.max(1);
+        let mut mins = vec![0.0f32; n];
+        let mut maxs = vec![0.0f32; n];
+        let mut spans = Vec::new();
+        for (_, cells) in &g.rows {
+            let mut c = 0;
+            for &(cell, span) in cells {
+                if c >= n {
+                    break;
+                }
+                let (mn, mx) = self.intrinsic(cell);
+                let span = span.min(n - c);
+                if span == 1 {
+                    mins[c] = mins[c].max(mn);
+                    maxs[c] = maxs[c].max(mx);
+                } else {
+                    spans.push((c, span, mn, mx));
+                }
+                c += span;
+            }
+        }
+        // células com colspan: distribui o que faltar entre as colunas
+        for (c, span, mn, mx) in spans {
+            let inner = sp * (span - 1) as f32;
+            let have_min: f32 = mins[c..c + span].iter().sum::<f32>() + inner;
+            if mn > have_min {
+                let each = (mn - have_min) / span as f32;
+                mins[c..c + span].iter_mut().for_each(|m| *m += each);
+            }
+            let have_max: f32 = maxs[c..c + span].iter().sum::<f32>() + inner;
+            if mx > have_max {
+                let each = (mx - have_max) / span as f32;
+                maxs[c..c + span].iter_mut().for_each(|m| *m += each);
+            }
+        }
+        for i in 0..n {
+            maxs[i] = maxs[i].max(mins[i]);
+        }
+        (mins, maxs)
+    }
+
