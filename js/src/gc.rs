@@ -108,3 +108,56 @@ impl Graph {
         self.epoch << 32 | idx as u64
     }
 
+    fn idx(&self, tag: u64) -> Option<u32> {
+        (tag >> 32 == self.epoch).then_some(tag as u32)
+    }
+
+    fn obj(&self, o: &ObjRef) -> Option<u32> {
+        o.0.try_borrow().ok().and_then(|b| self.idx(b.gc.get()))
+    }
+
+    fn env(&self, e: &Env) -> Option<u32> {
+        e.try_borrow().ok().and_then(|b| self.idx(b.gc.get()))
+    }
+
+    /// Closure: ganha um nó na primeira vez que aparece.
+    fn clo(&mut self, c: &Rc<Closure>) -> u32 {
+        if let Some(i) = self.idx(c.gc.get()) {
+            return i;
+        }
+        let i = self.nodes.len();
+        c.gc.set(self.tag(i));
+        self.nodes.push(Node::Clo(c.clone()));
+        i as u32
+    }
+
+    fn value(&self, v: &Value, out: &mut Vec<u32>) {
+        if let Value::Object(o) = v
+            && let Some(i) = self.obj(o)
+        {
+            out.push(i);
+        }
+    }
+
+    fn objref(&self, o: &ObjRef, out: &mut Vec<u32>) {
+        if let Some(i) = self.obj(o) {
+            out.push(i);
+        }
+    }
+
+    fn frame(&self, f: &Frame, out: &mut Vec<u32>) {
+        for v in f.regs.iter().chain(&f.stack).chain(&f.args) {
+            self.value(v, out);
+        }
+        if let Some(e) = &f.env
+            && let Some(i) = self.env(e)
+        {
+            out.push(i);
+        }
+        self.value(&f.this, out);
+        self.value(&f.new_target, out);
+        for o in [&f.func, &f.home].into_iter().flatten() {
+            self.objref(o, out);
+        }
+    }
+
