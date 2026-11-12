@@ -1067,3 +1067,93 @@ impl Compiler {
         }
     }
 
+    fn compile(&mut self, n: &Node, back: bool) -> Result<(), RegexError> {
+        match n {
+            Node::Empty => {}
+            Node::Char(_) | Node::Any | Node::Class(_) => {
+                if let Node::Char(c) = n
+                    && *c > 0xFFFF
+                    && !self.flags.full_unicode()
+                {
+                    // sem a flag u, um caractere astral são duas unidades
+                    let c = c - 0x10000;
+                    let (hi, lo) = (0xD800 + (c >> 10), 0xDC00 + (c & 0x3FF));
+                    let order = if back { [lo, hi] } else { [hi, lo] };
+                    for u in order {
+                        self.emit(Inst::Single { m: Single::Char(u), back });
+                    }
+                    return Ok(());
+                }
+                let m = self.single(n).unwrap();
+                self.emit(Inst::Single { m, back });
+            }
+            Node::Start => {
+                self.emit(Inst::Start);
+            }
+            Node::End => {
+                self.emit(Inst::End);
+            }
+            Node::WordB(neg) => {
+                self.emit(Inst::WordB(*neg));
+            }
+            Node::Group(inner, idx) => match idx {
+                Some(i) => {
+                    let (s, e) = (2 * i, 2 * i + 1);
+                    self.emit(Inst::Save(if back { e } else { s }));
+                    self.compile(inner, back)?;
+                    self.emit(Inst::Save(if back { s } else { e }));
+                }
+                None => self.compile(inner, back)?,
+            },
+            Node::BackRef(g) => {
+                self.emit(Inst::BackRef { group: *g, back });
+            }
+            Node::NamedRef(name) => {
+                let g = *self.names.get(name).ok_or(RegexError("Invalid named capture referenced".into()))?;
+                self.emit(Inst::BackRef { group: g, back });
+            }
+            Node::Look { ahead, negate, node } => {
+                let at = self.emit(Inst::Look { negate: *negate, end: 0 });
+                self.compile(node, !*ahead)?;
+                self.emit(Inst::Succeed);
+                let end = self.here();
+                self.set_target(at, end);
+            }
+            Node::Concat(items) => {
+                if back {
+                    for it in items.iter().rev() {
+                        self.compile(it, back)?;
+                    }
+                } else {
+                    for it in items {
+                        self.compile(it, back)?;
+                    }
+                }
+            }
+            Node::Alt(alts) => {
+                let mut jumps = Vec::new();
+                for (k, a) in alts.iter().enumerate() {
+                    if k + 1 < alts.len() {
+                        let split = self.emit(Inst::Split(0, 0));
+                        let first = self.here();
+                        if let Inst::Split(x, _) = &mut self.insts[split as usize] {
+                            *x = first;
+                        }
+                        self.compile(a, back)?;
+                        jumps.push(self.emit(Inst::Jmp(0)));
+                        let next = self.here();
+                        self.set_target(split, next);
+                    } else {
+                        self.compile(a, back)?;
+                    }
+                }
+                let end = self.here();
+                for j in jumps {
+                    self.set_target(j, end);
+                }
+            }
+            Node::Repeat { node, min, max, greedy } => self.repeat(node, *min, *max, *greedy, back)?,
+        }
+        Ok(())
+    }
+
