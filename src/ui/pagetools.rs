@@ -133,3 +133,41 @@ impl Tools {
         }
     }
 
+    /// Ponto do documento → posição no texto mais próxima.
+    pub fn caret_at(&self, fonts: &Fonts, x: f32, y: f32) -> Option<Caret> {
+        let mut best: Option<(f32, Caret)> = None;
+        for (i, r) in self.runs.iter().enumerate() {
+            let (top, bottom) = (r.top(), r.bottom());
+            let dy = if y < top { top - y } else if y > bottom { y - bottom } else { 0.0 };
+            let w = fonts.measure(r.font, r.size, &r.text);
+            let dx = if x < r.x { r.x - x } else if x > r.x + w { x - r.x - w } else { 0.0 };
+            // linha certa pesa mais que a distância na horizontal
+            let d = dy * 1000.0 + dx;
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, (i, r.offset_at(fonts, x))));
+            }
+        }
+        best.map(|(_, c)| c)
+    }
+
+    /// Seleção em ordem (início, fim).
+    pub fn ordered(&self) -> Option<(Caret, Caret)> {
+        let (a, b) = self.sel?;
+        let (a, b) = if a <= b { (a, b) } else { (b, a) };
+        (a != b).then_some((a, b))
+    }
+
+    /// Trechos selecionados: (trecho, início, fim).
+    pub fn selected_spans(&self) -> Vec<(usize, usize, usize)> {
+        let Some(((ra, oa), (rb, ob))) = self.ordered() else { return Vec::new() };
+        (ra..=rb.min(self.runs.len().saturating_sub(1)))
+            .map(|i| {
+                let len = self.runs[i].text.len();
+                let a = if i == ra { oa.min(len) } else { 0 };
+                let b = if i == rb { ob.min(len) } else { len };
+                (i, a, b)
+            })
+            .filter(|(_, a, b)| b > a)
+            .collect()
+    }
+
