@@ -1078,3 +1078,55 @@ fn media_length(v: &str) -> Option<f32> {
     }
 }
 
+fn feature_matches(f: &str, ctx: &MediaContext) -> bool {
+    // sintaxe de intervalo: (width >= 600px), (400px <= width <= 700px)
+    for op in [">=", "<=", ">", "<"] {
+        if f.contains(op) {
+            let parts: Vec<&str> = f.split(op).map(str::trim).collect();
+            if parts.len() == 2 {
+                let (name, val, flip) = if parts[0] == "width" || parts[0] == "height" {
+                    (parts[0], parts[1], false)
+                } else {
+                    (parts[1], parts[0], true)
+                };
+                let actual = if name == "width" { ctx.width } else { ctx.height };
+                let Some(v) = media_length(val) else { return false };
+                let op = if flip {
+                    match op {
+                        ">=" => "<=",
+                        "<=" => ">=",
+                        ">" => "<",
+                        _ => ">",
+                    }
+                } else {
+                    op
+                };
+                return match op {
+                    ">=" => actual >= v,
+                    "<=" => actual <= v,
+                    ">" => actual > v,
+                    _ => actual < v,
+                };
+            }
+            return false;
+        }
+    }
+    let (name, value) = match f.split_once(':') {
+        Some((n, v)) => (n.trim(), v.trim()),
+        None => (f.trim(), ""),
+    };
+    match name {
+        "min-width" => media_length(value).is_some_and(|v| ctx.width >= v),
+        "max-width" => media_length(value).is_some_and(|v| ctx.width <= v),
+        "min-height" => media_length(value).is_some_and(|v| ctx.height >= v),
+        "max-height" => media_length(value).is_some_and(|v| ctx.height <= v),
+        "orientation" => (value == "landscape") == (ctx.width >= ctx.height),
+        "prefers-color-scheme" => value == "light",
+        "prefers-reduced-motion" | "prefers-contrast" | "forced-colors" => value == "no-preference" || value == "none",
+        "hover" | "any-hover" => value == "hover" || value.is_empty(),
+        "pointer" | "any-pointer" => value == "fine" || value.is_empty(),
+        "color" => true,
+        _ => false,
+    }
+}
+
