@@ -427,3 +427,64 @@ pub(crate) fn start_script(vm: &mut Vm, n: NodeId) {
     }
 }
 
+/// Atributo mudou: efeitos colaterais (folhas, scripts, imagens, observers).
+fn attr_changed(vm: &mut Vm, n: NodeId, name: &str, old: Option<String>) {
+    notify(vm, "attributes", n, &[], &[], Some(name), old.clone());
+    if read(vm, |h| h.upgraded.contains(&n)) {
+        let el = wrap(vm, n);
+        let new = attr_of(vm, n, name).map_or(Value::Null, |v| s(&v));
+        call_hook(vm, "attributeChanged", vec![el, s(name), old.map_or(Value::Null, |o| s(&o)), new]);
+    }
+    let (tag, connected) = write(vm, |h| {
+        h.dirty = true;
+        (h.page.doc.tag(n).unwrap_or("").to_string(), h.page.doc.is_connected(n))
+    });
+    match (tag.as_str(), name) {
+        ("link", "href" | "rel" | "media" | "disabled") | ("style", "media") if connected => {
+            write(vm, |h| h.styles_dirty = true)
+        }
+        ("script", "src") if connected => start_script(vm, n),
+        ("canvas", "width" | "height") => write(vm, |h| super::canvas::attr_resized(h, n)),
+        ("img", "src") => {
+            write(vm, |h| {
+                let src = h.page.doc.element(n).and_then(|e| e.attr("src")).map(str::to_string);
+                if let Some(u) = src.and_then(|s| h.page.base.join(s.trim()).ok()) {
+                    super::request_image(h, u, Some(n));
+                }
+            });
+        }
+        _ => {}
+    }
+}
+
+/// Insere `child` em `parent` antes de `before`, com as validações do DOM.
+fn insert(vm: &mut Vm, parent: NodeId, child: NodeId, before: Option<NodeId>) -> Result<(), Value> {
+    let (bad, ref_ok, nodes, valid_parent) = read(vm, |h| {
+        let doc = &h.page.doc;
+        let nodes = if doc.is_fragment(child) { doc.node(child).children.clone() } else { vec![child] };
+        (
+            doc.is_inclusive_ancestor(child, parent),
+            before.is_none_or(|b| doc.node(b).parent == Some(parent)),
+            nodes,
+            matches!(doc.node(parent).data, NodeData::Element(_) | NodeData::Document),
+        )
+    });
+    if bad || !valid_parent || child == Document::ROOT {
+        return Err(dom_error(vm, "HierarchyRequestError", "The new child element contains the parent."));
+    }
+    if !ref_ok {
+        return Err(dom_error(
+            vm,
+            "NotFoundError",
+            "The node before which the new node is to be inserted is not a child of this node.",
+        ));
+    }
+    let was_connected = read(vm, |h| h.page.doc.is_connected(child));
+    if was_connected {
+        removing(vm, child);
+    }
+    write(vm, |h| h.page.doc.insert_before(parent, child, before));
+    inserted(vm, &nodes, parent);
+    Ok(())
+}
+
