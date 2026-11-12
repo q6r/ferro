@@ -1871,3 +1871,50 @@ fn click(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `el.attachShadow({mode})`: cria a raiz de sombra.
+fn attach_shadow(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let closed = match a.arg(0) {
+        Value::Object(o) => {
+            let m = vm.get_obj(&o, &ferro_js::value::PropKey::str("mode"))?;
+            vm.to_rust_string(&m)? == "closed"
+        }
+        _ => false,
+    };
+    if read(vm, |h| h.page.doc.shadow_roots.contains_key(&n)) {
+        return Err(dom_error(
+            vm,
+            "NotSupportedError",
+            "Failed to execute 'attachShadow' on 'Element': Shadow root cannot be created on a host which already hosts a shadow tree.",
+        ));
+    }
+    let root = write(vm, |h| {
+        h.dirty = true;
+        if closed {
+            h.closed_shadows.insert(n);
+        }
+        h.page.doc.attach_shadow(n)
+    });
+    Ok(wrap(vm, root))
+}
+
+fn shadow_root(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let r = read(vm, |h| {
+        if h.closed_shadows.contains(&n) { None } else { h.page.doc.shadow_roots.get(&n).copied() }
+    });
+    Ok(wrap_opt(vm, r))
+}
+
+fn shadow_host(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let h = read(vm, |h| h.page.doc.shadow_hosts.get(&n).copied());
+    Ok(wrap_opt(vm, h))
+}
+
+fn shadow_mode(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let closed = read(vm, |h| h.page.doc.shadow_hosts.get(&n).is_some_and(|host| h.closed_shadows.contains(host)));
+    Ok(s(if closed { "closed" } else { "open" }))
+}
+
