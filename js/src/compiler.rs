@@ -1352,3 +1352,47 @@ impl Compiler {
         }
     }
 
+    /// Atribui o topo da pilha (consumindo) a uma variável.
+    fn store(&mut self, name: &str) {
+        let found = self.resolve(name);
+        let n = self.konst(name);
+        if matches!(found.res, Res::Global) && self.imports.contains_key(name) {
+            self.emit(Op::ConstAssign(n));
+            return;
+        }
+        match found.decl {
+            Decl::Const | Decl::ClassInner if !matches!(found.res, Res::Global) => {
+                self.emit(Op::ConstAssign(n));
+                return;
+            }
+            Decl::Callee => {
+                if self.fr().strict {
+                    self.emit(Op::ConstAssign(n));
+                } else {
+                    self.emit(Op::Pop);
+                }
+                return;
+            }
+            _ => {}
+        }
+        match found.res {
+            Res::Reg(r) => {
+                if found.chk {
+                    self.emit(Op::SetRegChk(r, n));
+                } else {
+                    self.emit(Op::SetReg(r));
+                }
+            }
+            Res::Env(h, s) => {
+                if found.chk {
+                    self.emit(Op::SetEnvChk(h, s, n));
+                } else {
+                    self.emit(Op::SetEnv(h, s));
+                }
+            }
+            Res::Global => {
+                self.emit(Op::SetGlobal(n));
+            }
+        }
+    }
+
