@@ -1271,3 +1271,235 @@ fn pad2(n: i64) -> String {
     format!("{n:02}")
 }
 
+pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'static str, String)>, Value> {
+    if t.is_nan() {
+        return Err(vm.range_error("Invalid time value"));
+    }
+    let tz: TzInfo = (vm.tz)(o.time_zone.as_deref(), t).unwrap_or(TzInfo {
+        offset_min: 0.0,
+        short: "UTC".into(),
+        long: "Coordinated Universal Time".into(),
+    });
+    let local = t + tz.offset_min * 60_000.0;
+    let p = super::date::parts_of(local);
+    let f = Fields {
+        year: p.0,
+        month: p.1 as usize,
+        day: p.2,
+        weekday: p.3,
+        hour: p.4,
+        minute: p.5,
+        second: p.6,
+        ms: p.7,
+    };
+    let d = data_for(&o.locale);
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    // estilos prontos
+    let (mut weekday, mut year, mut month, mut day) = (o.weekday.clone(), o.year.clone(), o.month.clone(), o.day.clone());
+    let (mut hour, mut minute, mut second) = (o.hour.clone(), o.minute.clone(), o.second.clone());
+    let mut tz_name = o.tz_name.clone();
+    if let Some(ds) = &o.date_style {
+        match ds.as_str() {
+            "full" => {
+                weekday = Some("long".into());
+                year = Some("numeric".into());
+                month = Some("long".into());
+                day = Some("numeric".into());
+            }
+            "long" => {
+                year = Some("numeric".into());
+                month = Some("long".into());
+                day = Some("numeric".into());
+            }
+            "medium" => {
+                year = Some("numeric".into());
+                month = Some(if d.medium_numeric { "2-digit" } else { "short" }.into());
+                day = Some(if d.medium_numeric { "2-digit" } else { "numeric" }.into());
+            }
+            _ => {
+                year = Some(if d.short_year2 { "2-digit" } else { "numeric" }.into());
+                month = Some("numeric".into());
+                day = Some("numeric".into());
+            }
+        }
+    }
+    if let Some(ts) = &o.time_style {
+        hour = Some("numeric".into());
+        minute = Some("2-digit".into());
+        if ts != "short" {
+            second = Some("2-digit".into());
+        }
+        if ts == "full" || ts == "long" {
+            tz_name = Some(if ts == "full" { "long" } else { "short" }.into());
+        }
+    }
+    // parte da data
+    let has_date = year.is_some() || month.is_some() || day.is_some() || weekday.is_some();
+    if has_date {
+        let textual = matches!(month.as_deref(), Some("long" | "short" | "narrow"));
+        let month_text = match month.as_deref() {
+            Some("long") => d.months[f.month].to_string(),
+            Some("short") => d.months_short[f.month].to_string(),
+            Some("narrow") => d.months[f.month].chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(),
+            Some("2-digit") => pad2(f.month as i64 + 1),
+            Some(_) => {
+                if d.numeric_pad && day.is_some() {
+                    pad2(f.month as i64 + 1)
+                } else {
+                    (f.month + 1).to_string()
+                }
+            }
+            None => String::new(),
+        };
+        let day_text = match day.as_deref() {
+            Some("2-digit") => pad2(f.day),
+            Some(_) => {
+                if d.numeric_pad && !textual && month.is_some() {
+                    pad2(f.day)
+                } else {
+                    f.day.to_string()
+                }
+            }
+            None => String::new(),
+        };
+        let year_text = match year.as_deref() {
+            Some("2-digit") => pad2(f.year.rem_euclid(100)),
+            Some(_) => f.year.to_string(),
+            None => String::new(),
+        };
+        let pattern: &str = if textual {
+            match (day.is_some(), year.is_some()) {
+                (true, true) => {
+                    if month.as_deref() == Some("short") {
+                        d.ymd_medium
+                    } else {
+                        d.ymd_long
+                    }
+                }
+                (false, true) => d.ym_long,
+                (true, false) => {
+                    if month.as_deref() == Some("short") {
+                        d.md_short
+                    } else {
+                        d.md_long
+                    }
+                }
+                (false, false) => "{M}",
+            }
+        } else {
+            match (day.is_some(), month.is_some(), year.is_some()) {
+                (true, true, true) => d.numeric,
+                (false, true, true) => {
+                    if d.lang == "en" {
+                        "{M}/{y}"
+                    } else {
+                        "{M}/{y}"
+                    }
+                }
+                (true, true, false) => {
+                    if d.numeric.starts_with("{M}") {
+                        "{M}/{d}"
+                    } else if d.lang == "de" {
+                        "{d}.{M}."
+                    } else {
+                        "{d}/{M}"
+                    }
+                }
+                (true, false, false) => "{d}",
+                (false, true, false) => "{M}",
+                (false, false, true) => "{y}",
+                (true, false, true) => "{d} {y}",
+                (false, false, false) => "",
+            }
+        };
+        if let Some(w) = &weekday {
+            let wt = match w.as_str() {
+                "long" => d.days[f.weekday].to_string(),
+                "short" => d.days_short[f.weekday].to_string(),
+                _ => d.days[f.weekday].chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(),
+            };
+            out.push(("weekday", wt));
+            if !pattern.is_empty() {
+                out.push(("literal", d.weekday_sep.into()));
+            }
+        }
+        // expande o padrão em partes
+        let mut rest = pattern;
+        while !rest.is_empty() {
+            if let Some(stripped) = rest.strip_prefix("{d}") {
+                out.push(("day", day_text.clone()));
+                rest = stripped;
+            } else if let Some(stripped) = rest.strip_prefix("{M}") {
+                out.push(("month", month_text.clone()));
+                rest = stripped;
+            } else if let Some(stripped) = rest.strip_prefix("{y}") {
+                out.push(("year", year_text.clone()));
+                rest = stripped;
+            } else {
+                let next = rest.find('{').unwrap_or(rest.len());
+                out.push(("literal", rest[..next].to_string()));
+                rest = &rest[next..];
+            }
+        }
+    }
+    // parte da hora
+    let has_time = hour.is_some() || minute.is_some() || second.is_some();
+    if has_time {
+        if has_date {
+            let sep = match o.date_style.as_deref() {
+                Some("full" | "long") => d.sep_long,
+                Some("medium") => d.sep_medium,
+                _ => d.datetime_sep,
+            };
+            out.push(("literal", sep.into()));
+        }
+        let h12 = o.hour12.unwrap_or(d.hour12);
+        if let Some(h) = &hour {
+            let hv = if h12 {
+                let x = f.hour % 12;
+                if x == 0 { 12 } else { x }
+            } else {
+                f.hour
+            };
+            let text = if h == "2-digit" || (!h12 && (minute.is_some() || d.lang != "en")) { pad2(hv) } else { hv.to_string() };
+            out.push(("hour", text));
+        }
+        if let Some(_m) = &minute {
+            if hour.is_some() {
+                out.push(("literal", ":".into()));
+            }
+            out.push(("minute", if hour.is_some() || _m == "2-digit" { pad2(f.minute) } else { f.minute.to_string() }));
+        }
+        if let Some(_s) = &second {
+            if hour.is_some() || minute.is_some() {
+                out.push(("literal", ":".into()));
+            }
+            out.push(("second", if minute.is_some() || _s == "2-digit" { pad2(f.second) } else { f.second.to_string() }));
+        }
+        if let Some(n) = o.frac {
+            out.push(("literal", ".".into()));
+            out.push(("fractionalSecond", format!("{:03}", f.ms)[..n].to_string()));
+        }
+        if h12 && hour.is_some() {
+            out.push(("literal", " ".into()));
+            out.push(("dayPeriod", if f.hour < 12 { d.am } else { d.pm }.into()));
+        }
+    }
+    if let Some(n) = &tz_name {
+        out.push(("literal", " ".into()));
+        let text = match n.as_str() {
+            "long" | "longGeneric" => tz.long.clone(),
+            "shortOffset" | "longOffset" => gmt_offset(tz.offset_min, n == "longOffset"),
+            _ => {
+                if tz.short.starts_with('+') || tz.short.starts_with('-') {
+                    gmt_offset(tz.offset_min, false)
+                } else {
+                    tz.short.clone()
+                }
+            }
+        };
+        out.push(("timeZoneName", text));
+    }
+    Ok(out)
+}
+
