@@ -1118,3 +1118,64 @@ impl Parser {
         Ok(left)
     }
 
+    fn parse_unary(&mut self) -> PResult<Expr> {
+        let op = match &self.tok.tok {
+            Tok::Punct("!") => Some(UnOp::Not),
+            Tok::Punct("-") => Some(UnOp::Neg),
+            Tok::Punct("+") => Some(UnOp::Plus),
+            Tok::Punct("~") => Some(UnOp::BitNot),
+            Tok::Ident(n) if !self.tok.escaped && &**n == "typeof" => Some(UnOp::Typeof),
+            Tok::Ident(n) if !self.tok.escaped && &**n == "void" => Some(UnOp::Void),
+            Tok::Ident(n) if !self.tok.escaped && &**n == "delete" => Some(UnOp::Delete),
+            _ => None,
+        };
+        if let Some(op) = op {
+            self.advance()?;
+            let arg = self.parse_unary()?;
+            return Ok(Expr::Unary(op, Box::new(arg)));
+        }
+        if self.is_kw("await") && (self.ctx.in_async || !self.ctx.in_function) && self.ctx.in_async {
+            self.advance()?;
+            let arg = self.parse_unary()?;
+            return Ok(Expr::Await(Box::new(arg)));
+        }
+        if self.is("++") || self.is("--") {
+            let inc = self.is("++");
+            self.advance()?;
+            let target = self.parse_unary()?;
+            return Ok(Expr::Update {
+                inc,
+                prefix: true,
+                target: Box::new(target),
+            });
+        }
+        let e = self.parse_lhs()?;
+        if (self.is("++") || self.is("--")) && !self.tok.nl_before {
+            let inc = self.is("++");
+            self.advance()?;
+            return Ok(Expr::Update {
+                inc,
+                prefix: false,
+                target: Box::new(e),
+            });
+        }
+        Ok(e)
+    }
+
+    fn parse_args(&mut self) -> PResult<Vec<ArrayElem>> {
+        self.expect("(")?;
+        let mut args = Vec::new();
+        while !self.is(")") {
+            if self.eat("...")? {
+                args.push(ArrayElem::Spread(self.parse_assign(false)?));
+            } else {
+                args.push(ArrayElem::Expr(self.parse_assign(false)?));
+            }
+            if !self.is(")") {
+                self.expect(",")?;
+            }
+        }
+        self.advance()?;
+        Ok(args)
+    }
+
