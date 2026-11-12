@@ -267,3 +267,66 @@ pub fn absolutize_css_urls(css: &str, base: &Url) -> String {
     out
 }
 
+/// Os <style> e os <link rel=stylesheet>, na ordem do documento. As folhas
+/// externas são baixadas em paralelo.
+fn fetch_stylesheets(doc: &Document, base: &Url, net: &Net) -> (Vec<StyleSource>, HashMap<Url, Option<String>>) {
+    let mut sources = Vec::new();
+    for n in doc.descendants(Document::ROOT) {
+        let Some(el) = doc.element(n) else { continue };
+        let media = el.attr("media").map(str::to_string);
+        match el.tag.as_str() {
+            "style" => sources.push((Source::Inline(doc.text_content(n)), media)),
+            "link" => {
+                let rel = el.attr("rel").unwrap_or("").to_ascii_lowercase();
+                let rels: Vec<&str> = rel.split_whitespace().collect();
+                if rels.contains(&"stylesheet")
+                    && !rels.contains(&"alternate")
+                    && let Some(href) = el.attr("href")
+                    && let Ok(u) = base.join(href.trim())
+                {
+                    sources.push((Source::Link(u), media));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let fetched: Vec<Option<String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = sources
+            .iter()
+            .map(|(s, _)| match s {
+                Source::Link(u) => {
+                    let net = net.clone();
+                    let u = u.clone();
+                    Some(scope.spawn(move || match net.fetch(&u) {
+                        Ok(r) if r.status < 400 => Some(net::decode_text(&r.body, r.content_type.as_deref(), false)),
+                        _ => None,
+                    }))
+                }
+                Source::Inline(_) => None,
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.and_then(|h| h.join().ok().flatten()))
+            .collect()
+    });
+
+    let mut texts = HashMap::new();
+    let list = sources
+        .into_iter()
+        .zip(fetched)
+        .filter_map(|((src, media), text)| {
+            let text = match src {
+                Source::Inline(t) => absolutize_css_urls(&t, base),
+                Source::Link(u) => {
+                    texts.insert(u.clone(), text.clone());
+                    absolutize_css_urls(&text?, &u)
+                }
+            };
+            Some(StyleSource { text, media })
+        })
+        .collect();
+    (list, texts)
+}
+
