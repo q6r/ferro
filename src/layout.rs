@@ -1129,3 +1129,76 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn fade_since(&mut self, m: &Mark, opacity: f32) {
+        if opacity <= 0.01 {
+            // invisível, mas continua recebendo o mouse
+            let tail = self.items.split_off(m.items);
+            self.items.extend(tail.into_iter().filter(|it| {
+                matches!(
+                    it,
+                    DisplayItem::Hit { .. }
+                        | DisplayItem::PushClip(_)
+                        | DisplayItem::PopClip
+                        | DisplayItem::LayerStart { .. }
+                        | DisplayItem::LayerEnd
+                )
+            }));
+            self.layers.truncate(m.layers);
+            return;
+        }
+        for it in &mut self.items[m.items..] {
+            fade(it, opacity);
+        }
+        for l in &mut self.layers[m.layers..] {
+            for it in &mut l.items {
+                fade(it, opacity);
+            }
+        }
+    }
+
+    /// Coloca o fundo e as bordas da caixa em `top` com altura `h`.
+    fn stretch_to(&mut self, d: Deco, top: Option<f32>, h: f32) {
+        let len = self.items.len();
+        let ok = |i: &usize| *i < len;
+        let d = Deco {
+            shadow: d.shadow.filter(|(i, n)| i + n <= len),
+            bg: d.bg.filter(ok),
+            img: d.img.filter(ok),
+            border: d.border.filter(|i| i + if d.round_border { 0 } else { 3 } < len),
+            round_border: d.round_border,
+        };
+        for i in [d.bg, d.img].into_iter().flatten() {
+            set_rect(&mut self.items[i], top, h);
+        }
+        if let Some((i, n)) = d.shadow {
+            for k in i..i + n {
+                set_rect(&mut self.items[k], top, h);
+            }
+        }
+        if let Some(i) = d.border
+            && d.round_border
+        {
+            set_rect(&mut self.items[i], top, h);
+            return;
+        }
+        if let Some(i) = d.border {
+            let t = match (&self.items[i], top) {
+                (_, Some(t)) => t,
+                (DisplayItem::Rect { rect, .. }, None) => rect.y,
+                _ => return,
+            };
+            for k in 0..4 {
+                if let DisplayItem::Rect { rect, .. } = &mut self.items[i + k] {
+                    match k {
+                        0 => rect.y = t,
+                        2 => rect.y = t + h - rect.h,
+                        _ => {
+                            rect.y = t;
+                            rect.h = h;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
