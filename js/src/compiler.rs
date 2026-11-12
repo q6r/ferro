@@ -2253,3 +2253,64 @@ impl Compiler {
         Ok(())
     }
 
+    /// Emite as saídas de controle (PopTry, finally, fechar iteradores)
+    /// até o nível `target` (exclusivo) da pilha de controle.
+    fn unwind(&mut self, target: usize, final_env: Option<u32>) -> CResult<()> {
+        let mut i = self.fr().ctl.len();
+        let mut cur_env = self.fr().env_depth;
+        while i > target {
+            i -= 1;
+            enum Act {
+                PopTry,
+                Finally(*const [Stmt], u32),
+                IterClose,
+                AsyncIterClose,
+                PopValue,
+                None,
+            }
+            let act = match &self.fr().ctl[i] {
+                Ctl::Try => Act::PopTry,
+                Ctl::Finally(b, d) => Act::Finally(*b, *d),
+                Ctl::Loop { kind: LoopKind::ForOf, .. } => Act::IterClose,
+                Ctl::Loop { kind: LoopKind::ForAwait, .. } => Act::AsyncIterClose,
+                Ctl::Loop { kind: LoopKind::ForIn, .. } => Act::PopValue,
+                _ => Act::None,
+            };
+            match act {
+                Act::PopTry => {
+                    self.emit(Op::PopTry);
+                }
+                Act::IterClose => {
+                    self.emit(Op::IterClose);
+                }
+                Act::AsyncIterClose => self.async_iter_close(),
+                Act::PopValue => {
+                    self.emit(Op::Pop);
+                }
+                Act::Finally(body, d) => {
+                    while cur_env > d {
+                        self.emit(Op::PopEnv);
+                        cur_env -= 1;
+                    }
+                    let tail = self.f().ctl.split_off(i);
+                    let saved = self.fr().env_depth;
+                    self.f().env_depth = d;
+                    // SEGURANÇA: o ponteiro aponta para a AST recebida por
+                    // compile_script/compile_standalone, viva até o fim da compilação.
+                    let body: &[Stmt] = unsafe { &*body };
+                    self.block(body)?;
+                    self.f().env_depth = saved;
+                    self.f().ctl.extend(tail);
+                }
+                Act::None => {}
+            }
+        }
+        if let Some(fe) = final_env {
+            while cur_env > fe {
+                self.emit(Op::PopEnv);
+                cur_env -= 1;
+            }
+        }
+        Ok(())
+    }
+
