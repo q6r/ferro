@@ -450,3 +450,51 @@ fn find_last_index(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     find_generic(vm, a, true, true, "findLastIndex")
 }
 
+fn flatten_into(vm: &mut Vm, out: &mut Vec<Value>, src: &ObjRef, depth: f64) -> Result<(), Value> {
+    let len = vm.length_of(src)?;
+    for i in 0..len {
+        if !has_i(vm, src, i) {
+            continue;
+        }
+        let v = get_i(vm, src, i)?;
+        if depth > 0.0
+            && let Value::Object(inner) = &v
+            && matches!(inner.borrow().kind, Kind::Array(_))
+        {
+            flatten_into(vm, out, inner, depth - 1.0)?;
+            continue;
+        }
+        out.push(v);
+    }
+    Ok(())
+}
+
+fn flat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let depth = if a.arg(0).is_undefined() { 1.0 } else { vm.to_integer(&a.arg(0))? };
+    let mut out = Vec::new();
+    flatten_into(vm, &mut out, &o, depth)?;
+    Ok(vm.array_value(out))
+}
+
+fn flat_map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let f = callback(vm, a, "flatMap")?;
+    let len = vm.length_of(&o)?;
+    let mut out = Vec::new();
+    for i in 0..len {
+        if !has_i(vm, &o, i) {
+            continue;
+        }
+        let v = get_i(vm, &o, i)?;
+        let r = vm.call(&f, a.arg(1), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?;
+        match &r {
+            Value::Object(inner) if matches!(inner.borrow().kind, Kind::Array(_)) => {
+                flatten_into(vm, &mut out, inner, 0.0)?;
+            }
+            _ => out.push(r),
+        }
+    }
+    Ok(vm.array_value(out))
+}
+
