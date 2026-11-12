@@ -69,3 +69,35 @@ struct Shape {
     opacity: f32,
 }
 
+#[derive(Debug)]
+pub struct Svg {
+    view_box: (f32, f32, f32, f32),
+    pub width: f32,
+    pub height: f32,
+    shapes: Vec<Shape>,
+}
+
+#[derive(Clone, Copy)]
+struct State {
+    fill: Paint,
+    stroke: Paint,
+    stroke_width: f32,
+    evenodd: bool,
+    opacity: f32,
+    matrix: Matrix,
+}
+
+fn num(s: Option<&str>) -> Option<f32> {
+    s?.trim().trim_end_matches("px").parse().ok()
+}
+
+fn parse_paint(v: &str) -> Option<Paint> {
+    let v = v.trim();
+    match v.to_ascii_lowercase().as_str() {
+        "none" | "transparent" => Some(Paint::None),
+        "currentcolor" => Some(Paint::Current),
+        l if l.starts_with("url(") => Some(Paint::Current),
+        _ => style::parse_color(v, Color::BLACK).map(Paint::Color),
+    }
+}
+
