@@ -1613,3 +1613,53 @@ fn set_scroll(vm: &mut Vm, n: NodeId, x: Option<f32>, y: Option<f32>) -> Result<
     Ok(())
 }
 
+fn set_scroll_top(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let y = vm.to_number(&a.arg(0))? as f32;
+    set_scroll(vm, n, None, Some(if y.is_finite() { y } else { 0.0 }))?;
+    Ok(Value::Undefined)
+}
+
+fn set_scroll_left(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let x = vm.to_number(&a.arg(0))? as f32;
+    set_scroll(vm, n, Some(if x.is_finite() { x } else { 0.0 }), None)?;
+    Ok(Value::Undefined)
+}
+
+/// `scrollTo(x, y)` / `scrollTo({left, top})` (e `scroll`).
+fn scroll_to(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let (x, y) = match a.arg(0) {
+        Value::Object(o) => {
+            let l = vm.get_obj(&o, &ferro_js::value::PropKey::str("left"))?;
+            let t = vm.get_obj(&o, &ferro_js::value::PropKey::str("top"))?;
+            (
+                if l.is_undefined() { None } else { Some(vm.to_number(&l)? as f32) },
+                if t.is_undefined() { None } else { Some(vm.to_number(&t)? as f32) },
+            )
+        }
+        v => (Some(vm.to_number(&v)? as f32), Some(vm.to_number(&a.arg(1))? as f32)),
+    };
+    set_scroll(vm, n, x.filter(|v| v.is_finite()), y.filter(|v| v.is_finite()))?;
+    Ok(Value::Undefined)
+}
+
+fn scroll_by(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let (dx, dy) = match a.arg(0) {
+        Value::Object(o) => {
+            let l = vm.get_obj(&o, &ferro_js::value::PropKey::str("left"))?;
+            let t = vm.get_obj(&o, &ferro_js::value::PropKey::str("top"))?;
+            (
+                if l.is_undefined() { 0.0 } else { vm.to_number(&l)? as f32 },
+                if t.is_undefined() { 0.0 } else { vm.to_number(&t)? as f32 },
+            )
+        }
+        v => (vm.to_number(&v)? as f32, vm.to_number(&a.arg(1))? as f32),
+    };
+    let (cx, cy) = scroller_of(vm, n).map_or((0.0, 0.0), |s| (s.x, s.y));
+    set_scroll(vm, n, Some(cx + dx), Some(cy + dy))?;
+    Ok(Value::Undefined)
+}
+
