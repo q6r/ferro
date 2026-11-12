@@ -1967,3 +1967,37 @@ impl App {
         el.exit();
     }
 
+    fn draw(&mut self) {
+        let Some(window) = self.window.clone() else { return };
+        let size = window.inner_size();
+        let (wp, hp) = (size.width, size.height);
+        if wp == 0 || hp == 0 || self.tabs.is_empty() {
+            return;
+        }
+        self.sync_scroll();
+        self.render_frame(wp, hp);
+
+        let title = format!("{} – Ferro", self.tab().title());
+        if title != self.last_title {
+            window.set_title(&title);
+            self.last_title = title;
+        }
+
+        let Some(surface) = self.surface.as_mut() else { return };
+        let (Some(wn), Some(hn)) = (NonZeroU32::new(wp), NonZeroU32::new(hp)) else { return };
+        if self.surface_size != (wp, hp) {
+            if surface.resize(wn, hn).is_err() {
+                return;
+            }
+            self.surface_size = (wp, hp);
+        }
+        if let Ok(mut buf) = surface.buffer_mut() {
+            if buf.len() == self.canvas.pixels.len() {
+                buf.copy_from_slice(&self.canvas.pixels);
+            }
+            let _ = buf.present();
+        }
+    }
+}
+
+impl ApplicationHandler<UserEvent> for App {
