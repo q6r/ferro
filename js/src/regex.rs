@@ -375,3 +375,56 @@ impl Parser {
         self.peek() == Some(c as u32)
     }
 
+    /// Conta grupos de captura e vê se há nomes (antes de analisar, para `\5` e `\k`).
+    fn prescan(&mut self) {
+        let mut i = 0;
+        let mut in_class = false;
+        while i < self.s.len() {
+            let c = self.s[i];
+            if c == '\\' as u32 {
+                i += 2;
+                continue;
+            }
+            if in_class {
+                if c == ']' as u32 {
+                    in_class = false;
+                }
+            } else if c == '[' as u32 {
+                in_class = true;
+            } else if c == '(' as u32 {
+                if self.s.get(i + 1) != Some(&('?' as u32)) {
+                    self.total_groups += 1;
+                } else if self.s.get(i + 2) == Some(&('<' as u32))
+                    && !matches!(self.s.get(i + 3).and_then(|&c| char::from_u32(c)), Some('=' | '!'))
+                {
+                    self.total_groups += 1;
+                    self.has_named = true;
+                }
+            }
+            i += 1;
+        }
+    }
+
+    fn disjunction(&mut self) -> Result<Node, RegexError> {
+        let mut alts = vec![self.alternative()?];
+        while self.eat('|') {
+            alts.push(self.alternative()?);
+        }
+        Ok(if alts.len() == 1 { alts.pop().unwrap() } else { Node::Alt(alts) })
+    }
+
+    fn alternative(&mut self) -> Result<Node, RegexError> {
+        let mut items = Vec::new();
+        while let Some(c) = self.peek() {
+            if c == '|' as u32 || c == ')' as u32 {
+                break;
+            }
+            items.push(self.term()?);
+        }
+        Ok(match items.len() {
+            0 => Node::Empty,
+            1 => items.pop().unwrap(),
+            _ => Node::Concat(items),
+        })
+    }
+
