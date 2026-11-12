@@ -195,3 +195,63 @@ methods(ETP, {
   },
 });
 
+/// Atributos `on*` (onclick="...") viram funções na primeira vez.
+function inlineHandler(el, type) {
+  if (!(el instanceof Element)) return null;
+  const code = el.getAttribute('on' + type);
+  if (code == null) return null;
+  let cache = INLINE.get(el);
+  if (!cache) INLINE.set(el, cache = new Map());
+  let hit = cache.get(type);
+  if (hit && hit.code === code) return hit.fn;
+  let fn = null;
+  try { fn = new Function('event', code); } catch (e) { N.reportError(e); }
+  cache.set(type, { code, fn });
+  return fn;
+}
+const BODY_WINDOW_EVENTS = new Set(['load', 'unload', 'beforeunload', 'hashchange', 'popstate', 'message',
+  'online', 'offline', 'pagehide', 'pageshow', 'resize', 'storage', 'error', 'focus', 'blur', 'scroll']);
+function handlerOf(t, type) {
+  const h = HANDLERS.get(t);
+  const set = h && h.get(type);
+  if (typeof set === 'function') return set;
+  if (set === null) return null;
+  if (t === G) {
+    const own = Object.getOwnPropertyDescriptor(G, 'on' + type);
+    if (own && typeof own.value === 'function') return own.value;
+    const body = document.body;
+    if (body && BODY_WINDOW_EVENTS.has(type)) return inlineHandler(body, type);
+    return null;
+  }
+  if (t === document.body && BODY_WINDOW_EVENTS.has(type) && type !== 'scroll') return null;
+  return inlineHandler(t, type);
+}
+function invoke(t, ev, s, phase) {
+  s.currentTarget = t;
+  const m = LISTENERS.get(t);
+  const list = m && m.get(s.type);
+  if (list && list.length) {
+    for (const l of list.slice()) {
+      if (l.removed) continue;
+      if (phase === 1 && !l.capture) continue;
+      if (phase === 3 && l.capture) continue;
+      if (l.once) t.removeEventListener(s.type, l.cb, { capture: l.capture });
+      s.passive = l.passive;
+      try {
+        if (typeof l.cb === 'function') l.cb.call(t, ev);
+        else if (l.cb && typeof l.cb.handleEvent === 'function') l.cb.handleEvent(ev);
+      } catch (e) { N.reportError(e); }
+      s.passive = false;
+      if (s.stopNow) return;
+    }
+  }
+  if (phase !== 1) {
+    const h = handlerOf(t, s.type);
+    if (h) {
+      try {
+        const r = h.call(t, ev);
+        if (r === false && s.type !== 'mouseover' && s.type !== 'error') ev.preventDefault();
+      } catch (e) { N.reportError(e); }
+    }
+  }
+}
