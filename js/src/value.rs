@@ -766,3 +766,46 @@ pub enum Kind {
     AsyncGenerator(Box<crate::builtins::async_generator::AsyncGenData>),
 }
 
+pub struct Object {
+    pub proto: Option<ObjRef>,
+    pub props: PropMap,
+    pub kind: Kind,
+    pub extensible: bool,
+    /// Congelado (para os elementos de arrays, que não têm atributos próprios).
+    pub frozen: bool,
+    /// Nome para Object.prototype.toString ("[object X]").
+    pub tag: &'static str,
+    /// Uso do coletor de ciclos (época e posição na coleta atual).
+    pub gc: std::cell::Cell<u64>,
+}
+
+impl Object {
+    pub fn new(proto: Option<ObjRef>, kind: Kind) -> Object {
+        let tag = match &kind {
+            Kind::Array(_) => "Array",
+            Kind::Function(_) => "Function",
+            Kind::Error => "Error",
+            Kind::Boolean(_) => "Boolean",
+            Kind::Number(_) => "Number",
+            Kind::String(_) => "String",
+            Kind::Symbol(_) => "Symbol",
+            Kind::Map(_) => "Map",
+            Kind::Set(_) => "Set",
+            Kind::Date(_) => "Date",
+            Kind::Arguments => "Arguments",
+            Kind::RegExp { .. } => "RegExp",
+            Kind::Promise(_) => "Promise",
+            Kind::Generator(_) => "Generator",
+            _ => "Object",
+        };
+        Object {
+            proto,
+            props: PropMap::default(),
+            kind,
+            extensible: true,
+            frozen: false,
+            tag,
+            gc: std::cell::Cell::new(0),
+        }
+    }
+
