@@ -255,6 +255,7 @@ impl Graph {
             Kind::TypedArray(t) | Kind::DataView(t) => self.objref(&t.buffer, out),
             Kind::IterHelper(h) => h.trace(&mut |v| self.value(v, out)),
             Kind::IterWrap(r) => r.trace(&mut |v| self.value(v, out)),
+            Kind::FromAsync(Some(d)) => d.trace(&mut |v| self.value(v, out)),
             Kind::AsyncGenerator(a) => {
                 if let Some(f) = &a.frame {
                     self.frame(f, out);

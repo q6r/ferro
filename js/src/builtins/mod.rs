@@ -1,6 +1,7 @@
 //! Objetos embutidos (Object, Array, String, Math, JSON, console...).
 
 pub mod array;
+pub mod array_async;
 pub mod async_generator;
 pub mod bigint;
 pub mod collections;

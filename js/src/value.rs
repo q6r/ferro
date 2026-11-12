@@ -768,6 +768,8 @@ pub enum Kind {
     IterHelper(Box<crate::builtins::iterator::Helper>),
     /// Embrulho de Iterator.from (%WrapForValidIteratorPrototype%).
     IterWrap(Box<crate::builtins::iterator::IterRec>),
+    /// Estado de um Array.fromAsync em andamento (fora enquanto roda).
+    FromAsync(Option<Box<crate::builtins::array_async::FromAsync>>),
 }
 
 pub struct Object {

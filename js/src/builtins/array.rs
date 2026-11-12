@@ -15,6 +15,7 @@ pub fn install(r: &Realm) {
     r.method(&c, "isArray", 1, is_array);
     r.method(&c, "of", 0, of);
     r.method(&c, "from", 1, from);
+    r.method(&c, "fromAsync", 1, super::array_async::from_async);
     r.getter_sym(&c, &r.sym_species, "[Symbol.species]", species);
 
     r.method(proto, "at", 1, at);
