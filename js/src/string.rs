@@ -135,3 +135,51 @@ impl JsStr {
         }))
     }
 
+    pub fn slice(&self, start: usize, end: usize) -> JsStr {
+        let end = end.min(self.len());
+        let start = start.min(end);
+        JsStr::from_slice(&self.units()[start..end])
+    }
+
+    /// Índice canônico de array ("0", "1", ... sem zeros à esquerda).
+    pub fn as_index(&self) -> Option<u32> {
+        if self.0.len == 0 || self.0.len > 10 {
+            return None;
+        }
+        let u = self.units();
+        if u.len() > 1 && u[0] == b'0' as u16 {
+            return None;
+        }
+        let mut n: u64 = 0;
+        for &c in u.iter() {
+            if !(b'0' as u16..=b'9' as u16).contains(&c) {
+                return None;
+            }
+            n = n * 10 + (c - b'0' as u16) as u64;
+        }
+        if n < u32::MAX as u64 { Some(n as u32) } else { None }
+    }
+
+    pub fn find(&self, needle: &JsStr, from: usize) -> Option<usize> {
+        let (h, n) = (self.units(), needle.units());
+        if n.is_empty() {
+            return Some(from.min(h.len()));
+        }
+        if n.len() > h.len() || from > h.len() - n.len() {
+            return None;
+        }
+        let first = n[0];
+        let mut i = from;
+        while i <= h.len() - n.len() {
+            match h[i..=h.len() - n.len()].iter().position(|&c| c == first) {
+                Some(p) => i += p,
+                None => return None,
+            }
+            if &h[i..i + n.len()] == n {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    }
+
