@@ -758,3 +758,55 @@ fn set_utc_hours(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     set_parts(vm, a, 3, 4, false)
 }
 
+fn set_date(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 2, 1, true)
+}
+
+fn set_utc_date(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 2, 1, false)
+}
+
+fn set_month(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 1, 2, true)
+}
+
+fn set_utc_month(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 1, 2, false)
+}
+
+fn set_full_year(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 0, 3, true)
+}
+
+fn set_utc_full_year(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 0, 3, false)
+}
+
+fn set_year(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let y = vm.to_number(&a.arg(0))?;
+    let y = if (0.0..=99.0).contains(&y.trunc()) { 1900.0 + y.trunc() } else { y };
+    let mut args = CallArgs {
+        this: a.this.clone(),
+        args: vec![Value::Number(y)],
+        new_target: None,
+        callee: a.callee.clone(),
+    };
+    set_parts(vm, &mut args, 0, 1, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calendario() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19723), (2024, 1, 1));
+        assert_eq!(iso_string(0.0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(parse_date("2024-01-02T10:00:00Z"), 1704189600000.0);
+        assert_eq!(parse_date("2024-01-02"), 1704153600000.0);
+        assert_eq!(parse_date("Jan 2, 2024 10:00:00 GMT"), 1704189600000.0);
+        assert_eq!(parse_date("Tue, 02 Jan 2024 10:00:00 GMT"), 1704189600000.0);
+    }
+}
