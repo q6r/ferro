@@ -2021,3 +2021,61 @@ impl Cascade<'_> {
     }
 }
 
+fn font_names(v: &str) -> Vec<Rc<str>> {
+    v.split(',')
+        .map(|f| f.trim().trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase())
+        .filter(|f| !f.is_empty())
+        .map(|f| Rc::from(f.as_str()))
+        .collect()
+}
+
+fn parse_repeat(t: &str) -> Option<(bool, bool)> {
+    Some(match t {
+        "repeat" | "space" | "round" => (true, true),
+        "no-repeat" => (false, false),
+        "repeat-x" => (true, false),
+        "repeat-y" => (false, true),
+        _ => return None,
+    })
+}
+
+fn parse_bg_size(v: &str, u: &Units) -> Option<BgSize> {
+    let v = v.trim();
+    match v {
+        "cover" => return Some(BgSize::Cover),
+        "contain" => return Some(BgSize::Contain),
+        "auto" | "auto auto" => return Some(BgSize::Auto),
+        _ => {}
+    }
+    let toks: Vec<&str> = v.split_whitespace().collect();
+    let w = parse_len(toks.first()?, u)?;
+    let h = toks.get(1).and_then(|t| parse_len(t, u)).unwrap_or(Len::Auto);
+    Some(BgSize::Size(w, h))
+}
+
+/// background-position: palavras-chave, porcentagens e medidas.
+fn parse_bg_position(v: &str, u: &Units) -> (Len, Len) {
+    let kw = |t: &str| match t {
+        "left" | "top" => Some(Len::Percent(0.0)),
+        "center" => Some(Len::Percent(50.0)),
+        "right" | "bottom" => Some(Len::Percent(100.0)),
+        _ => None,
+    };
+    let toks: Vec<&str> = v.split_whitespace().collect();
+    let (mut x, mut y) = (Len::Percent(50.0), Len::Percent(50.0));
+    match toks.as_slice() {
+        [a] => match *a {
+            "top" | "bottom" => y = kw(a).unwrap(),
+            _ => x = kw(a).or_else(|| parse_len(a, u)).unwrap_or(x),
+        },
+        [a, b, ..] => {
+            // "top left" também vale
+            let (a, b) = if matches!(*a, "top" | "bottom") || matches!(*b, "left" | "right") { (b, a) } else { (a, b) };
+            x = kw(a).or_else(|| parse_len(a, u)).unwrap_or(x);
+            y = kw(b).or_else(|| parse_len(b, u)).unwrap_or(y);
+        }
+        _ => {}
+    }
+    (x, y)
+}
+
