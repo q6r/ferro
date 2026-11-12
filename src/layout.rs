@@ -1467,3 +1467,82 @@ impl<'a> Ctx<'a> {
 
     // ------------------------------------------------------------ blocos
 
+    /// Larguras e margens de uma caixa de bloco (CSS 2.1 §10.3.3).
+    fn box_model(&self, s: &ComputedStyle, cb_w: f32) -> BoxModel {
+        let border = [s.border(TOP), s.border(RIGHT), s.border(BOTTOM), s.border(LEFT)];
+        let padding = s.padding.map(|p| p.resolve_or_zero(cb_w).max(0.0));
+        let extra = padding[LEFT] + padding[RIGHT] + border[LEFT] + border[RIGHT];
+        let content = |w: f32| if s.border_box { (w - extra).max(0.0) } else { w };
+        let mt = s.margin[TOP].resolve_or_zero(cb_w);
+        let mb = s.margin[BOTTOM].resolve_or_zero(cb_w);
+        let ml = s.margin[LEFT].resolve(cb_w);
+        let mr = s.margin[RIGHT].resolve(cb_w);
+        let max_w = s.max_width.resolve(cb_w).map(content);
+        let min_w = s.min_width.resolve(cb_w).map(content);
+
+        let width = match s.width.resolve(cb_w).map(content) {
+            Some(w) => w,
+            None => {
+                let auto_w = (cb_w - ml.unwrap_or(0.0) - mr.unwrap_or(0.0) - extra).max(0.0);
+                match max_w {
+                    // largura automática limitada por max-width: aí as margens auto centralizam
+                    Some(m) if auto_w > m => m,
+                    _ => {
+                        return BoxModel {
+                            margin: [mt, mr.unwrap_or(0.0), mb, ml.unwrap_or(0.0)],
+                            border,
+                            padding,
+                            content_w: min_w.map_or(auto_w, |m| auto_w.max(m)),
+                        };
+                    }
+                }
+            }
+        };
+        let width = max_w.map_or(width, |m| width.min(m));
+        let width = min_w.map_or(width, |m| width.max(m));
+        let remaining = cb_w - width - extra;
+        let (ml, mr) = match (ml, mr) {
+            (None, None) if remaining > 0.0 => (remaining / 2.0, remaining / 2.0),
+            (None, None) => (0.0, remaining),
+            (None, Some(r)) => (remaining - r, r),
+            (Some(l), None) => (l, remaining - l),
+            (Some(l), Some(r)) => (l, r),
+        };
+        BoxModel {
+            margin: [mt, mr, mb, ml],
+            border,
+            padding,
+            content_w: width,
+        }
+    }
+
+    /// Como box_model, mas com largura automática "encolhe para caber"
+    /// (tabelas e floats). `center_auto` mantém margens auto centralizando.
+    fn shrink_bm(&mut self, b: &'a LayoutBox, cb_w: f32, center_auto: bool) -> BoxModel {
+        let mut bm = self.box_model(&b.style, cb_w);
+        let s = &b.style;
+        if s.width != Len::Auto {
+            if !center_auto {
+                bm.margin[LEFT] = s.margin[LEFT].resolve_or_zero(cb_w);
+                bm.margin[RIGHT] = s.margin[RIGHT].resolve_or_zero(cb_w);
+            }
+            return bm;
+        }
+        let extra = bm.extra_h();
+        let (mn, mx) = self.intrinsic(b);
+        let fill = bm.content_w;
+        let w = (mx - extra).min(fill).max((mn - extra).max(0.0));
+        bm.content_w = w;
+        let ml = s.margin[LEFT].resolve(cb_w);
+        let mr = s.margin[RIGHT].resolve(cb_w);
+        let free = cb_w - w - extra;
+        let (l, r) = match (ml, mr, center_auto) {
+            (None, None, true) => ((free / 2.0).max(0.0), (free / 2.0).max(0.0)),
+            (None, Some(r), true) => ((free - r).max(0.0), r),
+            (l, r, _) => (l.unwrap_or(0.0), r.unwrap_or(0.0)),
+        };
+        bm.margin[LEFT] = l;
+        bm.margin[RIGHT] = r;
+        bm
+    }
+
