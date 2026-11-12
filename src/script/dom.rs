@@ -651,3 +651,46 @@ fn next_sibling(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(wrap_opt(vm, c))
 }
 
+fn owner_document(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let root = read(vm, |h| {
+        let doc = &h.page.doc;
+        if matches!(doc.node(n).data, NodeData::Document) {
+            return None;
+        }
+        let mut r = n;
+        while let Some(p) = doc.node(r).parent {
+            r = p;
+        }
+        Some(if matches!(doc.node(r).data, NodeData::Document) { r } else { Document::ROOT })
+    });
+    Ok(match root {
+        Some(r) => wrap(vm, r),
+        None => Value::Null,
+    })
+}
+
+fn is_connected(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Bool(read(vm, |h| h.page.doc.is_connected(n))))
+}
+
+fn base_uri(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(s(read(vm, |h| h.page.base.to_string()).as_str()))
+}
+
+fn append_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let c = arg_node(vm, a, 0)?;
+    insert(vm, p, c, None)?;
+    Ok(a.arg(0))
+}
+
+fn insert_before(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let c = arg_node(vm, a, 0)?;
+    let before = node_of(&a.arg(1));
+    insert(vm, p, c, before)?;
+    Ok(a.arg(0))
+}
+
