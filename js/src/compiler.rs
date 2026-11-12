@@ -608,3 +608,57 @@ impl Usage {
         }
     }
 
+    fn func(&mut self, f: &FunctionDef, d: u32, a: bool) {
+        let nd = d + 1;
+        let na = a && f.kind == FnKind::Arrow;
+        // só `this`, `new.target` e `arguments` interessam aqui, e eles só
+        // atravessam arrow functions: o resto pode ser pulado
+        if !na {
+            return;
+        }
+        for p in &f.params {
+            self.pattern(p, nd, na);
+        }
+        if let Some(r) = &f.rest {
+            self.pattern(r, nd, na);
+        }
+        match &f.body {
+            FnBody::Block(b) => self.stmts(b, nd, na),
+            FnBody::Expr(e) => self.expr(e, nd, na),
+        }
+    }
+
+    fn class(&mut self, c: &ClassDef, d: u32, a: bool) {
+        if let Some(n) = &c.name {
+            self.name(n, d);
+        }
+        if let Some(s) = &c.superclass {
+            self.expr(s, d, a);
+        }
+        if let Some(f) = &c.constructor {
+            self.func(f, d, a);
+        }
+        for m in &c.members {
+            if let PropKeyExpr::Computed(e) = &m.key {
+                self.expr(e, d, a);
+            }
+            match &m.kind {
+                // inicializadores rodam numa função própria (não atravessam)
+                MemberKind::Field(Some(_)) | MemberKind::StaticBlock(_) => {}
+                _ => {}
+            }
+            if let Some(f) = &m.func {
+                self.func(f, d, a);
+            }
+        }
+    }
+
+    fn elems(&mut self, es: &[ArrayElem], d: u32, a: bool) {
+        for e in es {
+            match e {
+                ArrayElem::Expr(e) | ArrayElem::Spread(e) => self.expr(e, d, a),
+                ArrayElem::Hole => {}
+            }
+        }
+    }
+
