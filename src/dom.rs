@@ -248,3 +248,66 @@ impl Document {
         Some(p)
     }
 
+    /// Hospedeiro da sombra onde está o `<slot>`.
+    pub fn slot_host(&self, slot: NodeId) -> Option<NodeId> {
+        let mut r = slot;
+        while let Some(p) = self.nodes[r].parent {
+            r = p;
+        }
+        self.shadow_hosts.get(&r).copied()
+    }
+
+    /// Filhos do hospedeiro que vão para esse `<slot>` (pelo atributo `slot`).
+    pub fn assigned_nodes(&self, host: NodeId, slot: NodeId) -> Vec<NodeId> {
+        let name = self.element(slot).and_then(|e| e.attr("name")).unwrap_or("");
+        self.nodes[host]
+            .children
+            .iter()
+            .copied()
+            .filter(|&c| match &self.nodes[c].data {
+                NodeData::Element(e) => e.attr("slot").unwrap_or("") == name,
+                NodeData::Text(_) => name.is_empty(),
+                _ => false,
+            })
+            .collect()
+    }
+
+    /// Tira o nó do pai (ele continua existindo, solto).
+    pub fn detach(&mut self, id: NodeId) {
+        if let Some(p) = self.nodes[id].parent.take() {
+            self.nodes[p].children.retain(|&c| c != id);
+        }
+    }
+
+    /// `ancestor` é o próprio nó ou um ancestral de `id`?
+    pub fn is_inclusive_ancestor(&self, ancestor: NodeId, mut id: NodeId) -> bool {
+        loop {
+            if id == ancestor {
+                return true;
+            }
+            match self.nodes[id].parent {
+                Some(p) => id = p,
+                None => return false,
+            }
+        }
+    }
+
+    /// Insere `child` em `parent` antes de `before` (ou no fim). Fragmentos
+    /// são "desembrulhados": entram os filhos deles.
+    pub fn insert_before(&mut self, parent: NodeId, child: NodeId, before: Option<NodeId>) {
+        if self.is_fragment(child) {
+            let kids = std::mem::take(&mut self.nodes[child].children);
+            for k in kids {
+                self.nodes[k].parent = None;
+                self.insert_before(parent, k, before);
+            }
+            return;
+        }
+        self.detach(child);
+        let idx = before
+            .and_then(|b| self.nodes[parent].children.iter().position(|&c| c == b))
+            .unwrap_or(self.nodes[parent].children.len());
+        self.nodes[parent].children.insert(idx, child);
+        self.nodes[child].parent = Some(parent);
+    }
+
