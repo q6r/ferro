@@ -62,3 +62,51 @@ impl Vm {
         self.epoch.elapsed().as_secs_f64() * 1000.0
     }
 
+    /// Roda um timer (o que vence primeiro). `wait`: espera ele vencer.
+    /// Devolve false se não havia timer para rodar.
+    pub fn run_one_timer(&mut self, wait: bool) -> bool {
+        let Some(i) = (0..self.timers.len()).min_by(|&a, &b| {
+            let (ta, tb) = (&self.timers[a], &self.timers[b]);
+            ta.due.partial_cmp(&tb.due).unwrap_or(std::cmp::Ordering::Equal).then(ta.id.cmp(&tb.id))
+        }) else {
+            return false;
+        };
+        let now = self.now_ms();
+        let due = self.timers[i].due;
+        if due > now {
+            if !wait {
+                return false;
+            }
+            std::thread::sleep(Duration::from_secs_f64((due - now) / 1000.0));
+        }
+        let t = self.timers.remove(i);
+        if let Some(iv) = t.interval {
+            // reagenda antes de chamar: o callback pode cancelar o próprio intervalo
+            let mut again = t.clone();
+            again.due = (t.due + iv).max(self.now_ms());
+            self.timers.push(again);
+        }
+        let r = match &t.callback {
+            Value::String(src) => {
+                let src = src.to_rust();
+                self.eval_script(&src, "timer")
+            }
+            cb => self.call(cb, Value::Undefined, t.args.clone()),
+        };
+        if let Err(e) = r {
+            self.report_uncaught(&e);
+        }
+        self.run_microtasks();
+        true
+    }
+
+    /// Laço de eventos: microtarefas e timers até não sobrar nada.
+    pub fn run_event_loop(&mut self) {
+        self.run_microtasks();
+        while self.run_one_timer(true) {
+            if crate::gc::should_collect() {
+                crate::gc::collect();
+            }
+        }
+    }
+}
