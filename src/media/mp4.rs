@@ -500,3 +500,60 @@ impl Demuxer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bx(ty: &[u8; 4], body: &[u8]) -> Vec<u8> {
+        let mut v = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+        v.extend_from_slice(ty);
+        v.extend_from_slice(body);
+        v
+    }
+
+    #[test]
+    fn fragmento_simples() {
+        // moov com uma trilha de áudio (timescale 1000)
+        let mut tkhd = vec![0u8; 84];
+        tkhd[12..16].copy_from_slice(&1u32.to_be_bytes());
+        let mut mdhd = vec![0u8; 24];
+        mdhd[12..16].copy_from_slice(&1000u32.to_be_bytes());
+        let mut mp4a = vec![0u8; 28];
+        mp4a[16..18].copy_from_slice(&2u16.to_be_bytes());
+        mp4a[24..28].copy_from_slice(&(44100u32 << 16).to_be_bytes());
+        let stsd = [vec![0u8; 4], 1u32.to_be_bytes().to_vec(), bx(b"mp4a", &mp4a)].concat();
+        let stbl = bx(b"stbl", &bx(b"stsd", &stsd));
+        let mdia = [bx(b"mdhd", &mdhd), bx(b"minf", &stbl)].concat();
+        let trak = [bx(b"tkhd", &tkhd), bx(b"mdia", &mdia)].concat();
+        let moov = bx(b"moov", &bx(b"trak", &trak));
+        // moof: 2 amostras de 3 bytes, duração 500, dados logo depois (data-offset)
+        let mut tfhd = vec![0u8, 0x02, 0, 0x08 | 0x10];
+        tfhd.extend_from_slice(&1u32.to_be_bytes());
+        tfhd.extend_from_slice(&500u32.to_be_bytes());
+        tfhd.extend_from_slice(&3u32.to_be_bytes());
+        let mut tfdt = vec![0u8; 4];
+        tfdt.extend_from_slice(&1000u32.to_be_bytes());
+        let mut trun = vec![0u8, 0, 0, 0x01];
+        trun.extend_from_slice(&2u32.to_be_bytes());
+        trun.extend_from_slice(&0u32.to_be_bytes()); // corrigido abaixo
+        let traf = [bx(b"tfhd", &tfhd), bx(b"tfdt", &tfdt), bx(b"trun", &trun)].concat();
+        let mut moof = bx(b"moof", &bx(b"traf", &traf));
+        let off = (moof.len() + 8) as u32;
+        let n = moof.len();
+        moof[n - 4..].copy_from_slice(&off.to_be_bytes());
+        let mdat = bx(b"mdat", b"abcdef");
+        let all = [moov, moof, mdat].concat();
+        let mut d = Demuxer::new();
+        // em pedaços quebrados
+        let mut samples = Vec::new();
+        for chunk in all.chunks(7) {
+            samples.extend(d.push(chunk).unwrap());
+        }
+        assert_eq!(d.tracks.len(), 1);
+        assert!(matches!(d.tracks[0].codec, Codec::Aac { channels: 2, sample_rate: 44100, .. }));
+        assert_eq!(samples.len(), 2);
+        assert_eq!(&*samples[0].data, b"abc");
+        assert_eq!(&*samples[1].data, b"def");
+        assert_eq!(samples[1].pts, 1.5);
+    }
+}
