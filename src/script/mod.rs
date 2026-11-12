@@ -851,3 +851,115 @@ impl Session {
         }
     }
 
+    fn on_done(&mut self, done: Done) {
+        match done {
+            Done::ParserScript { url, text } => {
+                if let Some(p) = self.host.borrow_mut().parser.as_mut() {
+                    p.texts.insert(url, text);
+                }
+            }
+            Done::Module { url, text } => {
+                module::arrived(&mut self.js.vm, url, text);
+                module::drive(&mut self.js.vm);
+            }
+            Done::MediaFile { node, url, bytes } => {
+                let ok = {
+                    let mut hb = self.host.borrow_mut();
+                    // o elemento pode ter trocado de endereço enquanto baixava
+                    if hb.media_loading.get(&node) != Some(&url) {
+                        return;
+                    }
+                    hb.media_loading.remove(&node);
+                    match bytes.map(|b| hb.media.load_file(&b)) {
+                        Some(Ok(source)) => {
+                            hb.media.attach(node, source);
+                            true
+                        }
+                        Some(Err(e)) => {
+                            if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+                                eprintln!("[mídia] {url}: {e}");
+                            }
+                            false
+                        }
+                        None => false,
+                    }
+                };
+                let el = wrap(&mut self.js.vm, node);
+                self.hook("mediaFile", vec![el, Value::Bool(ok)]);
+            }
+            Done::Frame { node, url, result } => {
+                // o <iframe> pode ter mudado de endereço enquanto baixava
+                let current = self.host.borrow().frame_loading.get(&node) == Some(&url);
+                if !current {
+                    return;
+                }
+                match result {
+                    Ok(page) => self.attach_frame(node, *page),
+                    Err(_) => {
+                        self.host.borrow_mut().frame_loading.remove(&node);
+                        let el = wrap(&mut self.js.vm, node);
+                        self.hook("fire", vec![el, Value::str("load")]);
+                    }
+                }
+            }
+            Done::Script { node, text } => {
+                let el = wrap(&mut self.js.vm, node);
+                match text {
+                    Some(text) => {
+                        let name = self
+                            .host
+                            .borrow()
+                            .page
+                            .doc
+                            .element(node)
+                            .and_then(|e| e.attr("src"))
+                            .unwrap_or("script")
+                            .to_string();
+                        self.exec_script(node, &text, &name);
+                        self.hook("fire", vec![el, Value::str("load")]);
+                    }
+                    None => {
+                        self.hook("fire", vec![el, Value::str("error")]);
+                    }
+                }
+            }
+            Done::Fetch { id, res } => {
+                let cb = self.host.borrow_mut().fetch_waiters.remove(&id);
+                if let Some(cb) = cb {
+                    let arg = web::response_value(&mut self.js.vm, res);
+                    if let Err(e) = self.js.vm.call(&cb, Value::Undefined, vec![arg]) {
+                        self.js.vm.report_uncaught(&e);
+                    }
+                    self.js.vm.run_microtasks();
+                }
+            }
+            Done::Image { url, img } => {
+                let ok = img.is_some();
+                let waiters = {
+                    let mut hb = self.host.borrow_mut();
+                    hb.image_cache.insert(url.clone(), img);
+                    hb.repaint = true;
+                    hb.img_waiters.remove(&url).unwrap_or_default()
+                };
+                for n in waiters {
+                    let el = wrap(&mut self.js.vm, n);
+                    self.hook("fire", vec![el, Value::str(if ok { "load" } else { "error" })]);
+                }
+            }
+            Done::Bg { url, img } => {
+                let mut hb = self.host.borrow_mut();
+                if let Some(img) = img {
+                    hb.images.urls.insert(url, img);
+                }
+                hb.repaint = true;
+            }
+            Done::Font => self.host.borrow_mut().repaint = true,
+            Done::Sheet { url, text } => {
+                let mut hb = self.host.borrow_mut();
+                hb.sheet_cache.insert(url, text);
+                hb.styles_dirty = true;
+                hb.dirty = true;
+            }
+        }
+    }
+
