@@ -491,3 +491,44 @@ fn display_url(u: &Url) -> (String, String) {
     }
 }
 
+fn anchor_y(frame: &Frame, fragment: &str) -> Option<f32> {
+    let name = String::from_utf8_lossy(&net::percent_decode(fragment)).into_owned();
+    if name.is_empty() || name == "top" {
+        return Some(0.0);
+    }
+    frame.anchors.iter().find(|(n, _)| *n == name).map(|(_, y)| *y)
+}
+
+impl App {
+    fn request_redraw(&self) {
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
+    fn tab(&self) -> &Tab {
+        &self.tabs[self.active]
+    }
+
+    fn theme(&self) -> &'static Theme {
+        &THEMES[self.theme]
+    }
+
+    /// Tamanho da janela em pixels lógicos.
+    fn logical_size(&self) -> (f32, f32) {
+        if let Some(c) = &self.capture {
+            return (c.width, c.height);
+        }
+        match &self.window {
+            Some(w) => {
+                let s = w.inner_size();
+                (s.width as f32 / self.scale, s.height as f32 / self.scale)
+            }
+            None => (1280.0, 860.0),
+        }
+    }
+
+    fn panel_visible(&self, w: f32) -> bool {
+        self.layout == LayoutMode::Sidebar && !self.panel_collapsed && w >= 860.0
+    }
+
