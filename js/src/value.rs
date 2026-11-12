@@ -873,3 +873,78 @@ impl Object {
         self.props.get(k).cloned()
     }
 
+    /// Chaves próprias na ordem do spec (inclui índices de arrays/strings).
+    pub fn own_keys(&self) -> Vec<PropKey> {
+        let mut keys = Vec::new();
+        match &self.kind {
+            Kind::TypedArray(t) => {
+                for i in 0..t.length {
+                    keys.push(PropKey::Str(JsStr::new(&i.to_string())));
+                }
+            }
+            Kind::Array(v) => {
+                for (i, x) in v.iter().enumerate() {
+                    if !matches!(x, Value::Empty) {
+                        keys.push(PropKey::Str(JsStr::new(&i.to_string())));
+                    }
+                }
+            }
+            Kind::String(s) => {
+                for i in 0..s.len() {
+                    keys.push(PropKey::Str(JsStr::new(&i.to_string())));
+                }
+                keys.extend(self.props.ordered_keys());
+                keys.push(PropKey::str("length"));
+                return keys;
+            }
+            _ => {}
+        }
+        let props = self.props.ordered_keys();
+        if matches!(self.kind, Kind::Array(_)) {
+            // índices esparsos guardados fora do vetor
+            let mut extra: Vec<(u32, PropKey)> = Vec::new();
+            for k in props.iter() {
+                if let Some(i) = k.as_index() {
+                    extra.push((i, k.clone()));
+                }
+            }
+            if !extra.is_empty() {
+                keys.extend(extra.into_iter().map(|(_, k)| k));
+                keys.sort_by_key(|k| k.as_index().unwrap_or(u32::MAX));
+                keys.extend(props.into_iter().filter(|k| k.as_index().is_none()));
+                keys.push(PropKey::str("length"));
+                return keys;
+            }
+        }
+        keys.extend(props);
+        if matches!(self.kind, Kind::Array(_)) {
+            keys.push(PropKey::str("length"));
+        }
+        keys
+    }
+
+    pub fn is_enumerable(&self, k: &PropKey) -> bool {
+        self.own(k).is_some_and(|p| p.enumerable)
+    }
+}
+
+/// Ambiente em tempo de execução: as variáveis de um escopo.
+pub struct Scope {
+    pub slots: Vec<Value>,
+    pub parent: Option<Env>,
+    /// Uso do coletor de ciclos.
+    pub gc: std::cell::Cell<u64>,
+}
+
+pub type Env = Rc<RefCell<Scope>>;
+
+pub fn new_env(size: usize, parent: Option<Env>) -> Env {
+    env_with(vec![Value::Empty; size], parent)
+}
+
+/// Ambiente novo com essas variáveis (registrado no coletor de ciclos).
+pub fn env_with(slots: Vec<Value>, parent: Option<Env>) -> Env {
+    let e = Rc::new(RefCell::new(Scope { slots, parent, gc: std::cell::Cell::new(0) }));
+    crate::gc::track_env(&e);
+    e
+}
