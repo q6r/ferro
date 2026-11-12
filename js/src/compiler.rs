@@ -2075,3 +2075,54 @@ impl Compiler {
         Ok(())
     }
 
+    fn for_of(&mut self, left: &ForHead, right: &Expr, body: &Stmt, is_await: bool) -> CResult<()> {
+        let labels = self.take_labels();
+        self.expr(right)?;
+        self.emit(if is_await { Op::GetAsyncIter } else { Op::GetIter });
+        let top = self.here();
+        let step = if is_await {
+            self.emit(Op::AsyncIterNext);
+            self.emit(Op::Await);
+            self.emit(Op::AwaitResume);
+            self.emit(Op::IterResultValue(0))
+        } else {
+            self.emit(Op::IterStep(0))
+        };
+        self.push_loop(labels, if is_await { LoopKind::ForAwait } else { LoopKind::ForOf });
+        let scoped = self.bind_for_head(left)?;
+        let try_at = self.emit(Op::Try(0));
+        self.f().ctl.push(Ctl::Try);
+        self.stmt(body)?;
+        self.f().ctl.pop();
+        self.emit(Op::PopTry);
+        if scoped {
+            self.pop_scope();
+        }
+        let cont = self.here();
+        self.emit(Op::Jump(top as u32));
+        // exceção no corpo: fecha o iterador e relança
+        self.patch(try_at);
+        self.emit(Op::IterCloseThrow);
+        // break: fecha o iterador
+        let (breaks, continues) = match self.f().ctl.pop() {
+            Some(Ctl::Loop { breaks, continues, .. }) => (breaks, continues),
+            _ => (Vec::new(), Vec::new()),
+        };
+        for c in continues {
+            self.patch_to(c, cont);
+        }
+        for b in breaks {
+            self.patch(b);
+        }
+        if is_await {
+            self.async_iter_close();
+        } else {
+            self.emit(Op::IterClose);
+        }
+        let after = self.emit(Op::Jump(0));
+        self.patch(step);
+        self.emit(Op::IterPop);
+        self.patch(after);
+        Ok(())
+    }
+
