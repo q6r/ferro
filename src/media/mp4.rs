@@ -310,3 +310,79 @@ impl Demuxer {
         Ok(out)
     }
 
+    fn read_moov(&mut self, moov: &[u8]) -> Result<(), String> {
+        let mut tracks = Vec::new();
+        for (ty, trak) in boxes(moov) {
+            if &ty != b"trak" {
+                continue;
+            }
+            let tkhd = child(trak, b"tkhd").ok_or("trak sem tkhd")?;
+            let v = tkhd.first().copied().unwrap_or(0);
+            let id = if v == 1 { be32(tkhd, 20) } else { be32(tkhd, 12) };
+            let mdia = child(trak, b"mdia").ok_or("trak sem mdia")?;
+            let mdhd = child(mdia, b"mdhd").ok_or("mdia sem mdhd")?;
+            let timescale = if mdhd.first() == Some(&1) { be32(mdhd, 20) } else { be32(mdhd, 12) };
+            let stsd = child(mdia, b"minf")
+                .and_then(|m| child(m, b"stbl"))
+                .and_then(|s| child(s, b"stsd"))
+                .ok_or("trak sem stsd")?;
+            // stsd: versão/flags (4) + quantidade (4) + entradas
+            let entries = boxes(stsd.get(8..).unwrap_or(&[]));
+            let Some((fmt, entry)) = entries.first() else { continue };
+            let (codec, width, height) = match fmt {
+                b"av01" | b"avc1" | b"avc3" | b"encv" => {
+                    let width = be16(entry, 24) as u32;
+                    let height = be16(entry, 26) as u32;
+                    let kids = entry.get(78..).unwrap_or(&[]);
+                    let codec = if fmt == b"av01" {
+                        let c = child(kids, b"av1C").ok_or("av01 sem av1C")?;
+                        Codec::Av1 { config: c.get(4..).unwrap_or(&[]).to_vec() }
+                    } else if let Some(c) = child(kids, b"avcC") {
+                        Codec::Avc { config: c.to_vec() }
+                    } else {
+                        Codec::Other(String::from_utf8_lossy(fmt).into_owned())
+                    };
+                    (codec, width, height)
+                }
+                b"mp4a" => {
+                    let channels = be16(entry, 16);
+                    let sample_rate = be32(entry, 24) >> 16;
+                    let kids = entry.get(28..).unwrap_or(&[]);
+                    let config = child(kids, b"esds").and_then(esds_config).unwrap_or_default();
+                    (Codec::Aac { config, channels, sample_rate }, 0, 0)
+                }
+                other => (Codec::Other(String::from_utf8_lossy(other).into_owned()), 0, 0),
+            };
+            tracks.push(Track {
+                id,
+                timescale: timescale.max(1),
+                codec,
+                width,
+                height,
+                default_duration: 0,
+                default_size: 0,
+                default_flags: 0,
+            });
+        }
+        // padrões dos fragmentos (mvex/trex)
+        if let Some(mvex) = child(moov, b"mvex") {
+            for (ty, trex) in boxes(mvex) {
+                if &ty != b"trex" {
+                    continue;
+                }
+                let id = be32(trex, 4);
+                if let Some(t) = tracks.iter_mut().find(|t| t.id == id) {
+                    t.default_duration = be32(trex, 12);
+                    t.default_size = be32(trex, 16);
+                    t.default_flags = be32(trex, 20);
+                }
+            }
+        }
+        if tracks.is_empty() {
+            return Err("moov sem trilhas".into());
+        }
+        // um novo segmento de inicialização substitui o anterior (changeType, troca de qualidade)
+        self.tracks = tracks;
+        Ok(())
+    }
+
