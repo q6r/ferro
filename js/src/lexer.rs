@@ -61,7 +61,14 @@ pub struct LexError {
 }
 
 fn is_id_start(c: char) -> bool {
-    c.is_alphabetic() || c == '$' || c == '_' || (c as u32 > 0x7f && !c.is_whitespace() && !c.is_control())
+    c.is_alphabetic()
+        || c == '$'
+        || c == '_'
+        || (c as u32 > 0x7f
+            && !c.is_whitespace()
+            && !c.is_control()
+            // caracteres de formatação invisíveis (ZWJ/ZWNJ só no meio do nome)
+            && !matches!(c, '\u{200B}'..='\u{200F}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}'))
 }
 
 fn is_id_part(c: char) -> bool {
@@ -200,7 +207,7 @@ impl Lexer {
                 let (name, esc) = self.read_ident()?;
                 escaped = esc;
                 Tok::Ident(name)
-            } else if c == '#' && is_id_start(self.peek_at(1)) {
+            } else if c == '#' && (is_id_start(self.peek_at(1)) || self.peek_at(1) == '\\') {
                 self.pos += 1;
                 Tok::Private(self.read_ident()?.0)
             } else if c.is_ascii_digit() || (c == '.' && self.peek_at(1).is_ascii_digit()) {
@@ -358,6 +365,10 @@ impl Lexer {
             if c == '\\' && self.peek_at(1) == 'u' {
                 self.pos += 2;
                 let ch = self.read_unicode_escape()?;
+                // o escape também precisa ser uma letra válida de identificador
+                if !(if s.is_empty() { is_id_start(ch) } else { is_id_part(ch) }) {
+                    return Err(self.err("escape inválido num identificador"));
+                }
                 s.push(ch);
                 escaped = true;
             } else if (s.is_empty() && is_id_start(c)) || (!s.is_empty() && is_id_part(c)) {

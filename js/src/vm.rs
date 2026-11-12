@@ -1293,6 +1293,55 @@ impl Vm {
                         f.stack.push(value);
                     }
                 }
+                Op::AsyncDelegate(t) => {
+                    use crate::builtins::promise::{RESUME_RETURN, RESUME_THROW};
+                    let n = f.stack.len();
+                    let mode = match f.stack.get(n.wrapping_sub(1)) {
+                        Some(Value::Number(m)) => *m as u8,
+                        _ => 0,
+                    };
+                    let received = f.stack.get(n.wrapping_sub(2)).cloned().unwrap_or(Value::Undefined);
+                    let rec = match f.stack.get(n.wrapping_sub(3)) {
+                        Some(Value::Object(r)) => r.clone(),
+                        _ => continue,
+                    };
+                    let (iter, next) = match &rec.borrow().kind {
+                        Kind::IterRecord { iter, next, .. } => (iter.clone(), next.clone()),
+                        _ => (Value::Undefined, Value::Undefined),
+                    };
+                    let method = match mode {
+                        RESUME_THROW | RESUME_RETURN => {
+                            let m = self.get_str(&iter, if mode == RESUME_THROW { "throw" } else { "return" })?;
+                            if m.is_nullish() {
+                                f.pc = t as usize;
+                                continue;
+                            }
+                            if !m.is_callable() {
+                                let d = self.describe(&m);
+                                return Err(self.type_error(format!("{d} is not a function")));
+                            }
+                            m
+                        }
+                        _ => next,
+                    };
+                    let r = self.call(&method, iter, vec![received])?;
+                    f.stack.truncate(n - 2);
+                    f.stack.push(Value::Number(mode as f64));
+                    f.stack.push(r);
+                }
+                Op::AsyncDelegateResult(t) => {
+                    let res = pop!();
+                    if !matches!(res, Value::Object(_)) {
+                        let d = self.describe(&res);
+                        return Err(self.type_error(format!("Iterator result {d} is not an object")));
+                    }
+                    let done = truthy(&self.get_str(&res, "done")?);
+                    let value = self.get_str(&res, "value")?;
+                    f.stack.push(value);
+                    if done {
+                        f.pc = t as usize;
+                    }
+                }
                 Op::ThrowError(kind, msg) => {
                     let m = code.const_str(msg).to_rust();
                     return Err(match kind {

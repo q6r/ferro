@@ -68,6 +68,8 @@ pub struct Realm {
     pub async_generator_function_proto: ObjRef,
     pub async_generator_proto: ObjRef,
     pub async_iterator_proto: ObjRef,
+    /// %AsyncFromSyncIteratorPrototype% (for await / yield* sobre iterável síncrono).
+    pub async_from_sync_iter_proto: ObjRef,
     /// %ArrayIteratorPrototype%.next (caminho rápido do for-of).
     pub array_iter_next: ObjRef,
     /// Array.prototype.values.
@@ -160,6 +162,7 @@ impl Realm {
             generator_function_proto: plain(Some(&function_proto)),
             async_generator_function_proto: plain(Some(&function_proto)),
             async_generator_proto: plain(Some(&async_iterator_proto)),
+            async_from_sync_iter_proto: plain(Some(&async_iterator_proto)),
             async_iterator_proto,
             array_iter_next,
             array_values,

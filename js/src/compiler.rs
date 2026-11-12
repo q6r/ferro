@@ -170,6 +170,11 @@ pub enum Op {
     GenResume(u32),
     /// yield*: [reg enviado modo] → [reg valor] ou desvia com [valor fezReturn]
     DelegateStep(u32),
+    /// yield* async: [reg enviado modo] → [reg modo resultado-da-chamada]; sem o
+    /// método throw/return pedido, desvia com a pilha intacta
+    AsyncDelegate(u32),
+    /// yield* async: [reg modo resultado] → [reg modo valor]; acabou: desvia com [reg modo valor]
+    AsyncDelegateResult(u32),
     /// [valor] → pausa a função async até a promessa resolver
     Await,
     /// [valor modo] → [valor] ou lança
@@ -287,6 +292,8 @@ impl Op {
             | Op::ForInNext(x)
             | Op::GenResume(x)
             | Op::DelegateStep(x)
+            | Op::AsyncDelegate(x)
+            | Op::AsyncDelegateResult(x)
             | Op::IterResultValue(x)
             | Op::AsyncIterClose(x)
             | Op::JumpIfNotLt(x)
@@ -315,6 +322,8 @@ impl Op {
             | Op::ForInNext(x)
             | Op::GenResume(x)
             | Op::DelegateStep(x)
+            | Op::AsyncDelegate(x)
+            | Op::AsyncDelegateResult(x)
             | Op::IterResultValue(x)
             | Op::AsyncIterClose(x)
             | Op::JumpIfNotLt(x)
@@ -1834,7 +1843,14 @@ impl Compiler {
                     return syntax("'return' fora de função", *line);
                 }
                 match e {
-                    Some(e) => self.expr(e)?,
+                    Some(e) => {
+                        self.expr(e)?;
+                        // gerador async: `return x` espera o x
+                        if self.fr().is_async && self.fr().is_generator {
+                            self.emit(Op::Await);
+                            self.emit(Op::AwaitResume);
+                        }
+                    }
                     None => {
                         self.emit(Op::Undef);
                     }
@@ -2123,6 +2139,74 @@ impl Compiler {
         self.patch(step);
         self.emit(Op::IterPop);
         self.patch(after);
+        Ok(())
+    }
+
+    /// `yield*` num gerador async (spec 15.5.5, generatorKind = async). Com o
+    /// iterável já na pilha; deixa o valor final da delegação.
+    fn async_yield_star(&mut self) -> CResult<()> {
+        use crate::builtins::promise::{RESUME_NEXT, RESUME_RETURN, RESUME_THROW};
+        self.emit(Op::GetAsyncIter);
+        self.emit(Op::Undef);
+        self.emit(Op::Num(RESUME_NEXT as f64));
+        let top = self.here();
+        // [reg enviado modo]
+        let absent = self.emit(Op::AsyncDelegate(0));
+        // [reg modo resultado]: espera o resultado da chamada
+        self.emit(Op::Await);
+        self.emit(Op::AwaitResume);
+        let done = self.emit(Op::AsyncDelegateResult(0));
+        // ainda não acabou: entrega o valor (sem esperar, AsyncGeneratorYield)
+        self.emit(Op::Swap);
+        self.emit(Op::Pop);
+        self.emit(Op::Yield);
+        // voltou com [reg enviado modo]; um return espera o valor enviado antes
+        // (AsyncGeneratorUnwrapYieldResumption): se a espera falhar, vira throw
+        self.emit(Op::Dup);
+        self.emit(Op::Num(RESUME_RETURN as f64));
+        self.emit(Op::JumpIfNotStrictEq(top as u32));
+        self.emit(Op::Pop);
+        self.emit(Op::Await);
+        self.emit(Op::Num(RESUME_THROW as f64));
+        let threw = self.emit(Op::JumpIfStrictEq(0));
+        self.emit(Op::Num(RESUME_RETURN as f64));
+        self.emit(Op::Jump(top as u32));
+        self.patch(threw);
+        self.emit(Op::Num(RESUME_THROW as f64));
+        self.emit(Op::Jump(top as u32));
+
+        // sem o método pedido: [reg enviado modo]
+        self.patch(absent);
+        self.emit(Op::Num(RESUME_THROW as f64));
+        let no_throw = self.emit(Op::JumpIfStrictEq(0));
+        // sem return(): espera o valor enviado e retorna com ele
+        self.emit(Op::Swap);
+        self.emit(Op::Pop);
+        self.emit(Op::Await);
+        self.emit(Op::AwaitResume);
+        self.emit_return()?;
+        // sem throw(): fecha o iterador (esperando o return) e lança TypeError
+        self.patch(no_throw);
+        self.emit(Op::Pop);
+        self.async_iter_close();
+        let msg = self.konst("The iterator does not provide a 'throw' method");
+        self.emit(Op::ThrowError(ERR_TYPE, msg));
+
+        // acabou: [reg modo valor]
+        self.patch(done);
+        self.emit(Op::Swap);
+        self.emit(Op::Num(RESUME_RETURN as f64));
+        let was_return = self.emit(Op::JumpIfStrictEq(0));
+        self.emit(Op::Swap);
+        self.emit(Op::Pop);
+        let end = self.emit(Op::Jump(0));
+        self.patch(was_return);
+        self.emit(Op::Swap);
+        self.emit(Op::Pop);
+        self.emit(Op::Await);
+        self.emit(Op::AwaitResume);
+        self.emit_return()?;
+        self.patch(end);
         Ok(())
     }
 
@@ -2959,9 +3043,8 @@ impl Compiler {
                     self.emit(Op::AwaitResume);
                 }
                 if *delegate && async_gen {
-                    return syntax("yield* em gerador async ainda não é suportado", 0);
-                }
-                if *delegate {
+                    self.async_yield_star()?;
+                } else if *delegate {
                     self.emit(Op::GetIter);
                     self.emit(Op::Undef);
                     self.emit(Op::Num(0.0));
