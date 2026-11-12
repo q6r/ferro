@@ -3575,3 +3575,61 @@ struct Frag {
     mid: f32,
 }
 
+/// Trecho de um elemento em linha decorado numa linha.
+struct Seg {
+    id: usize,
+    style: Rc<ComputedStyle>,
+    x0: f32,
+    x1: f32,
+    first: bool,
+    last: bool,
+}
+
+struct OpenInline {
+    id: usize,
+    style: Rc<ComputedStyle>,
+    start: f32,
+    first: bool,
+}
+
+struct Line {
+    frags: Vec<Frag>,
+    width: f32,
+    above: f32,
+    below: f32,
+    /// Recuo à esquerda (desviando de floats).
+    inset: f32,
+    /// Largura disponível para esta linha.
+    avail: f32,
+    /// Espaço antes da linha (pulando floats que não deixam espaço).
+    gap: f32,
+    segs: Vec<Seg>,
+}
+
+struct LineBuilder<'a> {
+    fonts: &'a Fonts,
+    container: &'a ComputedStyle,
+    /// Origem e largura da caixa de conteúdo (coordenadas absolutas).
+    ox: f32,
+    oy: f32,
+    width: f32,
+    floats: Vec<FloatBox>,
+    /// Altura de uma linha vazia (para testar floats).
+    strut: f32,
+    /// Topo da linha atual, relativo a `oy`, sem contar `gap`.
+    top: f32,
+    gap: f32,
+    inset: f32,
+    avail: f32,
+    lines: Vec<Line>,
+    cur: Vec<Frag>,
+    x: f32,
+    pending_space: f32,
+    after_space: bool,
+    /// O espaço antes da próxima palavra permite quebra (white-space dele).
+    soft_break: bool,
+    can_merge: bool,
+    open: Vec<OpenInline>,
+    line_segs: Vec<Seg>,
+}
+
