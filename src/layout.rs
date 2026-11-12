@@ -546,3 +546,113 @@ impl Opts {
     }
 }
 
+pub fn layout<'a>(
+    doc: &'a Document,
+    root: &'a LayoutBox,
+    fonts: &'a Fonts,
+    images: &'a Images,
+    viewport_w: f32,
+    viewport_h: f32,
+) -> Page {
+    // O fundo do <html> (ou, se transparente, o do <body>) pinta a tela toda.
+    let mut background = Color::WHITE;
+    let mut skip_bg = None;
+    if !root.style.background.is_transparent() {
+        background = root.style.background;
+        skip_bg = root.node();
+    } else if let Some(body) = root
+        .children
+        .iter()
+        .find(|c| c.node().and_then(|n| doc.tag(n)) == Some("body"))
+        && !body.style.background.is_transparent()
+    {
+        background = body.style.background;
+        skip_bg = body.node();
+    }
+    let viewport = Rect {
+        x: 0.0,
+        y: 0.0,
+        w: viewport_w,
+        h: viewport_h,
+    };
+    let mut cx = Ctx {
+        doc,
+        fonts,
+        images,
+        items: Vec::new(),
+        links: Vec::new(),
+        boxes: Vec::new(),
+        anchors: Vec::new(),
+        abs_bottom: 0.0,
+        cb_heights: vec![Some(viewport_h)],
+        z_stack: vec![0],
+        scrollers: Vec::new(),
+        in_fixed: 0,
+        fixed_nodes: Default::default(),
+        fixed_links: Vec::new(),
+        skip_bg,
+        viewport,
+        abs: vec![Vec::new()],
+        layers: Vec::new(),
+        next_layer: 0,
+        floats: Vec::new(),
+        bfc_starts: vec![0],
+        intrinsic_cache: HashMap::new(),
+        missing: Vec::new(),
+    };
+    let bm = cx.box_model(&root.style, viewport_w);
+    let y = bm.margin[TOP];
+    let r = cx.layout_block(root, &bm, 0.0, y, &Inherited::default(), Opts::bfc());
+    // absolutos sem ancestral posicionado e fixos: relativos à janela
+    loop {
+        let pending = std::mem::take(&mut cx.abs[0]);
+        if pending.is_empty() {
+            break;
+        }
+        for p in pending {
+            cx.layout_absolute(p, viewport);
+        }
+    }
+    let mut layers = std::mem::take(&mut cx.layers);
+    // trechos marcados (relativos/sticky) viram camadas próprias
+    let mut extra = Vec::new();
+    let mut flow = split_layers(std::mem::take(&mut cx.items), 0, false, &mut extra);
+    for l in layers.iter_mut() {
+        l.items = split_layers(std::mem::take(&mut l.items), l.z, l.fixed, &mut extra);
+    }
+    layers.extend(extra);
+    layers.sort_by_key(|l| (l.z, l.order));
+    let mut items = Vec::new();
+    let take = |l: &mut Layer, items: &mut Vec<DisplayItem>| {
+        if l.fixed && !l.items.is_empty() {
+            items.push(DisplayItem::FixedStart);
+            items.append(&mut l.items);
+            items.push(DisplayItem::FixedEnd);
+        } else {
+            items.append(&mut l.items);
+        }
+    };
+    for l in layers.iter_mut().filter(|l| l.z < 0) {
+        take(l, &mut items);
+    }
+    items.append(&mut flow);
+    for l in layers.iter_mut().filter(|l| l.z >= 0) {
+        take(l, &mut items);
+    }
+    let hits = extract_hits(&mut items);
+    Page {
+        items,
+        height: (y + r.height + bm.margin[BOTTOM]).max(viewport_h).max(cx.abs_bottom.min(200_000.0)),
+        background,
+        links: cx.links,
+        boxes: cx.boxes,
+        scrollers: cx.scrollers,
+        hits,
+        fixed_nodes: cx.fixed_nodes,
+        fixed_links: cx.fixed_links,
+        anchors: cx.anchors,
+        missing_urls: cx.missing,
+        missing_fonts: Vec::new(),
+    }
+}
+
