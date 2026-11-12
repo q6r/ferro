@@ -1870,3 +1870,63 @@ function loadMedia(el, url) {
   N.mediaLoadUrl(el, resolveURL(String(url)));
   later(() => fireTrusted(el, new Event('loadstart')));
 }
+accessor(MEDIA, 'src', function () {
+  const v = this.getAttribute('src');
+  return v === null ? '' : (v.startsWith('blob:') ? v : resolveURL(v));
+}, function (v) {
+  v = String(v);
+  this.setAttribute('src', v);
+  loadMedia(this, v);
+});
+accessor(MEDIA, 'srcObject', function () { return mediaOf(this).ms; }, function (v) {
+  if (v instanceof MediaSource) {
+    const u = URL.createObjectURL(v);
+    loadMedia(this, u);
+  } else loadMedia(this, '');
+});
+const MEDIA_SET = (el) => { const s = mediaOf(el); N.mediaSet(el, s.rate, s.volume, s.muted); };
+accessor(MEDIA, 'currentTime', function () { return stateOf(this)[0]; }, function (t) {
+  t = Number(t);
+  if (!Number.isFinite(t)) throw new TypeError("Failed to set the 'currentTime' property on 'HTMLMediaElement': The provided double value is non-finite.");
+  fireMedia(this, N.mediaSeek(this, t));
+});
+hidden(MEDIA, 'fastSeek', function (t) { this.currentTime = t; });
+accessor(MEDIA, 'duration', function () {
+  const s = mediaOf(this);
+  return s.ms ? s.ms.duration : NaN;
+});
+accessor(MEDIA, 'paused', function () { return stateOf(this)[2]; });
+accessor(MEDIA, 'seeking', function () { return stateOf(this)[3]; });
+accessor(MEDIA, 'ended', function () { return stateOf(this)[4]; });
+accessor(MEDIA, 'readyState', function () { return stateOf(this)[1]; });
+accessor(MEDIA, 'networkState', function () { return mediaOf(this).network; });
+accessor(MEDIA, 'error', function () { return mediaOf(this).error; });
+accessor(MEDIA, 'currentSrc', function () { return this.src; });
+accessor(MEDIA, 'buffered', function () {
+  const s = mediaOf(this);
+  return new TimeRanges(s.ms ? N.msBuffered(MS.get(s.ms).id) : []);
+});
+accessor(MEDIA, 'seekable', function () {
+  const d = this.duration;
+  return new TimeRanges(Number.isFinite(d) ? [0, d] : []);
+});
+accessor(MEDIA, 'played', function () { return new TimeRanges([0, this.currentTime]); });
+accessor(MEDIA, 'playbackRate', function () { return mediaOf(this).rate; }, function (v) {
+  mediaOf(this).rate = Number(v) || 1; MEDIA_SET(this); fireMedia(this, ['ratechange']);
+});
+accessor(MEDIA, 'defaultPlaybackRate', function () { return mediaOf(this).defaultRate; }, function (v) { mediaOf(this).defaultRate = Number(v) || 1; });
+accessor(MEDIA, 'volume', function () { return mediaOf(this).volume; }, function (v) {
+  v = Number(v);
+  if (!(v >= 0 && v <= 1)) throw new DOMException(`Failed to set the 'volume' property on 'HTMLMediaElement': The volume provided (${v}) is outside the range [0, 1].`, 'IndexSizeError');
+  mediaOf(this).volume = v; MEDIA_SET(this); fireMedia(this, ['volumechange']);
+});
+accessor(MEDIA, 'muted', function () { return mediaOf(this).muted; }, function (v) {
+  mediaOf(this).muted = !!v; MEDIA_SET(this); fireMedia(this, ['volumechange']);
+});
+accessor(MEDIA, 'preservesPitch', () => true, () => {});
+accessor(MEDIA, 'textTracks', function () { return Object.assign([], { addEventListener() {}, removeEventListener() {}, getTrackById() { return null; }, onaddtrack: null, onchange: null }); });
+accessor(MEDIA, 'audioTracks', function () { return Object.assign([], { addEventListener() {}, removeEventListener() {} }); });
+accessor(MEDIA, 'videoTracks', function () { return Object.assign([], { addEventListener() {}, removeEventListener() {} }); });
+accessor(MEDIA, 'mediaKeys', () => null);
+accessor(MEDIA, 'sinkId', () => '');
+accessor(MEDIA, 'remote', () => ({ state: 'disconnected', watchAvailability() { return Promise.reject(new DOMException('', 'NotSupportedError')); }, addEventListener() {} }));
