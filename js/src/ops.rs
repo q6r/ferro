@@ -117,3 +117,52 @@ impl Vm {
         self.make_error(&p, &msg.into())
     }
 
+    /// Valor resumido para mensagens ("undefined", "#<Object>", ...).
+    pub fn describe(&self, v: &Value) -> String {
+        match v {
+            Value::Undefined | Value::Empty => "undefined".into(),
+            Value::Null => "null".into(),
+            Value::Bool(b) => b.to_string(),
+            Value::Number(n) => number_to_string(*n),
+            Value::String(s) => format!("\"{}\"", s.to_rust()),
+            Value::Symbol(s) => format!("Symbol({})", s.description().map(|d| d.to_rust()).unwrap_or_default()),
+            Value::BigInt(b) => format!("{}n", b.to_string_radix(10)),
+            Value::Object(o) => {
+                if o.is_callable() {
+                    let name = data_in_chain(o, "name")
+                        .and_then(|v| match v {
+                            Value::String(s) => Some(s.to_rust()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    if name.is_empty() { "function".into() } else { name }
+                } else {
+                    let ctor = data_in_chain(o, "constructor")
+                        .and_then(|c| match c {
+                            Value::Object(c) => data_in_chain(&c, "name"),
+                            _ => None,
+                        })
+                        .and_then(|v| match v {
+                            Value::String(s) if !s.is_empty() => Some(s.to_rust()),
+                            _ => None,
+                        });
+                    format!("#<{}>", ctor.unwrap_or_else(|| o.borrow().tag.to_string()))
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------- criação
+
+    pub fn new_object(&self) -> ObjRef {
+        ObjRef::new(Object::new(Some(self.realm.object_proto.clone()), Kind::Ordinary))
+    }
+
+    pub fn new_array(&self, v: Vec<Value>) -> ObjRef {
+        ObjRef::new(Object::new(Some(self.realm.array_proto.clone()), Kind::Array(v)))
+    }
+
+    pub fn array_value(&self, v: Vec<Value>) -> Value {
+        Value::Object(self.new_array(v))
+    }
+
