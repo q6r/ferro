@@ -110,3 +110,55 @@ impl Vm {
         (mk(resolve_fn, ""), mk(reject_fn, ""))
     }
 
+    /// Resolve `p` com `v` (seguindo thenables).
+    pub fn resolve_promise(&mut self, p: &ObjRef, v: Value) {
+        if let Value::Object(o) = &v {
+            if o.ptr_eq(p) {
+                let e = self.type_error("Chaining cycle detected for promise #<Promise>");
+                self.reject_promise(p, e);
+                return;
+            }
+            let then = match self.get_obj(o, &PropKey::str("then")) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.reject_promise(p, e);
+                    return;
+                }
+            };
+            if then.is_callable() {
+                self.microtasks.push_back(Job::Thenable(p.clone(), v.clone(), then));
+                return;
+            }
+        }
+        self.settle(p, PState::Fulfilled(v));
+    }
+
+    pub fn reject_promise(&mut self, p: &ObjRef, reason: Value) {
+        self.settle(p, PState::Rejected(reason));
+    }
+
+    fn settle(&mut self, p: &ObjRef, state: PState) {
+        let (reactions, arg, unhandled) = {
+            let mut b = p.borrow_mut();
+            let Kind::Promise(d) = &mut b.kind else { return };
+            if !matches!(d.state, PState::Pending) {
+                return;
+            }
+            let (list, arg, rejected) = match &state {
+                PState::Fulfilled(v) => (std::mem::take(&mut d.fulfill), v.clone(), false),
+                PState::Rejected(v) => (std::mem::take(&mut d.reject), v.clone(), true),
+                PState::Pending => return,
+            };
+            d.fulfill.clear();
+            d.reject.clear();
+            d.state = state;
+            (list, arg, rejected && !d.handled)
+        };
+        if unhandled {
+            self.pending_rejections.push(p.clone());
+        }
+        for r in reactions {
+            self.microtasks.push_back(Job::Reaction(r, arg.clone()));
+        }
+    }
+
