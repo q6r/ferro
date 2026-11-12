@@ -43,3 +43,111 @@ pub fn tokenize(input: &str) -> Vec<Token> {
     let mut text = String::new();
     let mut i = 0;
 
+    fn flush(text: &mut String, tokens: &mut Vec<Token>) {
+        if !text.is_empty() {
+            tokens.push(Token::Text(decode_entities(text)));
+            text.clear();
+        }
+    }
+
+    while i < len {
+        let c = chars[i];
+        if c != '<' {
+            text.push(c);
+            i += 1;
+            continue;
+        }
+        match chars.get(i + 1).copied() {
+            Some('!') => {
+                flush(&mut text, &mut tokens);
+                if starts_with(&chars, i + 2, "--") {
+                    let (end, after) = match find(&chars, i + 4, "-->") {
+                        Some(e) => (e, e + 3),
+                        None => (len, len),
+                    };
+                    tokens.push(Token::Comment(chars[i + 4..end].iter().collect()));
+                    i = after;
+                } else {
+                    let end = find_char(&chars, i + 2, '>').unwrap_or(len);
+                    let content: String = chars[i + 2..end].iter().collect();
+                    if content.to_ascii_lowercase().starts_with("doctype") {
+                        tokens.push(Token::Doctype(content[7..].trim().to_string()));
+                    } else {
+                        tokens.push(Token::Comment(content));
+                    }
+                    i = (end + 1).min(len);
+                }
+            }
+            Some('?') => {
+                // <?xml ...?> e afins viram comentário
+                flush(&mut text, &mut tokens);
+                let end = find_char(&chars, i + 2, '>').unwrap_or(len);
+                tokens.push(Token::Comment(chars[i + 2..end].iter().collect()));
+                i = (end + 1).min(len);
+            }
+            Some('/') => match chars.get(i + 2).copied() {
+                Some(c2) if c2.is_ascii_alphabetic() => {
+                    flush(&mut text, &mut tokens);
+                    let mut j = i + 2;
+                    let mut name = String::new();
+                    while j < len && !chars[j].is_whitespace() && chars[j] != '>' && chars[j] != '/' {
+                        name.push(chars[j].to_ascii_lowercase());
+                        j += 1;
+                    }
+                    let end = find_char(&chars, j, '>').unwrap_or(len);
+                    tokens.push(Token::EndTag { name });
+                    i = (end + 1).min(len);
+                }
+                Some('>') => i += 3,
+                _ => {
+                    flush(&mut text, &mut tokens);
+                    let end = find_char(&chars, i + 2, '>').unwrap_or(len);
+                    tokens.push(Token::Comment(chars[i + 2..end].iter().collect()));
+                    i = (end + 1).min(len);
+                }
+            },
+            Some(c2) if c2.is_ascii_alphabetic() => {
+                flush(&mut text, &mut tokens);
+                let (tok, j) = parse_start_tag(&chars, i + 1);
+                i = j;
+                let raw = match &tok {
+                    Token::StartTag {
+                        name,
+                        self_closing: false,
+                        ..
+                    } => match name.as_str() {
+                        "script" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "plaintext" => {
+                            Some((name.clone(), false))
+                        }
+                        "noscript" if scripting => Some((name.clone(), false)),
+                        "title" | "textarea" => Some((name.clone(), true)),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                tokens.push(tok);
+                // Elementos de texto bruto: tudo até </nome> é texto.
+                if let Some((name, decode)) = raw {
+                    let end = find_ci(&chars, i, &format!("</{name}")).unwrap_or(len);
+                    let content: String = chars[i..end].iter().collect();
+                    if !content.is_empty() {
+                        tokens.push(Token::Text(if decode {
+                            decode_entities(&content)
+                        } else {
+                            content
+                        }));
+                    }
+                    tokens.push(Token::EndTag { name });
+                    i = find_char(&chars, end, '>').map(|e| e + 1).unwrap_or(len);
+                }
+            }
+            _ => {
+                text.push('<');
+                i += 1;
+            }
+        }
+    }
+    flush(&mut text, &mut tokens);
+    tokens
+}
+
