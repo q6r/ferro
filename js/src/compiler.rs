@@ -2725,3 +2725,297 @@ impl Compiler {
         Ok(())
     }
 
+    fn expr(&mut self, e: &Expr) -> CResult<()> {
+        match e {
+            Expr::Num(n) => {
+                self.emit(Op::Num(*n));
+            }
+            Expr::BigInt(text) => {
+                let Some(b) = crate::bigint::BigInt::parse_literal(text) else {
+                    return syntax(format!("literal BigInt inválido: {text}"), 0);
+                };
+                let f = self.f();
+                f.consts.push(Value::BigInt(Rc::new(b)));
+                let i = (f.consts.len() - 1) as u32;
+                self.emit(Op::Str(i));
+            }
+            Expr::Str(s) => {
+                let c = self.konst_js(JsStr::from_slice(s));
+                self.emit(Op::Str(c));
+            }
+            Expr::Template(parts, exprs) => {
+                let c = self.konst_js(JsStr::from_slice(&parts[0]));
+                self.emit(Op::Str(c));
+                for (i, x) in exprs.iter().enumerate() {
+                    self.expr(x)?;
+                    self.emit(Op::ToStr);
+                    self.emit(Op::Add);
+                    if let Some(p) = parts.get(i + 1)
+                        && !p.is_empty()
+                    {
+                        let c = self.konst_js(JsStr::from_slice(p));
+                        self.emit(Op::Str(c));
+                        self.emit(Op::Add);
+                    }
+                }
+            }
+            Expr::Tagged { tag, cooked, raw, exprs } => {
+                self.callee(tag, false)?;
+                let idx = self.fr().templates.len() as u32;
+                self.f().templates.push((cooked.clone(), raw.clone()));
+                self.emit(Op::TemplateObj(idx));
+                for x in exprs {
+                    self.expr(x)?;
+                }
+                self.emit(Op::Call(1 + exprs.len() as u32));
+            }
+            Expr::Regex(p, f) => {
+                let a = self.konst(p);
+                let b = self.konst(f);
+                self.emit(Op::Regex(a, b));
+            }
+            Expr::Ident(n, line) => {
+                self.line(*line);
+                self.load(n);
+            }
+            Expr::This => self.this()?,
+            Expr::Null => {
+                self.emit(Op::Null);
+            }
+            Expr::Bool(b) => {
+                self.emit(if *b { Op::True } else { Op::False });
+            }
+            Expr::Array(elems) => self.array_lit(elems)?,
+            Expr::Object(props) => self.object(props)?,
+            Expr::Function(f) => {
+                let self_binding = f.name.is_some() && f.kind == FnKind::Normal;
+                let idx = self.function(f, None, None, self_binding)?;
+                self.emit(Op::Closure(idx));
+            }
+            Expr::Class(c) => self.class(c, None)?,
+            Expr::Unary(op, x) => self.unary(*op, x)?,
+            Expr::Update { inc, prefix, target } => self.update(*inc, *prefix, target)?,
+            Expr::Binary(op, l, r) => {
+                self.expr(l)?;
+                self.expr(r)?;
+                self.emit(match op {
+                    BinOp::Add => Op::Add,
+                    BinOp::Sub => Op::Sub,
+                    BinOp::Mul => Op::Mul,
+                    BinOp::Div => Op::Div,
+                    BinOp::Mod => Op::Mod,
+                    BinOp::Exp => Op::Exp,
+                    BinOp::BitAnd => Op::BitAnd,
+                    BinOp::BitOr => Op::BitOr,
+                    BinOp::BitXor => Op::BitXor,
+                    BinOp::Shl => Op::Shl,
+                    BinOp::Shr => Op::Shr,
+                    BinOp::UShr => Op::UShr,
+                    BinOp::Eq => Op::Eq,
+                    BinOp::Ne => Op::Ne,
+                    BinOp::StrictEq => Op::StrictEq,
+                    BinOp::StrictNe => Op::StrictNe,
+                    BinOp::Lt => Op::Lt,
+                    BinOp::Le => Op::Le,
+                    BinOp::Gt => Op::Gt,
+                    BinOp::Ge => Op::Ge,
+                    BinOp::In => Op::In,
+                    BinOp::InstanceOf => Op::InstanceOf,
+                });
+            }
+            Expr::Logical(op, l, r) => {
+                self.expr(l)?;
+                let j = self.emit(match op {
+                    LogOp::And => Op::JumpIfFalseKeep(0),
+                    LogOp::Or => Op::JumpIfTrueKeep(0),
+                    LogOp::Nullish => Op::JumpIfNotNullishKeep(0),
+                });
+                self.expr(r)?;
+                self.patch(j);
+            }
+            Expr::Assign(op, target, value) => self.assign(*op, target, value)?,
+            Expr::Cond(t, c, a) => {
+                self.expr(t)?;
+                let j = self.emit(Op::JumpIfFalse(0));
+                self.expr(c)?;
+                let j2 = self.emit(Op::Jump(0));
+                self.patch(j);
+                self.expr(a)?;
+                self.patch(j2);
+            }
+            Expr::Call {
+                callee,
+                args,
+                optional,
+                line,
+            } => {
+                self.callee(callee, *optional)?;
+                let argc = self.args(args)?;
+                self.line(*line);
+                let at = match argc {
+                    Some(n) => self.emit(Op::Call(n)),
+                    None => self.emit(Op::CallSpread),
+                };
+                self.call_name(at, callee);
+            }
+            Expr::New(callee, args, line) => {
+                self.expr(callee)?;
+                let argc = self.args(args)?;
+                self.line(*line);
+                let at = match argc {
+                    Some(n) => self.emit(Op::New(n)),
+                    None => self.emit(Op::NewSpread),
+                };
+                self.call_name(at, callee);
+            }
+            Expr::Member { obj, prop, optional } => {
+                self.expr(obj)?;
+                if *optional {
+                    self.opt_site(0);
+                }
+                let c = self.konst(prop);
+                self.emit(Op::GetProp(c));
+            }
+            Expr::Index { obj, index, optional } => {
+                self.expr(obj)?;
+                if *optional {
+                    self.opt_site(0);
+                }
+                self.expr(index)?;
+                self.emit(Op::GetIndex);
+            }
+            Expr::PrivateMember(obj, name) => {
+                self.expr(obj)?;
+                self.load_private(name)?;
+                self.emit(Op::GetPrivate);
+            }
+            Expr::PrivateIn(name, obj) => {
+                self.load_private(name)?;
+                self.expr(obj)?;
+                self.emit(Op::HasPrivate);
+            }
+            Expr::OptionalChain(inner) => {
+                self.f().opt.push(Vec::new());
+                self.expr(inner)?;
+                let sites = self.f().opt.pop().unwrap_or_default();
+                if !sites.is_empty() {
+                    let mut ends = vec![self.emit(Op::Jump(0))];
+                    for (pos, extra) in sites {
+                        self.patch(pos);
+                        for _ in 0..=extra {
+                            self.emit(Op::Pop);
+                        }
+                        self.emit(Op::Undef);
+                        ends.push(self.emit(Op::Jump(0)));
+                    }
+                    for j in ends {
+                        self.patch(j);
+                    }
+                }
+            }
+            Expr::SuperMember(name) => {
+                self.this()?;
+                let c = self.konst(name);
+                self.emit(Op::GetSuper(c));
+            }
+            Expr::SuperIndex(idx) => {
+                self.this()?;
+                self.expr(idx)?;
+                self.emit(Op::GetSuperIndex);
+            }
+            Expr::SuperCall(args) => {
+                if self.fr().is_arrow() {
+                    return syntax("super() dentro de arrow function ainda não é suportado", 0);
+                }
+                let argc = self.args(args)?;
+                match argc {
+                    Some(n) => self.emit(Op::SuperCall(n)),
+                    None => self.emit(Op::SuperCallSpread),
+                };
+                if self.fr().scopes.first().is_some_and(|s| s.index.contains_key("this")) {
+                    self.emit(Op::Dup);
+                    self.init("this");
+                }
+            }
+            Expr::Seq(list) => {
+                for (i, x) in list.iter().enumerate() {
+                    self.expr(x)?;
+                    if i + 1 < list.len() {
+                        self.emit(Op::Pop);
+                    }
+                }
+            }
+            Expr::Yield(arg, delegate) => {
+                match arg {
+                    Some(a) => self.expr(a)?,
+                    None => {
+                        self.emit(Op::Undef);
+                    }
+                }
+                let async_gen = self.fr().is_async;
+                if async_gen && !*delegate {
+                    // em geradores async, yield espera o valor
+                    self.emit(Op::Await);
+                    self.emit(Op::AwaitResume);
+                }
+                if *delegate && async_gen {
+                    return syntax("yield* em gerador async ainda não é suportado", 0);
+                }
+                if *delegate {
+                    self.emit(Op::GetIter);
+                    self.emit(Op::Undef);
+                    self.emit(Op::Num(0.0));
+                    let top = self.here();
+                    let step = self.emit(Op::DelegateStep(0));
+                    self.emit(Op::Yield);
+                    self.emit(Op::Jump(top as u32));
+                    self.patch(step);
+                    let normal = self.emit(Op::JumpIfFalse(0));
+                    self.emit_return()?;
+                    self.patch(normal);
+                } else {
+                    self.emit(Op::Yield);
+                    let resume = self.emit(Op::GenResume(0));
+                    if async_gen {
+                        self.emit(Op::Await);
+                        self.emit(Op::AwaitResume);
+                    }
+                    self.emit_return()?;
+                    self.patch(resume);
+                }
+            }
+            Expr::Await(arg) => {
+                self.expr(arg)?;
+                self.emit(Op::Await);
+                self.emit(Op::AwaitResume);
+            }
+            Expr::NewTarget => {
+                if !self.fr().is_arrow() {
+                    self.emit(Op::NewTarget);
+                } else if self.has_binding("new.target") {
+                    self.load("new.target");
+                } else {
+                    self.emit(Op::Undef);
+                }
+            }
+            Expr::Spread(_) => return syntax("'...' fora de lugar", 0),
+            Expr::Unsupported(what) => {
+                let c = self.konst(&format!("{what} ainda não é suportado"));
+                self.emit(Op::ThrowError(ERR_SYNTAX, c));
+            }
+            Expr::ImportCall(spec) => {
+                // __ferroImport(especificador, quem importa) → Promise
+                let g = self.konst("__ferroImport");
+                self.emit(Op::GetGlobal(g));
+                self.emit(Op::Undef);
+                self.expr(spec)?;
+                let file = self.file.clone();
+                let f = self.konst(&file);
+                self.emit(Op::Str(f));
+                self.emit(Op::Call(2));
+            }
+            Expr::ImportMeta => self.load("__meta"),
+        }
+        Ok(())
+    }
+
