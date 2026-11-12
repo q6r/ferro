@@ -691,3 +691,68 @@ fn trim_num(v: f32) -> String {
     if r.fract() == 0.0 { format!("{}", r as i64) } else { format!("{r}") }
 }
 
+fn css_props(st: &crate::style::ComputedStyle, rect: Option<crate::layout::Rect>) -> Vec<(String, String)> {
+    use crate::style::*;
+    let mut v: Vec<(String, String)> = Vec::new();
+    let mut push = |k: &str, val: String| v.push((k.to_string(), val));
+    push("display", kebab(&format!("{:?}", st.display)));
+    push("position", kebab(&format!("{:?}", st.position)));
+    push("float", kebab(&format!("{:?}", st.float)));
+    push("visibility", if st.visible { "visible".into() } else { "hidden".into() });
+    push("color", color_css(st.color));
+    push("background-color", color_css(st.background));
+    push("font-size", format!("{}px", trim_num(st.font_size)));
+    push("font-weight", st.font_weight.to_string());
+    push("font-style", if st.italic { "italic".into() } else { "normal".into() });
+    push(
+        "font-family",
+        match st.font_family {
+            FontFamily::Serif => "serif".into(),
+            FontFamily::Sans => "sans-serif".into(),
+            FontFamily::Mono => "monospace".into(),
+            FontFamily::System => "system-ui".into(),
+        },
+    );
+    push(
+        "line-height",
+        match st.line_height {
+            LineHeight::Normal => "normal".into(),
+            LineHeight::Number(n) => format!("{}px", trim_num(n * st.font_size)),
+            LineHeight::Px(p) => format!("{}px", trim_num(p)),
+        },
+    );
+    push("text-align", kebab(&format!("{:?}", st.text_align)));
+    push("white-space", kebab(&format!("{:?}", st.white_space)));
+    push("opacity", trim_num(st.opacity));
+    push("z-index", st.z_index.map_or("auto".into(), |z| z.to_string()));
+    push("overflow", if st.overflow_clip { "hidden".into() } else { "visible".into() });
+    let sides = ["top", "right", "bottom", "left"];
+    for (i, side) in sides.iter().enumerate() {
+        push(&format!("margin-{side}"), match st.margin[i] { Len::Auto => "0px".into(), l => len_css(l) });
+        push(&format!("padding-{side}"), len_css(st.padding[i]));
+        push(&format!("border-{side}-width"), format!("{}px", trim_num(if st.border_style[i] { st.border_width[i] } else { 0.0 })));
+    }
+    push("top", len_css(st.top));
+    push("left", len_css(st.left));
+    push("right", len_css(st.right));
+    push("bottom", len_css(st.bottom));
+    push("box-sizing", if st.border_box { "border-box".into() } else { "content-box".into() });
+    push("flex-direction", kebab(&format!("{:?}", st.flex_direction)));
+    push("flex-grow", trim_num(st.flex_grow));
+    push("flex-shrink", trim_num(st.flex_shrink));
+    match rect {
+        Some(r) => {
+            push("width", format!("{}px", trim_num(r.w)));
+            push("height", format!("{}px", trim_num(r.h)));
+        }
+        None => {
+            push("width", len_css(st.width));
+            push("height", len_css(st.height));
+        }
+    }
+    for (k, val) in st.custom.flatten() {
+        push(&k, val.to_string());
+    }
+    v
+}
+
