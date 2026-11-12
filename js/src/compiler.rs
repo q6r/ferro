@@ -3019,3 +3019,77 @@ impl Compiler {
         Ok(())
     }
 
+    fn prop_key(&mut self, k: &PropKeyExpr) -> CResult<()> {
+        match k {
+            PropKeyExpr::Name(n) => {
+                let c = self.konst(n);
+                self.emit(Op::Str(c));
+            }
+            PropKeyExpr::Computed(e) => {
+                self.expr(e)?;
+                self.emit(Op::ToPropertyKey);
+            }
+            PropKeyExpr::Private(n) => self.load_private(n)?,
+        }
+        Ok(())
+    }
+
+    fn object(&mut self, props: &[Prop]) -> CResult<()> {
+        self.emit(Op::NewObject);
+        for p in props {
+            match p.kind {
+                PropKind::Init => match (&p.key, &p.value) {
+                    (key, Expr::Function(f)) if f.kind == FnKind::Method => {
+                        self.prop_key(key)?;
+                        let name = match key {
+                            PropKeyExpr::Name(n) => Some(n.clone()),
+                            _ => None,
+                        };
+                        let idx = self.function(f, name, None, false)?;
+                        self.emit(Op::Closure(idx));
+                        self.emit(Op::DefineMethod(METHOD, true));
+                    }
+                    (PropKeyExpr::Name(n), v) if &**n == "__proto__" => {
+                        self.expr(v)?;
+                        self.emit(Op::SetProto);
+                    }
+                    (PropKeyExpr::Name(n), v) => {
+                        self.expr_named(v, Some(n.clone()))?;
+                        let c = self.konst(n);
+                        self.emit(Op::DefineName(c));
+                    }
+                    (PropKeyExpr::Computed(k), v) => {
+                        self.expr(k)?;
+                        self.emit(Op::ToPropertyKey);
+                        self.expr(v)?;
+                        let anon = match v {
+                            Expr::Function(f) => f.name.is_none(),
+                            Expr::Class(c) => c.name.is_none(),
+                            _ => false,
+                        };
+                        self.emit(if anon { Op::DefinePropNamed } else { Op::DefineProp });
+                    }
+                    (PropKeyExpr::Private(_), _) => return syntax("nome privado em objeto literal", 0),
+                },
+                PropKind::Get | PropKind::Set => {
+                    self.prop_key(&p.key)?;
+                    let name = match &p.key {
+                        PropKeyExpr::Name(n) => Some(n.clone()),
+                        _ => None,
+                    };
+                    if let Expr::Function(f) = &p.value {
+                        let idx = self.function(f, name, None, false)?;
+                        self.emit(Op::Closure(idx));
+                    }
+                    let kind = if matches!(p.kind, PropKind::Get) { GETTER } else { SETTER };
+                    self.emit(Op::DefineMethod(kind, true));
+                }
+                PropKind::Spread => {
+                    self.expr(&p.value)?;
+                    self.emit(Op::CopyProps);
+                }
+            }
+        }
+        Ok(())
+    }
+
