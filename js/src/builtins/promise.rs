@@ -531,3 +531,36 @@ fn finally_common(vm: &mut Vm, a: &CallArgs, thunk: NativeFn) -> Result<Value, V
     vm.call(&then, Value::Object(p), vec![Value::Object(f)])
 }
 
+fn finally_then(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    finally_common(vm, a, value_thunk)
+}
+
+fn finally_catch(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    finally_common(vm, a, thrower_thunk)
+}
+
+fn value_thunk(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(native_data(&a.callee))
+}
+
+fn thrower_thunk(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Err(native_data(&a.callee))
+}
+
+fn promise_resolve(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let v = a.arg(0);
+    if let (Value::Object(c), Value::Object(o)) = (&a.this, &v)
+        && matches!(o.borrow().kind, Kind::Promise(_))
+    {
+        let vc = vm.get_obj(o, &PropKey::str("constructor"))?;
+        if let Value::Object(vc) = vc
+            && vc.ptr_eq(c)
+        {
+            return Ok(v);
+        }
+    }
+    let cap = vm.new_capability(&a.this)?;
+    vm.call(&cap.resolve, Value::Undefined, vec![v])?;
+    Ok(cap.promise)
+}
+
