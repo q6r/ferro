@@ -194,3 +194,47 @@ impl Vm {
             .unwrap_or(0.0)
     }
 
+    pub fn run_frame(&mut self, f: &mut Frame) -> Result<Value, Value> {
+        if self.trace.len() >= self.max_depth {
+            return Err(self.range_error("Maximum call stack size exceeded"));
+        }
+        if let Some(t) = self.trace.last_mut() {
+            t.pc = self.cur_pc;
+        }
+        self.trace.push(Trace {
+            code: f.code.clone(),
+            pc: 0,
+        });
+        let result = loop {
+            match self.exec(f) {
+                Ok(v) => break Ok(v),
+                Err(e) => match f.handlers.pop() {
+                    Some(h) => {
+                        f.stack.truncate(h.stack);
+                        f.env = h.env;
+                        f.stack.push(e);
+                        f.pc = h.pc;
+                    }
+                    None => break Err(e),
+                },
+            }
+        };
+        self.trace.pop();
+        if let Some(t) = self.trace.last() {
+            self.cur_pc = t.pc;
+        }
+        result
+    }
+
+    // --------------------------------------------------------- chamadas
+
+    pub fn call(&mut self, f: &Value, this: Value, args: Vec<Value>) -> Result<Value, Value> {
+        match f {
+            Value::Object(o) => self.call_obj(o, this, args),
+            other => {
+                let d = self.describe(other);
+                Err(self.type_error(format!("{d} is not a function")))
+            }
+        }
+    }
+
