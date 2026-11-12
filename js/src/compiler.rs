@@ -2183,3 +2183,73 @@ impl Compiler {
         Ok(())
     }
 
+    fn try_stmt(&mut self, block: &[Stmt], param: Option<&Pattern>, handler: Option<&[Stmt]>, finalizer: Option<&[Stmt]>) -> CResult<()> {
+        let fin = finalizer;
+        if let Some(fin) = fin {
+            let d = self.fr().env_depth;
+            self.f().ctl.push(Ctl::Finally(fin as *const [Stmt], d));
+        }
+        let try_at = self.emit(Op::Try(0));
+        self.f().ctl.push(Ctl::Try);
+        self.block(block)?;
+        self.f().ctl.pop();
+        self.emit(Op::PopTry);
+        let mut to_normal = vec![self.emit(Op::Jump(0))];
+        self.patch(try_at);
+        let mut exc_path = None;
+        if let Some(h) = handler {
+            let inner = if fin.is_some() {
+                let t = self.emit(Op::Try(0));
+                self.f().ctl.push(Ctl::Try);
+                Some(t)
+            } else {
+                None
+            };
+            // parâmetro do catch
+            self.push_scope(ScopeKind::Block, param.map(key_of).unwrap_or(0));
+            if let Some(p) = param {
+                let mut names = Vec::new();
+                bound_names(p, &mut names);
+                for n in names {
+                    self.declare(n, Decl::Let, false, false);
+                }
+                self.open_env();
+                self.pattern(p, Bind::Init)?;
+            } else {
+                self.emit(Op::Pop);
+            }
+            self.block(h)?;
+            self.pop_scope();
+            if let Some(t) = inner {
+                self.f().ctl.pop();
+                self.emit(Op::PopTry);
+                to_normal.push(self.emit(Op::Jump(0)));
+                exc_path = Some(t);
+            } else {
+                to_normal.push(self.emit(Op::Jump(0)));
+            }
+        }
+        if let Some(fin) = fin {
+            self.f().ctl.pop();
+            // caminho da exceção: roda o finally e relança
+            if let Some(t) = exc_path {
+                self.patch(t);
+            }
+            let tmp = self.alloc_reg();
+            self.emit(Op::SetReg(tmp));
+            self.block(fin)?;
+            self.emit(Op::GetReg(tmp));
+            self.emit(Op::Throw);
+            self.free_reg(tmp);
+            for j in to_normal {
+                self.patch(j);
+            }
+            self.block(fin)?;
+        } else {
+            for j in to_normal {
+                self.patch(j);
+            }
+        }
+        Ok(())
+    }
+
