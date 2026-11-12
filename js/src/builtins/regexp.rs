@@ -459,3 +459,67 @@ fn rx_flags(vm: &mut Vm, r: &Value) -> Result<String, Value> {
     vm.to_rust_string(&f)
 }
 
+fn sym_match(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let r = a.this.clone();
+    let s = vm.to_string(&a.arg(0))?;
+    let fl = rx_flags(vm, &r)?;
+    if !fl.contains('g') {
+        return regexp_exec(vm, &r, &s);
+    }
+    let unicode = fl.contains('u') || fl.contains('v');
+    set_last_index(vm, &r, 0)?;
+    let mut out = Vec::new();
+    let fast = builtin_exec_of(vm, &r)?;
+    if let Some(prog) = fast.as_ref().filter(|p| !p.flags.sticky) {
+        // caminho rápido: percorre as ocorrências direto, sem passar por lastIndex
+        let mut pos = 0usize;
+        while pos <= s.len() {
+            let Some(caps) = prog.search(s.units(), pos, false) else { break };
+            out.push(Value::String(s.slice(caps[0], caps[1])));
+            pos = if caps[1] == caps[0] { advance(&s, caps[1], unicode) } else { caps[1] };
+        }
+        set_last_index(vm, &r, 0)?;
+    } else if let Some(prog) = fast {
+        while let Some(hit) = builtin_match(vm, &r, &prog, &s)? {
+            out.push(Value::String(s.slice(hit.caps[0], hit.caps[1])));
+            if hit.caps[0] == hit.caps[1] {
+                let li = last_index(vm, &r)?;
+                set_last_index(vm, &r, advance(&s, li, unicode))?;
+            }
+        }
+    } else {
+        loop {
+            let res = regexp_exec(vm, &r, &s)?;
+            if matches!(res, Value::Null) {
+                break;
+            }
+            let m0 = vm.get_index(&res, &Value::Number(0.0))?;
+            let ms = vm.to_string(&m0)?;
+            if ms.is_empty() {
+                let li = last_index(vm, &r)?;
+                set_last_index(vm, &r, advance(&s, li, unicode))?;
+            }
+            out.push(Value::String(ms));
+        }
+    }
+    Ok(if out.is_empty() { Value::Null } else { vm.array_value(out) })
+}
+
+fn sym_search(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let r = a.this.clone();
+    let s = vm.to_string(&a.arg(0))?;
+    let prev = vm.get_str(&r, "lastIndex")?;
+    if !same_value(&prev, &Value::Number(0.0)) {
+        set_last_index(vm, &r, 0)?;
+    }
+    let res = regexp_exec(vm, &r, &s)?;
+    let cur = vm.get_str(&r, "lastIndex")?;
+    if !same_value(&cur, &prev) {
+        vm.put(&r, PropKey::str("lastIndex"), prev, true)?;
+    }
+    if matches!(res, Value::Null) {
+        return Ok(Value::Number(-1.0));
+    }
+    vm.get_str(&res, "index")
+}
+
