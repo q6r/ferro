@@ -174,3 +174,50 @@ fn mag_divrem(u: &[u32], v: &[u32]) -> (Vec<u32>, Vec<u32>) {
     (q, r)
 }
 
+impl BigInt {
+    pub fn zero() -> BigInt {
+        BigInt::default()
+    }
+
+    fn from_parts(neg: bool, mut mag: Vec<u32>) -> BigInt {
+        trim(&mut mag);
+        let neg = neg && !mag.is_empty();
+        BigInt { neg, mag }
+    }
+
+    pub fn from_i64(v: i64) -> BigInt {
+        let neg = v < 0;
+        let m = v.unsigned_abs();
+        BigInt::from_parts(neg, vec![m as u32, (m >> 32) as u32])
+    }
+
+    pub fn from_u64(v: u64) -> BigInt {
+        BigInt::from_parts(false, vec![v as u32, (v >> 32) as u32])
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.mag.is_empty()
+    }
+
+    pub fn is_negative(&self) -> bool {
+        self.neg
+    }
+
+    /// Número inteiro exato → BigInt (None se não for inteiro).
+    pub fn from_f64(f: f64) -> Option<BigInt> {
+        if !f.is_finite() || f.fract() != 0.0 {
+            return None;
+        }
+        if f == 0.0 {
+            return Some(BigInt::zero());
+        }
+        let bits = f.to_bits();
+        let neg = (bits >> 63) != 0;
+        let exp = ((bits >> 52) & 0x7FF) as i64;
+        let mant = if exp == 0 { (bits & ((1 << 52) - 1)) << 1 } else { (bits & ((1 << 52) - 1)) | (1 << 52) };
+        let shift = exp - 1075;
+        let base = BigInt::from_u64(mant);
+        let v = if shift >= 0 { base.shl(shift as u64) } else { base.shr_mag((-shift) as u64) };
+        Some(if neg { v.neg() } else { v })
+    }
+
