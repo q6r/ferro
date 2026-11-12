@@ -250,3 +250,57 @@ impl Media {
         Ok(())
     }
 
+    /// Um arquivo MP4 inteiro (`<video src>`): vira uma fonte já completa.
+    pub fn load_file(&mut self, data: &[u8]) -> Result<u32, String> {
+        let (tracks, samples) = mp4::demux_file(data)?;
+        if !tracks.iter().any(|t| !matches!(t.codec, Codec::Other(_))) {
+            return Err("nenhuma trilha em formato suportado".into());
+        }
+        let source = self.new_source();
+        let id = self.next();
+        let mut demux = Demuxer::new();
+        demux.tracks = tracks;
+        let mut map: HashMap<u32, SharedSamples> = HashMap::new();
+        let mut end: f64 = 0.0;
+        for s in samples {
+            end = end.max(s.pts + s.duration);
+            map.entry(s.track).or_default().lock().unwrap().push(s);
+        }
+        for list in map.values() {
+            list.lock().unwrap().sort_by(|a, b| a.dts.total_cmp(&b.dts));
+        }
+        self.buffers.insert(id, SourceBuffer { source, mime: "video/mp4".into(), demux, samples: map, timestamp_offset: 0.0 });
+        if let Some(s) = self.sources.get_mut(&source) {
+            s.buffers.push(id);
+            s.duration = end;
+            s.ended = true;
+        }
+        Ok(source)
+    }
+
+    pub fn remove(&mut self, id: u32, start: f64, end: f64) {
+        if let Some(sb) = self.buffers.get_mut(&id) {
+            for list in sb.samples.values() {
+                list.lock().unwrap().retain(|s| s.pts < start || s.pts >= end);
+            }
+        }
+    }
+
+    /// Intervalos com dados em todos os buffers da fonte.
+    pub fn source_buffered(&self, source: u32) -> Vec<(f64, f64)> {
+        let Some(ms) = self.sources.get(&source) else { return Vec::new() };
+        let mut out: Option<Vec<(f64, f64)>> = None;
+        for id in &ms.buffers {
+            let Some(sb) = self.buffers.get(id) else { continue };
+            if sb.demux.tracks.is_empty() {
+                continue;
+            }
+            let b = sb.buffered();
+            out = Some(match out {
+                None => b,
+                Some(prev) => intersect(&prev, &b),
+            });
+        }
+        out.unwrap_or_default()
+    }
+
