@@ -256,3 +256,57 @@ pub fn demux_file(data: &[u8]) -> Result<(Vec<Track>, Vec<Sample>), String> {
     Ok((d.tracks, samples))
 }
 
+impl Demuxer {
+    pub fn new() -> Demuxer {
+        Demuxer::default()
+    }
+
+    pub fn track(&self, id: u32) -> Option<&Track> {
+        self.tracks.iter().find(|t| t.id == id)
+    }
+
+    /// Acrescenta bytes; devolve as amostras completas encontradas.
+    pub fn push(&mut self, data: &[u8]) -> Result<Vec<Sample>, String> {
+        self.pending.extend_from_slice(data);
+        let mut out = Vec::new();
+        loop {
+            let b = &self.pending;
+            if b.len() < 8 {
+                break;
+            }
+            let size32 = be32(b, 0) as usize;
+            let ty: [u8; 4] = b[4..8].try_into().unwrap();
+            let size = match size32 {
+                1 => {
+                    if b.len() < 16 {
+                        break;
+                    }
+                    be64(b, 8) as usize
+                }
+                0 => return Err("caixa MP4 de tamanho indefinido".into()),
+                s => s,
+            };
+            if size < 8 {
+                return Err(format!("caixa MP4 inválida ({size} bytes)"));
+            }
+            if b.len() < size {
+                break;
+            }
+            let whole: Vec<u8> = self.pending.drain(..size).collect();
+            let hdr = if size32 == 1 { 16 } else { 8 };
+            let body = &whole[hdr..];
+            match &ty {
+                b"moov" => self.read_moov(body)?,
+                b"moof" => self.moof = Some(whole.clone()),
+                b"mdat" => {
+                    if let Some(moof) = self.moof.take() {
+                        out.extend(self.read_fragment(&moof, &whole)?);
+                    }
+                }
+                // ftyp, styp, sidx, emsg, free...: nada a fazer
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+
