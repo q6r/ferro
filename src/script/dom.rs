@@ -1130,3 +1130,56 @@ fn attributes(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Object(arr))
 }
 
+fn id(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(s(&attr_of(vm, n, "id").unwrap_or_default()))
+}
+
+fn set_id(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let v = arg_string(vm, a, 0)?;
+    set_attr_checked(vm, n, "id", &v)?;
+    Ok(Value::Undefined)
+}
+
+fn class_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(s(&attr_of(vm, n, "class").unwrap_or_default()))
+}
+
+fn set_class_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let v = arg_string(vm, a, 0)?;
+    set_attr_checked(vm, n, "class", &v)?;
+    Ok(Value::Undefined)
+}
+
+/// Contexto de parsing do innerHTML (tabelas e listas mudam as regras).
+fn fragment_context(doc: &Document, n: NodeId) -> String {
+    doc.tag(n).filter(|t| *t != FRAGMENT_TAG).unwrap_or("body").to_string()
+}
+
+/// Analisa HTML como filhos de `ctx`; os `<script>` nunca rodam.
+fn parse_html(vm: &mut Vm, html: &str, ctx: NodeId) -> Vec<NodeId> {
+    write(vm, |h| {
+        let context = fragment_context(&h.page.doc, ctx);
+        let nodes = crate::html::parse_fragment(html, &context, &mut h.page.doc);
+        for &n in &nodes {
+            let mut all = vec![n];
+            all.extend(h.page.doc.descendants(n));
+            for d in all {
+                if h.page.doc.tag(d) == Some("script") {
+                    h.started.insert(d);
+                }
+            }
+        }
+        nodes
+    })
+}
+
+fn inner_html(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let n = read(vm, |h| h.templates.get(&n).copied().unwrap_or(n));
+    Ok(s(&read(vm, |h| h.page.doc.serialize(n, false))))
+}
+
