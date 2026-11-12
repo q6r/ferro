@@ -187,3 +187,49 @@ impl Lexer {
         }
     }
 
+    pub fn next_token(&mut self) -> Result<Token, LexError> {
+        let nl = self.skip_trivia()?;
+        let start = self.pos;
+        let line = self.line;
+        let mut escaped = false;
+        let tok = if self.pos >= self.src.len() {
+            Tok::Eof
+        } else {
+            let c = self.peek();
+            if is_id_start(c) || c == '\\' {
+                let (name, esc) = self.read_ident()?;
+                escaped = esc;
+                Tok::Ident(name)
+            } else if c == '#' && is_id_start(self.peek_at(1)) {
+                self.pos += 1;
+                Tok::Private(self.read_ident()?.0)
+            } else if c.is_ascii_digit() || (c == '.' && self.peek_at(1).is_ascii_digit()) {
+                self.read_number()?
+            } else if c == '"' || c == '\'' {
+                Tok::Str(self.read_string(c)?.into())
+            } else if c == '`' {
+                self.pos += 1;
+                self.read_template_part()?
+            } else if c == '/' && self.regex_ok {
+                self.read_regex()?
+            } else {
+                match self.punct() {
+                    Some(p) => {
+                        self.pos += p.len();
+                        Tok::Punct(p)
+                    }
+                    None => return Err(self.err(format!("caractere inesperado '{c}'"))),
+                }
+            }
+        };
+        self.regex_ok = regex_allowed_after(&tok);
+        Ok(Token {
+            tok,
+            start,
+            end: self.pos,
+            line,
+            nl_before: nl,
+            escaped,
+        })
+    }
+
