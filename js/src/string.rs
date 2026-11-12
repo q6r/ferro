@@ -183,3 +183,65 @@ impl JsStr {
         None
     }
 
+    pub fn rfind(&self, needle: &JsStr, from: usize) -> Option<usize> {
+        let (h, n) = (self.units(), needle.units());
+        if n.len() > h.len() {
+            return None;
+        }
+        let start = from.min(h.len() - n.len());
+        (0..=start).rev().find(|&i| &h[i..i + n.len()] == n)
+    }
+
+    pub fn eq_str(&self, s: &str) -> bool {
+        if self.0.len > s.len() {
+            return false;
+        }
+        self.units().iter().copied().eq(s.encode_utf16())
+    }
+}
+
+impl PartialEq for JsStr {
+    fn eq(&self, other: &JsStr) -> bool {
+        Rc::ptr_eq(&self.0, &other.0) || (self.0.len == other.0.len && self.units() == other.units())
+    }
+}
+
+impl Eq for JsStr {}
+
+impl Hash for JsStr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        let mut h = self.0.hash.get();
+        if h == 0 {
+            let mut fx = crate::fxhash::FxHasher::default();
+            self.units().hash(&mut fx);
+            h = fx.finish().max(1);
+            self.0.hash.set(h);
+        }
+        state.write_u64(h);
+    }
+}
+
+impl PartialOrd for JsStr {
+    fn partial_cmp(&self, other: &JsStr) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for JsStr {
+    fn cmp(&self, other: &JsStr) -> Ordering {
+        self.units().cmp(other.units())
+    }
+}
+
+impl From<&str> for JsStr {
+    fn from(s: &str) -> JsStr {
+        JsStr::new(s)
+    }
+}
+
+impl From<String> for JsStr {
+    fn from(s: String) -> JsStr {
+        JsStr::new(&s)
+    }
+}
+
