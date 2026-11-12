@@ -178,3 +178,52 @@ impl Parser {
 
     // ------------------------------------------------------------ módulos
 
+    /// Texto de um literal de string (especificador de módulo, nome exportado).
+    fn string_literal(&mut self) -> PResult<String> {
+        match &self.tok.tok {
+            Tok::Str(s) => {
+                let t = String::from_utf16_lossy(s);
+                self.advance()?;
+                Ok(t)
+            }
+            _ => self.unexpected(),
+        }
+    }
+
+    /// Nome num `import {}`/`export {}`: identificador (até reservado) ou string.
+    fn module_export_name(&mut self) -> PResult<String> {
+        if matches!(self.tok.tok, Tok::Str(_)) {
+            self.string_literal()
+        } else {
+            Ok(self.ident_name()?.to_string())
+        }
+    }
+
+    /// `with { type: "json" }` / `assert {...}` depois do especificador: ignorado.
+    fn skip_import_attributes(&mut self) -> PResult<()> {
+        if (self.is_kw("with") || (self.is_kw("assert") && !self.tok.nl_before)) && matches!(self.peek()?.tok, Tok::Punct("{")) {
+            self.advance()?;
+            self.expect("{")?;
+            let mut depth = 1;
+            while depth > 0 {
+                if self.tok.tok == Tok::Eof {
+                    return self.unexpected();
+                }
+                if self.is("{") {
+                    depth += 1;
+                } else if self.is("}") {
+                    depth -= 1;
+                }
+                self.advance()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn from_clause(&mut self) -> PResult<String> {
+        self.expect_kw("from")?;
+        let spec = self.string_literal()?;
+        self.skip_import_attributes()?;
+        Ok(spec)
+    }
+
