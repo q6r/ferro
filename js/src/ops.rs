@@ -649,3 +649,37 @@ impl Vm {
         self.put(obj, k, v, strict)
     }
 
+    /// Atribuição `obj[key] = v` (falha silenciosa fora do modo estrito).
+    pub fn put(&mut self, target: &Value, key: PropKey, v: Value, strict: bool) -> Result<(), Value> {
+        match target {
+            Value::Object(o) => {
+                let ok = self.set_with(o, key.clone(), v, target)?;
+                if !ok && strict {
+                    let d = self.describe(target);
+                    return Err(self.type_error(format!("Cannot assign to read only property '{}' of object '{d}'", key_display(&key))));
+                }
+                Ok(())
+            }
+            Value::Undefined | Value::Null | Value::Empty => {
+                let what = if matches!(target, Value::Null) { "null" } else { "undefined" };
+                Err(self.type_error(format!("Cannot set properties of {what} (setting '{}')", key_display(&key))))
+            }
+            _ => {
+                let proto = self.to_object(target)?.proto();
+                let ok = match proto {
+                    Some(p) => self.set_with(&p, key.clone(), v, target)?,
+                    None => false,
+                };
+                if !ok && strict {
+                    let d = self.describe(target);
+                    return Err(self.type_error(format!("Cannot create property '{}' on {d}", key_display(&key))));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn set_str(&mut self, target: &Value, name: &str, v: Value) -> Result<(), Value> {
+        self.put(target, PropKey::str(name), v, true)
+    }
+
