@@ -690,3 +690,44 @@ fn set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
+fn slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let end = rel_index(vm, &a.arg(1), len, len)?;
+    let vals: Vec<Value> = (start..end.max(start)).map(|i| elem(&o, i)).collect();
+    from_values(vm, kind, &vals)
+}
+
+fn subarray(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let end = rel_index(vm, &a.arg(1), len, len)?;
+    let (buffer, base) = match &o.borrow().kind {
+        Kind::TypedArray(t) => (t.buffer.clone(), t.offset),
+        _ => return Ok(Value::Undefined),
+    };
+    let proto = o.proto().unwrap_or_else(|| vm.realm.typed_array_proto.clone());
+    Ok(Value::Object(view(&o, buffer, kind, base + start * kind.size(), end.saturating_sub(start), proto)))
+}
+
+/// Ordem padrão dos typed arrays: numérica, NaN no fim, -0 antes de +0.
+fn numeric_order(x: &Value, y: &Value) -> Ordering {
+    match (x, y) {
+        (Value::Number(a), Value::Number(b)) => {
+            if a.is_nan() {
+                return if b.is_nan() { Ordering::Equal } else { Ordering::Greater };
+            }
+            if b.is_nan() {
+                return Ordering::Less;
+            }
+            match a.partial_cmp(b) {
+                Some(Ordering::Equal) => a.is_sign_positive().cmp(&b.is_sign_positive()),
+                Some(o) => o,
+                None => Ordering::Equal,
+            }
+        }
+        (Value::BigInt(a), Value::BigInt(b)) => a.cmp(b),
+        _ => Ordering::Equal,
+    }
+}
+
