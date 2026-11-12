@@ -564,3 +564,58 @@ fn promise_resolve(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(cap.promise)
 }
 
+fn promise_reject(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let cap = vm.new_capability(&a.this)?;
+    vm.call(&cap.reject, Value::Undefined, vec![a.arg(0)])?;
+    Ok(cap.promise)
+}
+
+fn with_resolvers(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let cap = vm.new_capability(&a.this)?;
+    let o = vm.new_object();
+    vm.define_data(&o, PropKey::str("promise"), cap.promise);
+    vm.define_data(&o, PropKey::str("resolve"), cap.resolve);
+    vm.define_data(&o, PropKey::str("reject"), cap.reject);
+    Ok(Value::Object(o))
+}
+
+/// Estado compartilhado de Promise.all/allSettled/any.
+fn combinator_record(vm: &mut Vm, cap: &Capability, n_hint: usize) -> ObjRef {
+    let rec = vm.new_object();
+    let values = vm.array_value(Vec::with_capacity(n_hint));
+    vm.define_data(&rec, PropKey::str("values"), values);
+    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(1.0));
+    vm.define_data(&rec, PropKey::str("resolve"), cap.resolve.clone());
+    vm.define_data(&rec, PropKey::str("reject"), cap.reject.clone());
+    rec
+}
+
+fn rec_get(rec: &ObjRef, k: &str) -> Value {
+    rec.borrow().own(&PropKey::str(k)).map(|p| match p.slot {
+        Slot::Data { value, .. } => value,
+        _ => Value::Undefined,
+    }).unwrap_or_default()
+}
+
+/// Decrementa "remaining"; devolve true quando chegou a zero.
+fn rec_done(vm: &mut Vm, rec: &ObjRef) -> bool {
+    let n = match rec_get(rec, "remaining") {
+        Value::Number(n) => n - 1.0,
+        _ => 0.0,
+    };
+    vm.define_data(rec, PropKey::str("remaining"), Value::Number(n));
+    n <= 0.0
+}
+
+/// Elemento de Promise.all: guarda o valor na posição e resolve no fim.
+fn element_fn(vm: &mut Vm, rec: &ObjRef, index: usize, kind: u8) -> ObjRef {
+    let f = vm.realm.native("", 1, all_element);
+    let data = vm.new_object();
+    vm.define_data(&data, PropKey::str("rec"), Value::Object(rec.clone()));
+    vm.define_data(&data, PropKey::str("index"), Value::Number(index as f64));
+    vm.define_data(&data, PropKey::str("kind"), Value::Number(kind as f64));
+    vm.define_data(&data, PropKey::str("called"), Value::Bool(false));
+    set_native_data(&f, Value::Object(data));
+    f
+}
+
