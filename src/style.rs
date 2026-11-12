@@ -292,13 +292,17 @@ pub struct GridTemplate {
     pub tracks: Vec<TrackSize>,
     /// repeat(auto-fill | auto-fit, ...): repete quantas couberem.
     pub auto_fill: Option<Vec<TrackSize>>,
+    /// Linhas com nome: (índice da linha a partir de 0, nome). `[content-start] 1fr`
+    pub names: Vec<(usize, Rc<str>)>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GridLine {
     Auto,
     Line(i32),
     Span(u32),
+    /// Linha com nome (`content`, `full-end`): procura `nome-start`/`nome-end` e depois `nome`.
+    Name(Rc<str>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -445,6 +449,13 @@ pub struct ComputedStyle {
     pub mask_size: BgSize,
     pub mask_pos: (Len, Len),
     pub mask_repeat: (bool, bool),
+    /// `color-scheme` escuro: `light-dark()` escolhe a segunda cor (herdado).
+    pub scheme_dark: bool,
+}
+
+thread_local! {
+    /// Esquema do elemento cujas declarações estão sendo aplicadas agora.
+    static SCHEME_DARK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 /// Propriedades customizadas (`--x`) visíveis num elemento: as declaradas
@@ -541,6 +552,7 @@ impl ComputedStyle {
             transform_origin: (Len::Percent(50.0), Len::Percent(50.0)),
             box_shadow: None,
             text_shadow: None,
+            scheme_dark: css::prefers_dark(),
             content_hidden: false,
             border_box: false,
             underline: false,
@@ -614,6 +626,7 @@ impl ComputedStyle {
             border_collapse: parent.border_collapse,
             font_names: parent.font_names.clone(),
             text_shadow: parent.text_shadow,
+            scheme_dark: parent.scheme_dark,
             ..ComputedStyle::initial()
         }
     }
@@ -727,7 +740,8 @@ pub fn parse_color(v: &str, current: Color) -> Option<Color> {
     if let Some(inner) = v.strip_prefix("light-dark(").and_then(|s| s.strip_suffix(')')) {
         let parts = css::split_top_level(inner, ',');
         if parts.len() == 2 {
-            let pick = if css::prefers_dark() { &parts[1] } else { &parts[0] };
+            let dark = SCHEME_DARK.with(|c| c.get()).unwrap_or_else(css::prefers_dark);
+            let pick = if dark { &parts[1] } else { &parts[0] };
             return parse_color(pick, current);
         }
         return None;
@@ -1558,6 +1572,18 @@ impl Cascade<'_> {
             style.custom = CustomVars::child(&parent.custom, own);
         }
 
+        // color-scheme decide o lado do light-dark() nas cores deste elemento
+        if let Some((_, d)) = matched.iter().rev().find(|(_, d)| d.name == "color-scheme") {
+            let v = d.value.to_ascii_lowercase();
+            let (light, dark) = (v.contains("light"), v.contains("dark"));
+            style.scheme_dark = match (light, dark) {
+                (false, true) => true,
+                (true, false) => false,
+                (true, true) => css::prefers_dark(),
+                _ => parent.scheme_dark,
+            };
+        }
+        let saved_scheme = SCHEME_DARK.with(|c| c.replace(Some(style.scheme_dark)));
         // font-size primeiro: em/ex das outras propriedades dependem dele
         let font_decls: Vec<&Declaration> = matched
             .iter()
@@ -1575,7 +1601,9 @@ impl Cascade<'_> {
         if pseudo.is_none() {
             let units = self.units(&style);
             presentational_hints(el, &mut style, &units);
-        } else if style.display == Display::Block && !matched.iter().any(|(_, d)| d.name == "display") {
+        }
+        SCHEME_DARK.with(|c| c.set(saved_scheme));
+        if pseudo.is_some() && style.display == Display::Block && !matched.iter().any(|(_, d)| d.name == "display") {
             // pseudo-elementos são em linha por padrão
             style.display = Display::Inline;
         }
@@ -2039,6 +2067,10 @@ impl Cascade<'_> {
                 let parts: Vec<&str> = v.split('/').map(str::trim).collect();
                 if parts.len() == 1 && !parts[0].chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-') && !parts[0].starts_with("span") && parts[0] != "auto" {
                     s.grid_area = Some(parts[0].to_string());
+                    // sem área com esse nome, valem as linhas nome-start/nome-end
+                    let n = GridLine::Name(Rc::from(parts[0]));
+                    s.grid_row = (n.clone(), n.clone());
+                    s.grid_col = (n.clone(), n);
                 } else {
                     let g = |i: usize| parts.get(i).map_or(GridLine::Auto, |p| parse_grid_line(p));
                     s.grid_row = (g(0), g(2));
@@ -2499,23 +2531,41 @@ fn parse_tracks(v: &str, u: &Units) -> GridTemplate {
     if v.trim() == "none" {
         return g;
     }
+    let mut in_names = false;
     for tok in split_values(v) {
-        if tok.contains('[') || tok.contains(']') {
-            continue; // nomes de linhas
+        // nomes de linhas: [a b] (pode vir em vários pedaços)
+        if in_names || tok.starts_with('[') {
+            let ended = tok.ends_with(']');
+            for n in tok.trim_matches(['[', ']']).split_whitespace() {
+                g.names.push((g.tracks.len(), Rc::from(n)));
+            }
+            in_names = !ended;
+            continue;
         }
         if let Some(inner) = tok.strip_prefix("repeat(").and_then(|r| r.strip_suffix(')')) {
             let Some((count, list)) = inner.split_once(',') else { continue };
-            let tracks: Vec<TrackSize> = split_values(list)
-                .iter()
-                .filter(|t| !t.contains('['))
-                .filter_map(|t| parse_track_size(t, u))
-                .collect();
+            // a lista do repeat também pode ter nomes: repeat(3, [col] 1fr)
+            let mut seq: Vec<Result<TrackSize, Rc<str>>> = Vec::new();
+            for t in split_values(list) {
+                if t.contains('[') || t.contains(']') {
+                    for n in t.trim_matches(['[', ']']).split_whitespace() {
+                        seq.push(Err(Rc::from(n)));
+                    }
+                } else if let Some(ts) = parse_track_size(&t, u) {
+                    seq.push(Ok(ts));
+                }
+            }
             match count.trim() {
-                "auto-fill" | "auto-fit" => g.auto_fill = Some(tracks),
+                "auto-fill" | "auto-fit" => g.auto_fill = Some(seq.into_iter().filter_map(Result::ok).collect()),
                 n => {
                     let n: usize = n.parse().unwrap_or(1).min(100);
                     for _ in 0..n {
-                        g.tracks.extend(tracks.iter().copied());
+                        for item in &seq {
+                            match item {
+                                Ok(t) => g.tracks.push(*t),
+                                Err(name) => g.names.push((g.tracks.len(), name.clone())),
+                            }
+                        }
                     }
                 }
             }
@@ -2547,6 +2597,13 @@ fn parse_grid_line(v: &str) -> GridLine {
     }
     match v.parse::<i32>() {
         Ok(n) if n != 0 => GridLine::Line(n),
+        _ if v != "auto"
+            && !v.is_empty()
+            && v.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+            && !v.starts_with(|c: char| c.is_ascii_digit()) =>
+        {
+            GridLine::Name(Rc::from(v))
+        }
         _ => GridLine::Auto,
     }
 }
@@ -2554,7 +2611,12 @@ fn parse_grid_line(v: &str) -> GridLine {
 fn parse_grid_pair(v: &str) -> (GridLine, GridLine) {
     match v.split_once('/') {
         Some((a, b)) => (parse_grid_line(a), parse_grid_line(b)),
-        None => (parse_grid_line(v), GridLine::Auto),
+        None => {
+            // `grid-column: content` vale para as duas pontas
+            let a = parse_grid_line(v);
+            let b = if matches!(a, GridLine::Name(_)) { a.clone() } else { GridLine::Auto };
+            (a, b)
+        }
     }
 }
 

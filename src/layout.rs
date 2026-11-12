@@ -2723,6 +2723,43 @@ impl<'a> Ctx<'a> {
                 }
             }
         };
+        // linhas com nome: as do template e as implícitas das áreas (x-start/x-end)
+        let mut col_names: Vec<(usize, Rc<str>)> = s.grid_columns.names.clone();
+        let mut row_names: Vec<(usize, Rc<str>)> = s.grid_rows.names.clone();
+        if let Some(areas) = &areas {
+            let mut seen: Vec<&str> = Vec::new();
+            for row in areas.iter() {
+                for cell in row {
+                    if cell == "." || seen.contains(&cell.as_str()) {
+                        continue;
+                    }
+                    seen.push(cell);
+                    let (mut r0, mut c0, mut r1, mut c1) = (usize::MAX, usize::MAX, 0, 0);
+                    for (r, rr) in areas.iter().enumerate() {
+                        for (ci, x) in rr.iter().enumerate() {
+                            if x == cell {
+                                (r0, c0, r1, c1) = (r0.min(r), c0.min(ci), r1.max(r), c1.max(ci));
+                            }
+                        }
+                    }
+                    col_names.push((c0, Rc::from(format!("{cell}-start"))));
+                    col_names.push((c1 + 1, Rc::from(format!("{cell}-end"))));
+                    row_names.push((r0, Rc::from(format!("{cell}-start"))));
+                    row_names.push((r1 + 1, Rc::from(format!("{cell}-end"))));
+                }
+            }
+        }
+        // Name → Line: no início procura `x-start`, no fim `x-end`, depois `x`
+        let named = |l: &GridLine, end: bool, is_col: bool| -> GridLine {
+            let GridLine::Name(n) = l else { return l.clone() };
+            let names = if is_col { &col_names } else { &row_names };
+            let suffixed = format!("{n}{}", if end { "-end" } else { "-start" });
+            let find = |want: &str| names.iter().filter(|(_, x)| &**x == want).map(|(i, _)| *i).min();
+            match find(&suffixed).or_else(|| find(n)) {
+                Some(i) => GridLine::Line(i as i32 + 1),
+                None => GridLine::Auto,
+            }
+        };
         for &c in &kids {
             let cs = &c.style;
             // área nomeada
@@ -2750,8 +2787,10 @@ impl<'a> Ctx<'a> {
                     continue;
                 }
             }
-            let (col, cspan) = resolve(cs.grid_col.0, cs.grid_col.1, ncols);
-            let (row, rspan) = resolve(cs.grid_row.0, cs.grid_row.1, usize::MAX / 4);
+            let (c0, c1) = (named(&cs.grid_col.0, false, true), named(&cs.grid_col.1, true, true));
+            let (r0, r1) = (named(&cs.grid_row.0, false, false), named(&cs.grid_row.1, true, false));
+            let (col, cspan) = resolve(c0, c1, ncols);
+            let (row, rspan) = resolve(r0, r1, usize::MAX / 4);
             let cspan = cspan.min(ncols);
             let (row, col) = match (row, col) {
                 (Some(r), Some(c)) => (r, c.min(ncols - cspan)),
