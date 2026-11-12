@@ -723,3 +723,62 @@ impl Parser {
         Ok(Some(v))
     }
 
+    /// Escapes de caractere comuns a átomos e classes. None = não é desse tipo.
+    fn char_escape(&mut self, c: char, in_class: bool) -> Result<Option<u32>, RegexError> {
+        Ok(Some(match c {
+            'f' => 0x0C,
+            'n' => 0x0A,
+            'r' => 0x0D,
+            't' => 0x09,
+            'v' => 0x0B,
+            'c' => {
+                let next = self.peek().and_then(char::from_u32);
+                match next {
+                    Some(l) if l.is_ascii_alphabetic() => {
+                        self.i += 1;
+                        (l as u32) % 32
+                    }
+                    Some(d) if in_class && !self.u && (d.is_ascii_digit() || d == '_') => {
+                        self.i += 1;
+                        (d as u32) % 32
+                    }
+                    _ => {
+                        if self.u {
+                            return err("Invalid unicode escape");
+                        }
+                        // Anexo B: "\c" vira barra invertida literal seguida de "c"
+                        self.i -= 1;
+                        0x5C
+                    }
+                }
+            }
+            'x' => match self.hex(2) {
+                Some(v) => v,
+                None if self.u => return err("Invalid escape"),
+                None => 'x' as u32,
+            },
+            'u' => match self.unicode_escape_value(false)? {
+                Some(v) => v,
+                None if self.u => return err("Invalid Unicode escape"),
+                None => 'u' as u32,
+            },
+            '0' if !self.peek().is_some_and(|d| (0x30..=0x39).contains(&d)) => 0,
+            _ => return Ok(None),
+        }))
+    }
+
+    /// Escape octal legado (Anexo B): até três dígitos, valor ≤ 0o377.
+    fn legacy_octal(&mut self, first: u32) -> u32 {
+        let mut v = first - 0x30;
+        for _ in 0..2 {
+            match self.peek() {
+                Some(d) if (0x30..=0x37).contains(&d) && v * 8 + (d - 0x30) <= 0o377 => {
+                    v = v * 8 + (d - 0x30);
+                    self.i += 1;
+                }
+                _ => break,
+            }
+        }
+        v
+    }
+
