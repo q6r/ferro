@@ -3166,3 +3166,59 @@ class MutationObserver {
   }
   takeRecords() { const r = this._records; this._records = []; return r; }
 }
+function mutationRecord(type, target, extra) {
+  return Object.assign({
+    type, target, addedNodes: [], removedNodes: [], previousSibling: null, nextSibling: null,
+    attributeName: null, attributeNamespace: null, oldValue: null,
+  }, extra);
+}
+/// Chamado pelo Rust a cada mutação (quando há observers).
+function notifyMutation(type, target, added, removed, attr, old) {
+  for (const mo of MUTATION_OBSERVERS) {
+    for (const { node, opts } of mo._targets) {
+      const hit = node === target || (opts.subtree && node.contains(target));
+      if (!hit) continue;
+      if (type === 'childList' && !opts.childList) continue;
+      if (type === 'attributes' && (!opts.attributes || (opts.filter && !opts.filter.includes(attr)))) continue;
+      if (type === 'characterData' && !opts.characterData) continue;
+      const keepOld = type === 'attributes' ? opts.attributeOldValue : type === 'characterData' ? opts.characterDataOldValue : false;
+      mo._records.push(mutationRecord(type, target, {
+        addedNodes: added || [], removedNodes: removed || [], attributeName: attr ?? null,
+        oldValue: keepOld ? (old ?? null) : null,
+      }));
+      if (!mo._queued) {
+        mo._queued = true;
+        queueMicrotask(() => {
+          mo._queued = false;
+          const recs = mo.takeRecords();
+          if (recs.length) {
+            try { mo._cb.call(mo, recs, mo); } catch (e) { N.reportError(e); }
+          }
+        });
+      }
+      break;
+    }
+  }
+}
+hidden(G, 'MutationObserver', MutationObserver);
+hidden(G, 'WebKitMutationObserver', MutationObserver);
+hidden(G, 'MutationRecord', function MutationRecord() { throw new TypeError('Illegal constructor'); });
+
+const IO_ENTRY = new WeakMap();
+class IntersectionObserverEntry {
+  constructor(init) { IO_ENTRY.set(this, init || {}); }
+}
+for (const k of ['time', 'rootBounds', 'boundingClientRect', 'intersectionRect', 'isIntersecting', 'intersectionRatio', 'target', 'isVisible']) {
+  accessor(IntersectionObserverEntry.prototype, k, function () { return (IO_ENTRY.get(this) || {})[k]; });
+}
+hidden(G, 'IntersectionObserverEntry', IntersectionObserverEntry);
+const IO_ALL = new Set();
+/// rootMargin: "10px 20%..." → [topo, direita, base, esquerda] em px.
+function ioMargin(m, w, h) {
+  const parts = String(m || '0px').trim().split(/\s+/).map((v, i) => {
+    const n = parseFloat(v) || 0;
+    return v.endsWith('%') ? n / 100 * (i % 2 ? w : h) : n;
+  });
+  const [t, r = t, b = t, l = r] = parts;
+  return [t, r, b, l];
+}
