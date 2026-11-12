@@ -785,3 +785,48 @@ pub fn parse_color(v: &str, current: Color) -> Option<Color> {
         .map(|(_, c)| Color::rgb((c >> 16) as u8, (c >> 8) as u8, *c as u8))
 }
 
+/// "50%" → 0.5 * escala; "0.5" → 0.5 (escala 1) ou o próprio número.
+fn number_or_percent(s: &str, scale: f32) -> Option<f32> {
+    if let Some(p) = s.strip_suffix('%') {
+        Some(p.parse::<f32>().ok()? / 100.0 * scale)
+    } else {
+        s.parse().ok()
+    }
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let h = h.rem_euclid(360.0) / 360.0;
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let f = |mut t: f32| {
+        if t < 0.0 {
+            t += 1.0
+        }
+        if t > 1.0 {
+            t -= 1.0
+        }
+        let v = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        (v * 255.0).round() as u8
+    };
+    (f(h + 1.0 / 3.0), f(h), f(h - 1.0 / 3.0))
+}
+
+// ------------------------------------------------------------------ medidas
+
+/// Contexto para resolver unidades relativas.
+#[derive(Clone, Copy)]
+struct Units {
+    em: f32,
+    rem: f32,
+    vw: f32,
+    vh: f32,
+}
+
