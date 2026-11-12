@@ -243,3 +243,82 @@ impl JsonParser<'_> {
     }
 }
 
+fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let text = vm.to_string(&a.arg(0))?;
+    let mut p = JsonParser { s: text.units(), pos: 0 };
+    let v = match p.value(vm, 0) {
+        Ok(v) => v,
+        Err(e) => return Err(vm.syntax_error(e)),
+    };
+    p.ws();
+    if p.pos < p.s.len() {
+        let e = p.err_at("Unexpected non-whitespace character after JSON");
+        return Err(vm.syntax_error(e));
+    }
+    let reviver = a.arg(1);
+    if reviver.is_callable() {
+        let root = vm.new_object();
+        vm.define_data(&root, PropKey::str(""), v);
+        return revive(vm, &root, PropKey::str(""), &reviver);
+    }
+    Ok(v)
+}
+
+fn revive(vm: &mut Vm, holder: &ObjRef, key: PropKey, reviver: &Value) -> Result<Value, Value> {
+    let val = vm.get_obj(holder, &key)?;
+    if let Value::Object(o) = &val {
+        let keys: Vec<PropKey> = if matches!(o.borrow().kind, Kind::Array(_)) {
+            let len = vm.length_of(o)?;
+            (0..len).map(index_key).collect()
+        } else {
+            super::object::enumerable_keys(vm, o)?
+        };
+        for k in keys {
+            let nv = revive(vm, o, k.clone(), reviver)?;
+            if nv.is_undefined() {
+                vm.delete_prop(o, &k);
+            } else {
+                vm.define_data(o, k, nv);
+            }
+        }
+    }
+    vm.call(reviver, Value::Object(holder.clone()), vec![key.to_value(), val])
+}
+
+// -------------------------------------------------------------- stringify
+
+struct Ctx {
+    replacer: Option<Value>,
+    allow: Option<Vec<PropKey>>,
+    gap: String,
+    stack: Vec<usize>,
+}
+
+pub fn quote(s: &JsStr, out: &mut Vec<u16>) {
+    out.push(0x22);
+    let u = s.units();
+    let mut i = 0;
+    while i < u.len() {
+        let c = u[i];
+        match c {
+            0x22 => out.extend_from_slice(&[0x5C, 0x22]),
+            0x5C => out.extend_from_slice(&[0x5C, 0x5C]),
+            0x08 => out.extend_from_slice(&[0x5C, 0x62]),
+            0x0C => out.extend_from_slice(&[0x5C, 0x66]),
+            0x0A => out.extend_from_slice(&[0x5C, 0x6E]),
+            0x0D => out.extend_from_slice(&[0x5C, 0x72]),
+            0x09 => out.extend_from_slice(&[0x5C, 0x74]),
+            0..=0x1F => out.extend(format!("\\u{c:04x}").encode_utf16()),
+            0xD800..=0xDBFF if i + 1 < u.len() && (0xDC00..=0xDFFF).contains(&u[i + 1]) => {
+                out.push(c);
+                out.push(u[i + 1]);
+                i += 1;
+            }
+            0xD800..=0xDFFF => out.extend(format!("\\u{c:04x}").encode_utf16()),
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    out.push(0x22);
+}
+
