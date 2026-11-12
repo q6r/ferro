@@ -139,3 +139,81 @@ impl Sym {
         }))
     }
 
+    pub fn is_private(&self) -> bool {
+        self.0.private
+    }
+
+    pub fn description(&self) -> Option<&JsStr> {
+        self.0.description.as_ref()
+    }
+}
+
+impl PartialEq for Sym {
+    fn eq(&self, other: &Sym) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for Sym {}
+
+impl Hash for Sym {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (Rc::as_ptr(&self.0) as usize).hash(state)
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum PropKey {
+    Str(JsStr),
+    Sym(Sym),
+}
+
+impl PropKey {
+    pub fn str(s: &str) -> PropKey {
+        PropKey::Str(JsStr::new(s))
+    }
+
+    pub fn as_index(&self) -> Option<u32> {
+        match self {
+            PropKey::Str(s) => s.as_index(),
+            PropKey::Sym(_) => None,
+        }
+    }
+
+    pub fn to_value(&self) -> Value {
+        match self {
+            PropKey::Str(s) => Value::String(s.clone()),
+            PropKey::Sym(s) => Value::Symbol(s.clone()),
+        }
+    }
+}
+
+impl From<&str> for PropKey {
+    fn from(s: &str) -> PropKey {
+        PropKey::str(s)
+    }
+}
+
+#[derive(Clone)]
+pub enum Slot {
+    Data { value: Value, writable: bool },
+    Accessor { get: Option<ObjRef>, set: Option<ObjRef> },
+}
+
+#[derive(Clone)]
+pub struct Property {
+    pub slot: Slot,
+    pub enumerable: bool,
+    pub configurable: bool,
+}
+
+impl Property {
+    /// Propriedade comum (gravável, enumerável, configurável).
+    pub fn data(value: Value) -> Property {
+        Property {
+            slot: Slot::Data { value, writable: true },
+            enumerable: true,
+            configurable: true,
+        }
+    }
+
