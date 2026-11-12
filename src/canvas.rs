@@ -416,3 +416,65 @@ pub struct StrokeStyle {
     pub dash_offset: f32,
 }
 
+/// Divide as polilinhas nos traços do tracejado.
+fn dashed(polys: Vec<Poly>, dash: &[f32], offset: f32) -> Vec<Poly> {
+    let total: f32 = dash.iter().sum();
+    if dash.is_empty() || total <= 0.0 || dash.iter().any(|d| *d < 0.0 || !d.is_finite()) {
+        return polys;
+    }
+    let mut out = Vec::new();
+    for (mut pts, closed) in polys {
+        if closed && pts.len() > 1 {
+            pts.push(pts[0]);
+        }
+        // posição inicial no padrão
+        let mut idx = 0;
+        let mut left = dash[0];
+        let mut on = true;
+        let mut skip = offset.rem_euclid(total);
+        while skip > 0.0 {
+            if skip >= left {
+                skip -= left;
+                idx = (idx + 1) % dash.len();
+                left = dash[idx];
+                on = !on;
+            } else {
+                left -= skip;
+                skip = 0.0;
+            }
+        }
+        let mut cur: Vec<(f32, f32)> = if on { vec![pts[0]] } else { Vec::new() };
+        for w in pts.windows(2) {
+            let (mut a, b) = (w[0], w[1]);
+            let mut seg = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            while seg > 0.0 {
+                if seg <= left {
+                    left -= seg;
+                    if on {
+                        cur.push(b);
+                    }
+                    seg = 0.0;
+                } else {
+                    let t = left / seg;
+                    let p = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+                    if on {
+                        cur.push(p);
+                        out.push((std::mem::take(&mut cur), false));
+                    } else {
+                        cur = vec![p];
+                    }
+                    seg -= left;
+                    a = p;
+                    on = !on;
+                    idx = (idx + 1) % dash.len();
+                    left = dash[idx];
+                }
+            }
+        }
+        if on && cur.len() > 1 {
+            out.push((cur, false));
+        }
+    }
+    out
+}
+
