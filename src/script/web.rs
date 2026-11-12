@@ -287,3 +287,48 @@ fn url_parse(vm: &mut Vm, a: &mut CallArgs) -> R {
     }
 }
 
+/// `__native.urlSet(href, parte, valor)` → nova href.
+fn url_set(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let href = arg_string(vm, a, 0)?;
+    let part = arg_string(vm, a, 1)?;
+    let value = arg_string(vm, a, 2)?;
+    let Ok(mut u) = Url::parse(&href) else { return Ok(s(&href)) };
+    match part.as_str() {
+        "protocol" => {
+            let _ = u.set_scheme(value.trim_end_matches(':'));
+        }
+        "username" => {
+            let _ = u.set_username(&value);
+        }
+        "password" => {
+            let _ = u.set_password(Some(&value));
+        }
+        "host" => {
+            let (h, p) = match value.rsplit_once(':') {
+                Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h.to_string(), p.parse().ok()),
+                _ => (value.clone(), None),
+            };
+            if u.set_host(Some(&h)).is_ok() {
+                let _ = u.set_port(p);
+            }
+        }
+        "hostname" => {
+            let _ = u.set_host(Some(&value));
+        }
+        "port" => {
+            let _ = u.set_port(value.parse().ok());
+        }
+        "pathname" => u.set_path(&value),
+        "search" => {
+            let q = value.trim_start_matches('?');
+            u.set_query(if q.is_empty() { None } else { Some(q) });
+        }
+        "hash" => {
+            let f = value.trim_start_matches('#');
+            u.set_fragment(if f.is_empty() { None } else { Some(f) });
+        }
+        _ => {}
+    }
+    Ok(s(u.as_str()))
+}
+
