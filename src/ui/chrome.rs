@@ -196,3 +196,51 @@ impl App {
         hits.push((b, hit));
     }
 
+    /// Lista de abas ao lado do trilho (kit 4: "Opportunities").
+    fn draw_tab_panel(&self, p: &mut Painter, t: &Theme, r: Rect, hits: &mut Hits) {
+        let x = r.x + 6.0;
+        let w = r.w - 12.0;
+        let limit = r.y + r.h - 8.0;
+        p.text(x + 12.0, r.y + 36.0, "Abas", 19.0, t.text, Weight::Semibold);
+        let n = self.tabs.len().to_string();
+        let nw = p.measure(&n, 16.0, Weight::Regular);
+        p.text(x + w - 14.0 - nw, r.y + 36.0, &n, 16.0, t.muted, Weight::Regular);
+
+        let mut y = r.y + 56.0;
+        for i in 0..self.tabs.len() {
+            if y + 40.0 > limit {
+                break;
+            }
+            self.draw_tab_row(p, t, i, rect(x, y, w, 40.0), hits);
+            y += 44.0;
+        }
+        let row = rect(x, y, w, 40.0);
+        if self.hover == Some(Hit::NewTab) {
+            p.rrect(row, 12.0, hover_bg(t));
+        }
+        p.icon(row.x + 22.0, row.y + 20.0, Icon::Plus, 17.0, t.muted);
+        p.text(row.x + 44.0, Painter::baseline(row.y + 20.0, 14.0), "Nova aba", 14.0, t.muted, Weight::Regular);
+        hits.push((row, Hit::NewTab));
+        y += 56.0;
+
+        if y + 70.0 < limit {
+            p.rect(rect(x + 12.0, y, w - 24.0, 1.0), t.border);
+            y += 30.0;
+            p.text(x + 12.0, y, "Atalhos", 13.0, t.muted, Weight::Regular);
+            y += 12.0;
+            for (i, s) in SHORTCUTS.iter().enumerate() {
+                if y + 38.0 > limit {
+                    break;
+                }
+                let row = rect(x, y, w, 38.0);
+                if self.hover == Some(Hit::Shortcut(i)) {
+                    p.rrect(row, 12.0, hover_bg(t));
+                }
+                pages::brand_icon(p, rect(row.x + 12.0, row.y + 8.0, 22.0, 22.0), s);
+                p.text(row.x + 46.0, Painter::baseline(row.y + 19.0, 14.0), s.name, 14.0, t.text, Weight::Regular);
+                hits.push((row, Hit::Shortcut(i)));
+                y += 40.0;
+            }
+        }
+    }
+
