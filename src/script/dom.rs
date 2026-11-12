@@ -1538,3 +1538,78 @@ fn client_width(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.w.round()) as f64))
 }
 
+fn client_height(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if is_root_el(vm, n) {
+        return Ok(Value::Number(viewport_size(vm).1 as f64));
+    }
+    if let Some(sc) = scroller_of(vm, n) {
+        return Ok(Value::Number(sc.rect.h.round() as f64));
+    }
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.h.round()) as f64))
+}
+
+fn scroll_width(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if is_root_el(vm, n) {
+        return Ok(Value::Number(viewport_size(vm).0 as f64));
+    }
+    if let Some(sc) = scroller_of(vm, n) {
+        return Ok(Value::Number((sc.rect.w + sc.max_x).round() as f64));
+    }
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.w.round()) as f64))
+}
+
+fn scroll_height(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if is_page_scroller(vm, n) {
+        return Ok(Value::Number(page_height(vm).round() as f64));
+    }
+    if let Some(sc) = scroller_of(vm, n) {
+        return Ok(Value::Number((sc.rect.h + sc.max_y).round() as f64));
+    }
+    Ok(Value::Number(rect_of(vm, n).map_or(0.0, |r| r.h.round()) as f64))
+}
+
+fn zero(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(0.0))
+}
+
+fn scroll_top(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if is_page_scroller(vm, n) {
+        return Ok(Value::Number(viewport_size(vm).2 as f64));
+    }
+    Ok(Value::Number(scroller_of(vm, n).map_or(0.0, |s| s.y) as f64))
+}
+
+fn scroll_left(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(scroller_of(vm, n).map_or(0.0, |s| s.x) as f64))
+}
+
+/// Define a rolagem (x, y) de um elemento (ou da janela) e avisa com `scroll`.
+fn set_scroll(vm: &mut Vm, n: NodeId, x: Option<f32>, y: Option<f32>) -> Result<(), Value> {
+    if is_page_scroller(vm, n) {
+        if let Some(y) = y {
+            write(vm, |h| h.page_scroll_request = Some(y.max(0.0)));
+        }
+        return Ok(());
+    }
+    let Some(sc) = scroller_of(vm, n) else { return Ok(()) };
+    let nx = x.unwrap_or(sc.x).clamp(0.0, sc.max_x);
+    let ny = y.unwrap_or(sc.y).clamp(0.0, sc.max_y);
+    if (nx - sc.x).abs() < 0.5 && (ny - sc.y).abs() < 0.5 {
+        return Ok(());
+    }
+    write(vm, |h| {
+        h.scroll_offsets.insert(n, (nx, ny));
+        h.dirty = true;
+    });
+    if let Some(f) = read(vm, |h| h.hooks.get("fireLater").cloned()) {
+        let el = wrap(vm, n);
+        vm.call(&f, Value::Undefined, vec![el, s("scroll")])?;
+    }
+    Ok(())
+}
+
