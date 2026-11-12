@@ -2071,3 +2071,76 @@ impl ApplicationHandler<UserEvent> for App {
         self.new_tab(initial, true);
     }
 
+    fn user_event(&mut self, el: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Engine { tab, update } => self.on_update(tab, update),
+            UserEvent::Redraw => self.request_redraw(),
+        }
+        if self.capture.is_some() && !self.tabs.iter().any(|t| t.loading) {
+            self.capture_now(el);
+        }
+    }
+
+    fn new_events(&mut self, el: &ActiveEventLoop, cause: StartCause) {
+        if self.capture.is_some() && self.started.elapsed() > Duration::from_secs(40) {
+            self.capture_now(el);
+            return;
+        }
+        if let StartCause::ResumeTimeReached { .. } = cause {
+            self.request_redraw();
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.capture.is_some() {
+            el.set_control_flow(ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1)));
+            return;
+        }
+        // a nova aba mostra um relógio: acorda na virada do minuto
+        if !self.tabs.is_empty() && self.tab().kind() == Kind::NewTab {
+            let secs = 60 - jiff::Zoned::now().second() as u64;
+            el.set_control_flow(ControlFlow::WaitUntil(
+                Instant::now() + Duration::from_millis(secs * 1000 + 30),
+            ));
+        } else {
+            el.set_control_flow(ControlFlow::Wait);
+        }
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => {
+                crate::dados::flush();
+                el.exit()
+            }
+            WindowEvent::Resized(_) => {
+                self.sync_viewport();
+                self.request_redraw();
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor as f32;
+                self.sync_viewport();
+                self.request_redraw();
+            }
+            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.on_mouse_move(position.x as f32 / self.scale, position.y as f32 / self.scale)
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.hover = None;
+                self.hover_link = None;
+                self.send_mouse(None);
+                self.request_redraw();
+            }
+            WindowEvent::MouseInput { state, button, .. } => self.on_mouse_button(state, button, el),
+            WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic: false,
+                ..
+            } if event.state == ElementState::Pressed => self.on_key(&event, el),
+            _ => {}
+        }
+    }
+}
