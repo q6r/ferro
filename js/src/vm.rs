@@ -1795,3 +1795,50 @@ impl Vm {
         }
     }
 
+    /// Define método/getter/setter (juntando getter e setter do mesmo nome).
+    pub fn define_method(&mut self, obj: &ObjRef, key: PropKey, fv: Value, kind: u8, enumerable: bool) {
+        let fo = match &fv {
+            Value::Object(o) => Some(o.clone()),
+            _ => None,
+        };
+        let mut b = obj.borrow_mut();
+        match kind {
+            METHOD => {
+                b.props.insert(
+                    key,
+                    Property {
+                        slot: Slot::Data {
+                            value: fv,
+                            writable: true,
+                        },
+                        enumerable,
+                        configurable: true,
+                    },
+                );
+            }
+            GETTER | SETTER => {
+                let (mut get, mut set) = match b.props.get(&key) {
+                    Some(Property {
+                        slot: Slot::Accessor { get, set },
+                        ..
+                    }) => (get.clone(), set.clone()),
+                    _ => (None, None),
+                };
+                if kind == GETTER {
+                    get = fo;
+                } else {
+                    set = fo;
+                }
+                b.props.insert(
+                    key,
+                    Property {
+                        slot: Slot::Accessor { get, set },
+                        enumerable,
+                        configurable: true,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+
