@@ -352,3 +352,121 @@ impl Session {
         Session::new_frame(page, net, fonts, width, height, 0, String::new())
     }
 
+    /// Sessão de um `<iframe>` (`depth` > 0) ou da página da aba (`depth` = 0).
+    pub(crate) fn new_frame(page: Loaded, net: Net, fonts: Rc<Fonts>, width: f32, height: f32, depth: u32, parent_origin: String) -> Session {
+        let (tx, rx) = mpsc::channel();
+        let mut page = page;
+        let sheet_cache = std::mem::take(&mut page.sheet_texts);
+        let host = Host {
+            page,
+            net,
+            fonts,
+            images: crate::layout::Images::new(),
+            image_cache: HashMap::new(),
+            canvases: HashMap::new(),
+            canvas_dirty: HashSet::new(),
+            canvas_snaps: HashMap::new(),
+            last_canvas_snap: None,
+            bitmaps: HashMap::new(),
+            bitmap_seq: 0,
+            frames: HashMap::new(),
+            frame_loading: HashMap::new(),
+            frame_images: HashMap::new(),
+            frames_changed: HashSet::new(),
+            focused_frame: None,
+            frame_depth: 0,
+            parent_origin: None,
+            outbox: Vec::new(),
+            inbox: Vec::new(),
+            select_popup: None,
+            media_loading: HashMap::new(),
+            requested: HashSet::new(),
+            img_waiters: HashMap::new(),
+            width,
+            height,
+            scroll_y: 0.0,
+            wrappers: HashMap::new(),
+            protos: HashMap::new(),
+            dirty: true,
+            styles_dirty: false,
+            repaint: false,
+            layout: None,
+            started: HashSet::new(),
+            parser: None,
+            modules: Default::default(),
+            import_map: HashMap::new(),
+            current_script: None,
+            ready_state: "loading",
+            navigate: None,
+            post: None,
+            pool: Pool {
+                queue: Arc::new(Mutex::new(VecDeque::new())),
+                active: Arc::new(AtomicUsize::new(0)),
+                tx,
+            },
+            rx,
+            in_flight: 0,
+            fetch_seq: 0,
+            fetch_waiters: HashMap::new(),
+            raf: Vec::new(),
+            raf_seq: 0,
+            last_raf: Instant::now(),
+            templates: HashMap::new(),
+            sheet_cache,
+            focused: None,
+            keyboard_focus: false,
+            hover: None,
+            fullscreen: None,
+            fullscreen_changed: false,
+            dyn_rules: None,
+            hooks: HashMap::new(),
+            custom: HashMap::new(),
+            upgraded: HashSet::new(),
+            observing: false,
+            closed_shadows: HashSet::new(),
+            media: crate::media::Media::new(),
+            scroll_offsets: HashMap::new(),
+            page_scroll_request: None,
+            title_changed: false,
+            no_resources: false,
+        };
+        let mut host = host;
+        host.frame_depth = depth;
+        host.parent_origin = (depth > 0).then_some(parent_origin);
+        let host = Rc::new(RefCell::new(host));
+        let mut js = Engine::new();
+        js.vm.max_depth = 3000;
+        crate::jshost::setup(&mut js);
+        js.set_output(|kind, text| match kind {
+            Out::Log => eprintln!("[console] {text}"),
+            Out::Error => eprintln!("[console:erro] {text}"),
+        });
+        js.vm.host = Some(host.clone() as Rc<dyn std::any::Any>);
+        dom::install(&mut js.vm);
+        web::install(&mut js.vm);
+        let prelude = include_str!("prelude.js");
+        if let Err(e) = js.eval(prelude, "ferro:prelude") {
+            eprintln!("[ferro] erro no prelúdio JS: {}", js.error_text(&e));
+        }
+        // ganchos que o prelúdio deixou para o Rust
+        let global = Value::Object(js.vm.realm.global.clone());
+        if let Ok(Value::Object(h)) = js.vm.get_str(&global, "__ferroHooks") {
+            let keys: Vec<PropKey> = h.borrow().props.ordered_keys();
+            for k in keys {
+                if let PropKey::Str(name) = &k {
+                    let name: &'static str = Box::leak(name.to_rust().into_boxed_str());
+                    let v = js.vm.get_obj(&h, &k).unwrap_or(Value::Undefined);
+                    host.borrow_mut().hooks.insert(name, v);
+                }
+            }
+            js.vm.delete_prop(&js.vm.realm.global.clone(), &PropKey::str("__ferroHooks"));
+        }
+        Session {
+            js,
+            host,
+            last_render: None,
+            render_cost: Duration::ZERO,
+            last_input: None,
+        }
+    }
+
