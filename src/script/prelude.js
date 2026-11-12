@@ -2243,3 +2243,55 @@ function prevInTree(n, root) {
   while (p.lastChild) p = p.lastChild;
   return p;
 }
+class TreeWalker {
+  constructor(root, whatToShow, filter) { this.root = root; this.whatToShow = whatToShow; this.filter = filter; this.currentNode = root; }
+  nextNode() {
+    let n = this.currentNode;
+    while ((n = nextInTree(n, this.root))) {
+      const r = acceptNode(this, n);
+      if (r === 1) return (this.currentNode = n);
+      if (r === 2) {
+        // pula a subárvore
+        let m = n;
+        while (m && m !== this.root && !m.nextSibling) m = m.parentNode;
+        if (!m || m === this.root) return null;
+        n = m.nextSibling;
+        if (acceptNode(this, n) === 1) return (this.currentNode = n);
+        this.currentNode = n;
+      }
+    }
+    return null;
+  }
+  previousNode() {
+    let n = this.currentNode;
+    while ((n = prevInTree(n, this.root))) {
+      if (acceptNode(this, n) === 1) return (this.currentNode = n);
+      if (n === this.root) return null;
+    }
+    return null;
+  }
+  parentNode() {
+    let n = this.currentNode;
+    while (n && n !== this.root) {
+      n = n.parentNode;
+      if (n && acceptNode(this, n) === 1) return (this.currentNode = n);
+    }
+    return null;
+  }
+  firstChild() {
+    for (let c = this.currentNode.firstChild; c; c = c.nextSibling) if (acceptNode(this, c) === 1) return (this.currentNode = c);
+    return null;
+  }
+  lastChild() {
+    for (let c = this.currentNode.lastChild; c; c = c.previousSibling) if (acceptNode(this, c) === 1) return (this.currentNode = c);
+    return null;
+  }
+  nextSibling() {
+    for (let c = this.currentNode.nextSibling; c; c = c.nextSibling) if (acceptNode(this, c) === 1) return (this.currentNode = c);
+    return null;
+  }
+  previousSibling() {
+    for (let c = this.currentNode.previousSibling; c; c = c.previousSibling) if (acceptNode(this, c) === 1) return (this.currentNode = c);
+    return null;
+  }
+}
