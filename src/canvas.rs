@@ -72,3 +72,37 @@ pub enum Op {
 }
 
 impl Op {
+    pub fn parse(s: &str) -> Op {
+        match s {
+            "destination-over" => Op::DestinationOver,
+            "destination-out" => Op::DestinationOut,
+            "destination-in" => Op::DestinationIn,
+            "source-in" => Op::SourceIn,
+            "source-out" => Op::SourceOut,
+            "source-atop" => Op::SourceAtop,
+            "destination-atop" => Op::DestinationAtop,
+            "copy" => Op::Copy,
+            "lighter" | "plus-lighter" => Op::Lighter,
+            "xor" => Op::Xor,
+            "multiply" => Op::Multiply,
+            "screen" => Op::Screen,
+            "darken" => Op::Darken,
+            "lighten" => Op::Lighten,
+            "overlay" => Op::Overlay,
+            "difference" | "exclusion" => Op::Difference,
+            _ => Op::SourceOver,
+        }
+    }
+}
+
+/// Como pintar: estilo, transformação (para gradientes e padrões), alfa global
+/// e modo de composição.
+pub struct Paint {
+    pub style: Style,
+    /// Dispositivo → espaço do usuário (onde o gradiente foi definido).
+    pub inv: Mat,
+    pub alpha: f32,
+    pub op: Op,
+}
+
+impl Paint {
