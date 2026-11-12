@@ -1358,3 +1358,53 @@ impl Session {
             && hb.frames.values().all(|c| c.loaded)
     }
 
+    /// Rola um elemento por dentro (roda do mouse sobre ele). `false` se ele
+    /// já está no limite nessa direção.
+    pub fn scroll_element(&mut self, node: NodeId, dx: f32, dy: f32) -> bool {
+        if self.host.borrow().frames.contains_key(&node) {
+            return self.scroll_frame(node, dy);
+        }
+        let moved = {
+            let mut hb = self.host.borrow_mut();
+            let info = hb.layout.as_ref().and_then(|l| l.scrollers.iter().find(|s| s.node == node).copied());
+            let Some(sc) = info else { return false };
+            let cur = hb.scroll_offsets.get(&node).copied().unwrap_or((sc.x, sc.y));
+            let next = ((cur.0 + dx).clamp(0.0, sc.max_x), (cur.1 + dy).clamp(0.0, sc.max_y));
+            if (next.0 - cur.0).abs() < 0.5 && (next.1 - cur.1).abs() < 0.5 {
+                false
+            } else {
+                hb.scroll_offsets.insert(node, next);
+                hb.dirty = true;
+                true
+            }
+        };
+        if moved {
+            let el = wrap(&mut self.js.vm, node);
+            self.hook("fire", vec![el, Value::str("scroll")]);
+        }
+        moved
+    }
+
+    /// Rolagem da janela pedida pela página (a interface aplica).
+    pub fn take_page_scroll(&mut self) -> Option<f32> {
+        self.host.borrow_mut().page_scroll_request.take()
+    }
+
+    /// Navegação pedida pela página.
+    pub fn take_navigation(&mut self) -> Option<Nav> {
+        let mut hb = self.host.borrow_mut();
+        let url = hb.navigate.take()?;
+        Some(Nav { url, post: hb.post.take() })
+    }
+}
+
+/// Executa o texto de um `<script>` com `document.currentScript` apontando para ele.
+pub(crate) fn exec_script(vm: &mut Vm, n: NodeId, text: &str, name: &str) {
+    let h = host(vm);
+    let prev = h.borrow_mut().current_script.replace(n);
+    if let Err(e) = vm.eval_script(text, name) {
+        vm.report_uncaught(&e);
+    }
+    h.borrow_mut().current_script = prev;
+}
+
