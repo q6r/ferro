@@ -172,3 +172,59 @@ impl Painter<'_> {
             .stroke_round_rect(d, radius * self.scale, (width * self.scale).max(1.0), color, c);
     }
 
+    /// Sombra suave: camadas translúcidas crescentes atrás de um cartão.
+    pub fn shadow(&mut self, r: Rect, radius: f32, strength: u8) {
+        for i in 1..=6 {
+            let g = i as f32 * 2.0;
+            let rr = Rect {
+                x: r.x - g / 2.0,
+                y: r.y - g / 2.0 + 3.0,
+                w: r.w + g,
+                h: r.h + g,
+            };
+            self.rrect(
+                rr,
+                radius + g / 2.0,
+                Color {
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    a: strength / (i as u8 + 1),
+                },
+            );
+        }
+    }
+
+    pub fn measure(&self, text: &str, size: f32, weight: Weight) -> f32 {
+        self.fonts.measure(self.font(weight), size * self.scale, text) / self.scale
+    }
+
+    pub fn text(&mut self, x: f32, baseline: f32, text: &str, size: f32, color: Color, weight: Weight) {
+        self.text_clipped(x, baseline, text, size, color, weight, None);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn text_clipped(
+        &mut self,
+        x: f32,
+        baseline: f32,
+        text: &str,
+        size: f32,
+        color: Color,
+        weight: Weight,
+        clip: Option<Rect>,
+    ) {
+        let font = self.font(weight);
+        let clip = self.cut(clip);
+        self.canvas.draw_text(
+            self.fonts,
+            x * self.scale,
+            baseline * self.scale,
+            text,
+            font,
+            size * self.scale,
+            color,
+            clip,
+        );
+    }
+
