@@ -262,6 +262,17 @@ impl Media {
         demux.tracks = tracks;
         let mut map: HashMap<u32, SharedSamples> = HashMap::new();
         let mut end: f64 = 0.0;
+        // começa do zero (atraso de composição dos quadros B, listas de edição)
+        let first = samples.iter().map(|s| s.pts).fold(f64::INFINITY, f64::min);
+        let shift = if first.is_finite() && first > 0.0 { first } else { 0.0 };
+        let mut samples = samples;
+        for s in samples.iter_mut() {
+            s.pts -= shift;
+            s.dts -= shift;
+        }
+        if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+            eprintln!("[mídia] arquivo: {} amostras, começa em {first:.3} s", samples.len());
+        }
         for s in samples {
             end = end.max(s.pts + s.duration);
             map.entry(s.track).or_default().lock().unwrap().push(s);
@@ -274,6 +285,9 @@ impl Media {
             s.buffers.push(id);
             s.duration = end;
             s.ended = true;
+        }
+        if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+            eprintln!("[mídia] arquivo: duração {end:.2} s, dados em {:?}", self.source_buffered(source));
         }
         Ok(source)
     }
@@ -441,7 +455,7 @@ impl Media {
             let size = self.video_size(source);
             let p = self.players.get_mut(&el).unwrap();
             let t = p.current_time();
-            let has = |x: f64| ranges.iter().any(|&(s, e)| x >= s - 0.05 && x < e);
+            let has = |x: f64| ranges.iter().any(|&(s, e)| x >= s - 0.25 && x < e);
             let near_end = duration.is_finite() && t >= duration - 0.25;
             let rs = if !meta {
                 0

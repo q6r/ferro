@@ -1029,6 +1029,16 @@ pub fn set_focus(n: Option<NodeId>) {
 }
 
 thread_local! {
+    /// Tamanho natural dos `<video>` que já sabem o tamanho (largura, altura).
+    static VIDEO_SIZES: std::cell::RefCell<HashMap<NodeId, (f32, f32)>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Diz ao layout o tamanho natural de cada vídeo (a proporção da caixa segue o vídeo).
+pub fn set_video_sizes(m: HashMap<NodeId, (f32, f32)>) {
+    VIDEO_SIZES.with(|v| *v.borrow_mut() = m);
+}
+
+thread_local! {
     /// SVGs embutidos já desenhados: (conteúdo, tamanho, cor) → imagem.
     static INLINE_SVG: std::cell::RefCell<HashMap<(u64, u32, u32, u32), Option<Arc<ImageData>>>> =
         std::cell::RefCell::new(HashMap::new());
@@ -3486,7 +3496,18 @@ impl<'a> Ctx<'a> {
                     push(out, w.unwrap_or(300.0), h.unwrap_or(54.0), AtomicPaint::Placeholder, None);
                 }
             }
-            "video" => push(out, w.unwrap_or(300.0), h.unwrap_or(150.0), AtomicPaint::Video(n), None),
+            "video" => {
+                // sem altura: segue a proporção do vídeo (ou 300×150 enquanto não se sabe)
+                let natural = VIDEO_SIZES.with(|v| v.borrow().get(&n).copied()).filter(|s| s.0 > 0.0 && s.1 > 0.0);
+                let (vw, vh) = match (w, h, natural) {
+                    (Some(w), Some(h), _) => (w, h),
+                    (Some(w), None, Some((nw, nh))) => (w, w * nh / nw),
+                    (None, Some(h), Some((nw, nh))) => (h * nw / nh, h),
+                    (None, None, Some((nw, nh))) => (nw.min(avail.max(1.0)), nw.min(avail.max(1.0)) * nh / nw),
+                    (w, h, None) => (w.unwrap_or(300.0), h.unwrap_or(150.0)),
+                };
+                push(out, vw, vh, AtomicPaint::Video(n), None)
+            }
             "canvas" | "iframe" => {
                 // largura/altura do CSS; senão, as do atributo (padrão 300×150),
                 // mantendo a proporção se só uma foi dada

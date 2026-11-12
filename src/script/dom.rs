@@ -301,6 +301,7 @@ fn custom_in(vm: &Vm, nodes: &[NodeId]) -> Vec<NodeId> {
 /// os `<script>` que acabaram de entrar no documento.
 pub(crate) fn inserted(vm: &mut Vm, nodes: &[NodeId], parent: NodeId) {
     let mut scripts = Vec::new();
+    let mut media = Vec::new();
     write(vm, |h| {
         h.dirty = true;
         let doc = &h.page.doc;
@@ -311,6 +312,8 @@ pub(crate) fn inserted(vm: &mut Vm, nodes: &[NodeId], parent: NodeId) {
             Some("style") => h.styles_dirty = true,
             Some("script") if !h.started.contains(&parent) => scripts.push(parent),
             Some("title") => h.title_changed = true,
+            // <source> novo dentro de um <video>/<audio>
+            Some("video" | "audio") => media.push(parent),
             _ => {}
         }
         for &n in nodes {
@@ -321,6 +324,7 @@ pub(crate) fn inserted(vm: &mut Vm, nodes: &[NodeId], parent: NodeId) {
                     Some("style" | "link") => h.styles_dirty = true,
                     Some("script") if !h.started.contains(&d) => scripts.push(d),
                     Some("title") => h.title_changed = true,
+                    Some("video" | "audio") => media.push(d),
                     _ => {}
                 }
             }
@@ -337,6 +341,11 @@ pub(crate) fn inserted(vm: &mut Vm, nodes: &[NodeId], parent: NodeId) {
     }
     for n in scripts {
         start_script(vm, n);
+    }
+    // <video>/<audio> no documento: começa a carregar o src (ou o <source>)
+    for n in media {
+        let el = wrap(vm, n);
+        call_hook(vm, "mediaConnected", vec![el]);
     }
 }
 

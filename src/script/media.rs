@@ -156,6 +156,17 @@ fn load_url(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Bool(true))
 }
 
+/// `mediaBuffered(el)`: intervalos com dados de um arquivo comum, em lista plana.
+fn buffered(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let ranges = write(vm, |h| {
+        let source = h.media.players.get(&n).and_then(|p| p.source);
+        source.map(|s| h.media.source_buffered(s)).unwrap_or_default()
+    });
+    let flat = ranges.iter().flat_map(|&(s, e)| [Value::Number(s), Value::Number(e)]).collect();
+    Ok(vm.array_value(flat))
+}
+
 fn play(vm: &mut Vm, a: &mut CallArgs) -> R {
     let n = el(vm, a)?;
     let ev = write(vm, |h| {
@@ -245,6 +256,7 @@ pub(crate) fn install(vm: &Vm, n: &ObjRef) {
         ("sbBuffered", 1, sb_buffered),
         ("mediaAttach", 2, attach),
         ("mediaLoadUrl", 2, load_url),
+        ("mediaBuffered", 1, buffered),
         ("mediaDetach", 1, detach),
         ("mediaPlay", 1, play),
         ("mediaPause", 1, pause),

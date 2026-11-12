@@ -1870,6 +1870,22 @@ function loadMedia(el, url) {
   N.mediaLoadUrl(el, resolveURL(String(url)));
   later(() => fireTrusted(el, new Event('loadstart')));
 }
+/// <video>/<audio> que chegou ao documento: carrega o `src` ou o primeiro
+/// <source> de tipo que o Ferro toca.
+function autoLoadMedia(el) {
+  const s = mediaOf(el);
+  if (s.ms || s.network !== 0) return;
+  let url = el.getAttribute('src');
+  if (!url) {
+    const src = [...el.querySelectorAll('source')]
+      .find((x) => x.getAttribute('src') && (!x.getAttribute('type') || N.mediaSupports(x.getAttribute('type'))));
+    url = src && src.getAttribute('src');
+  }
+  if (url) loadMedia(el, url);
+}
+document.addEventListener('DOMContentLoaded', () => {
+  for (const m of document.querySelectorAll('video, audio')) autoLoadMedia(m);
+});
 accessor(MEDIA, 'src', function () {
   const v = this.getAttribute('src');
   return v === null ? '' : (v.startsWith('blob:') ? v : resolveURL(v));
@@ -1893,7 +1909,7 @@ accessor(MEDIA, 'currentTime', function () { return stateOf(this)[0]; }, functio
 hidden(MEDIA, 'fastSeek', function (t) { this.currentTime = t; });
 accessor(MEDIA, 'duration', function () {
   const s = mediaOf(this);
-  return s.ms ? s.ms.duration : NaN;
+  return s.ms ? s.ms.duration : stateOf(this)[7];
 });
 accessor(MEDIA, 'paused', function () { return stateOf(this)[2]; });
 accessor(MEDIA, 'seeking', function () { return stateOf(this)[3]; });
@@ -1901,10 +1917,14 @@ accessor(MEDIA, 'ended', function () { return stateOf(this)[4]; });
 accessor(MEDIA, 'readyState', function () { return stateOf(this)[1]; });
 accessor(MEDIA, 'networkState', function () { return mediaOf(this).network; });
 accessor(MEDIA, 'error', function () { return mediaOf(this).error; });
-accessor(MEDIA, 'currentSrc', function () { return this.src; });
+accessor(MEDIA, 'currentSrc', function () {
+  if (this.src) return this.src;
+  const src = [...this.querySelectorAll('source')].find((x) => x.src && (!x.type || N.mediaSupports(x.type)));
+  return src ? src.src : '';
+});
 accessor(MEDIA, 'buffered', function () {
   const s = mediaOf(this);
-  return new TimeRanges(s.ms ? N.msBuffered(MS.get(s.ms).id) : []);
+  return new TimeRanges(s.ms ? N.msBuffered(MS.get(s.ms).id) : N.mediaBuffered(this));
 });
 accessor(MEDIA, 'seekable', function () {
   const d = this.duration;
@@ -3588,6 +3608,7 @@ const hooks = {
     }
   },
   rect(x, y, w, h) { return new DOMRect(x, y, w, h); },
+  mediaConnected(el) { autoLoadMedia(el); },
   mediaFile(el, ok) {
     const s = mediaOf(el);
     if (ok) {

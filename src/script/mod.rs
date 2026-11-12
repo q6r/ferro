@@ -800,6 +800,10 @@ impl Session {
         let t_timers = start.elapsed();
         // mídia: relógio e eventos dos <video>/<audio>
         let media_events = self.host.borrow_mut().media.tick();
+        if media_events.iter().any(|(_, ty)| matches!(*ty, "loadedmetadata" | "resize")) {
+            // o tamanho do vídeo ficou conhecido: a caixa muda de proporção
+            self.host.borrow_mut().dirty = true;
+        }
         for (n, ty) in media_events {
             let el = wrap(&mut self.js.vm, n);
             self.hook("fire", vec![el, Value::str(ty)]);
@@ -1578,6 +1582,9 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
     crate::layout::set_focus(hb.focused.filter(|&f| hb.page.doc.is_connected(f)));
     crate::css::set_dynamic_state(dynamic_state(&hb));
     crate::layout::set_scroll_offsets(hb.scroll_offsets.clone());
+    crate::layout::set_video_sizes(
+        hb.media.players.iter().filter(|(_, p)| p.width > 0).map(|(&n, p)| (n, (p.width as f32, p.height as f32))).collect(),
+    );
     let (mut page, styles) = engine::render_styled(&hb.page, &hb.images, &fonts, hb.width, hb.height);
     if hb.no_resources {
         page.missing_urls.clear();
