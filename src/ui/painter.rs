@@ -253,6 +253,19 @@ impl Painter<'_> {
         out
     }
 
+    /// Imagem colorida (favicon) de `size` pixels lógicos, centralizada em (cx, cy).
+    pub fn image_icon(&mut self, cx: f32, cy: f32, img: &ImageData, size: f32) {
+        let px = (size * self.scale).round().max(4.0);
+        let r = Rect {
+            x: (cx * self.scale - px / 2.0).round(),
+            y: (cy * self.scale - px / 2.0).round(),
+            w: px,
+            h: px,
+        };
+        let c = self.cut(None);
+        self.canvas.draw_image(img, r, c);
+    }
+
     /// Ícone de `size` pixels lógicos, centralizado em (cx, cy).
     pub fn icon(&mut self, cx: f32, cy: f32, icon: Icon, size: f32, color: Color) {
         let px = (size * self.scale).round().max(4.0) as u32;

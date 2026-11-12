@@ -179,6 +179,8 @@ struct Tab {
     cursor: crate::style::Cursor,
     /// Última posição do mouse avisada ao motor (coordenadas do documento).
     sent_mouse: Option<(f32, f32)>,
+    /// Ícone do site (32×32).
+    favicon: Option<std::sync::Arc<crate::paint::ImageData>>,
 }
 
 impl Tab {
@@ -635,6 +637,7 @@ impl App {
             editing: false,
             cursor: crate::style::Cursor::Auto,
             sent_mouse: None,
+            favicon: None,
             pending_post: None,
         };
         let idx = if activate || self.tabs.is_empty() {
@@ -825,6 +828,13 @@ impl App {
 
     fn on_update(&mut self, tab_id: u64, update: Update) {
         let Some(i) = self.tabs.iter().position(|t| t.id == tab_id) else { return };
+        if let Update::Favicon { nav, icon } = update {
+            if nav == self.tabs[i].nav {
+                self.tabs[i].favicon = Some(icon);
+                self.request_redraw();
+            }
+            return;
+        }
         if let Update::SelectPopup { nav, popup } = update {
             if nav == self.tabs[i].nav && i == self.active {
                 let sel = popup.selected.max(0) as usize;
@@ -923,7 +933,10 @@ impl App {
                         go_to = Some(url);
                     }
                 }
-                Update::Started { nav, .. } if nav == tab.nav => tab.progress = 0.3,
+                Update::Started { nav, .. } if nav == tab.nav => {
+                    tab.progress = 0.3;
+                    tab.favicon = None;
+                }
                 Update::Frame { nav, frame } if nav == tab.nav => {
                     let first = std::mem::take(&mut tab.fresh);
                     let complete = frame.complete;

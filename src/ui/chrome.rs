@@ -265,7 +265,10 @@ impl App {
         } else {
             t.muted
         };
-        p.icon(row.x + 22.0, row.y + 20.0, tab.icon(), 17.0, ic);
+        match &tab.favicon {
+            Some(img) if !tab.loading && tab.error.is_none() => p.image_icon(row.x + 22.0, row.y + 20.0, img, 16.0),
+            _ => p.icon(row.x + 22.0, row.y + 20.0, tab.icon(), 17.0, ic),
+        }
         let show_close = active || hovered;
         let right = row.x + row.w - if show_close { 36.0 } else { 12.0 };
         let weight = if active { Weight::Semibold } else { Weight::Regular };
@@ -309,7 +312,10 @@ impl App {
             } else {
                 t.muted
             };
-            p.icon(chip.x + 18.0, chip.y + 16.0, tab.icon(), 16.0, ic);
+            match &tab.favicon {
+                Some(img) if !tab.loading && tab.error.is_none() => p.image_icon(chip.x + 18.0, chip.y + 16.0, img, 16.0),
+                _ => p.icon(chip.x + 18.0, chip.y + 16.0, tab.icon(), 16.0, ic),
+            }
             let show_close = (active || hovered) && chip.w > 90.0;
             let right = chip.x + chip.w - if show_close { 32.0 } else { 12.0 };
             if right - (chip.x + 34.0) > 14.0 {

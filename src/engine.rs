@@ -142,6 +142,80 @@ pub fn save_download(d: &Download) -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
+/// Endereço do ícone do site: `<link rel="icon">` (o maior até 64 px, de
+/// preferência PNG/SVG) ou `/favicon.ico`.
+pub fn favicon_url(doc: &Document, base: &Url) -> Option<Url> {
+    if !matches!(base.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut best: Option<(i32, Url)> = None;
+    for n in doc.find_all("link") {
+        let Some(el) = doc.element(n) else { continue };
+        let rel = el.attr("rel").unwrap_or("").to_ascii_lowercase();
+        if !rel.split_whitespace().any(|r| r == "icon" || r == "apple-touch-icon") {
+            continue;
+        }
+        let Some(u) = el.attr("href").and_then(|h| base.join(h.trim()).ok()) else { continue };
+        let size: i32 = el
+            .attr("sizes")
+            .and_then(|s| s.split(['x', 'X']).next()?.trim().parse().ok())
+            .unwrap_or(if rel.contains("apple") { 180 } else { 32 });
+        // perto de 32 px é o ideal; svg vale como grande
+        let svg = u.path().ends_with(".svg") || el.attr("type").is_some_and(|t| t.contains("svg"));
+        let score = if svg { 1000 } else { 500 - (size - 32).abs() };
+        if best.as_ref().is_none_or(|(b, _)| score > *b) {
+            best = Some((score, u));
+        }
+    }
+    best.map(|(_, u)| u).or_else(|| base.join("/favicon.ico").ok())
+}
+
+/// Baixa e reduz o ícone para `px` × `px` (RGBA).
+pub fn load_favicon(net: &Net, url: &Url, px: u32) -> Option<ImageData> {
+    let res = net.fetch(url).ok().filter(|r| r.status < 400 && !r.body.is_empty())?;
+    let ct = res.content_type.as_deref().unwrap_or("");
+    let img = if ct.contains("svg") || url.path().ends_with(".svg") {
+        let text = String::from_utf8_lossy(&res.body);
+        crate::svg::parse(&text)?.render(px, px, None)
+    } else {
+        decode_image(&res.body)?
+    };
+    if img.width == 0 || img.height == 0 {
+        return None;
+    }
+    // reduz pela média das áreas (fica nítido em 16-32 px)
+    let (w, h) = (img.width as usize, img.height as usize);
+    let n = px as usize;
+    let mut out = vec![0u8; n * n * 4];
+    for y in 0..n {
+        for x in 0..n {
+            let (x0, x1) = (x * w / n, ((x + 1) * w / n).max(x * w / n + 1).min(w));
+            let (y0, y1) = (y * h / n, ((y + 1) * h / n).max(y * h / n + 1).min(h));
+            let mut acc = [0u32; 4];
+            let mut cnt = 0u32;
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let p = &img.rgba[(sy * w + sx) * 4..(sy * w + sx) * 4 + 4];
+                    let a = p[3] as u32;
+                    for k in 0..3 {
+                        acc[k] += p[k] as u32 * a;
+                    }
+                    acc[3] += a;
+                    cnt += 1;
+                }
+            }
+            let o = (y * n + x) * 4;
+            if acc[3] > 0 {
+                for k in 0..3 {
+                    out[o + k] = (acc[k] / acc[3]) as u8;
+                }
+            }
+            out[o + 3] = (acc[3] / cnt.max(1)) as u8;
+        }
+    }
+    Some(ImageData { width: px, height: px, rgba: out })
+}
+
 /// Busca uma navegação: página ou download.
 pub fn fetch_page(net: &Net, url: &Url, post: Option<&crate::script::PostData>) -> Result<Fetched, String> {
     let res = request_page(net, url, post)?;
@@ -661,6 +735,8 @@ pub enum Update {
     Fullscreen { nav: u64, on: bool },
     /// Um `<select>` foi clicado: mostrar a lista.
     SelectPopup { nav: u64, popup: crate::script::SelectPopup },
+    /// Ícone do site (favicon), já no tamanho da aba.
+    Favicon { nav: u64, icon: Arc<ImageData> },
     /// A navegação era um arquivo: foi salvo (ou deu erro). `keep` é a
     /// navegação da página que continua aberta, se houver.
     Downloaded { nav: u64, keep: Option<u64>, name: String, result: Result<std::path::PathBuf, String> },
@@ -894,6 +970,18 @@ fn worker(
             // primeiro desenho com o HTML como veio; os scripts rodam aos
             // poucos no laço abaixo (a aba continua respondendo)
             send_frame(&mut cur, &*send, width);
+            // o ícone do site, numa thread à parte
+            if let Some(u) = {
+                let hb = cur.session.host.borrow();
+                favicon_url(&hb.page.doc, &hb.page.base)
+            } {
+                let (net, send) = (net.clone(), send.clone());
+                std::thread::spawn(move || {
+                    if let Some(icon) = load_favicon(&net, &u, 32) {
+                        send(Update::Favicon { nav: n, icon: Arc::new(icon) });
+                    }
+                });
+            }
             cur.session.start_scripts();
             current = Some(cur);
             continue;
