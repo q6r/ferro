@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Página de teste do Ferro</title>
+<style>
+  :root { --azul: #1a56db; --fundo: #f4f6fb; }
+  body { font-family: Arial, sans-serif; background: var(--fundo); margin: 0; color: #222; }
+  .topo { background: var(--azul); color: white; padding: 16px 24px; }
+  .topo h1 { margin: 0; font-size: 28px; }
+  .conteudo { max-width: 760px; margin: 24px auto; background: white; padding: 24px 32px; border: 1px solid #d5dbe8; }
+  .destaque { border-left: 4px solid var(--azul); padding: 8px 12px; background: #eef3ff; }
+  code { background: #eee; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+  @media (max-width: 600px) { .topo { background: crimson; } }
+  li:nth-child(2n) { color: #8a1c1c; }
+  .centro { text-align: center; }
+</style>
+</head>
+<body>
+<div class="topo"><h1>Ferro &mdash; motor de navegador</h1><span class="sr-only">texto escondido</span></div>
+<div class="conteudo">
+  <h2>Marco 0 funcionando</h2>
+  <p>Este parágrafo tem <b>negrito</b>, <i>itálico</i>, <a href="https://example.com">um link</a>,
+     <s>riscado</s> e <code>código</code>. O texto quebra em linhas sozinho quando chega no fim da caixa, então este
+     parágrafo propositalmente comprido deve ocupar várias linhas.
+  <p class="destaque">Parágrafo com borda à esquerda e fundo, fechado implicitamente pelo próximo &lt;p&gt;.
+  <h3>Listas</h3>
+  <ul><li>HTML: tokenizador e construtor de árvore próprios<li>CSS: seletores, cascata, especificidade, var()<li>Layout de bloco e de linha<li>Pintura em software</ul>
+  <ol start="3"><li>Começa no três<li>Depois quatro</ol>
+  <pre>
+fn main() {
+    println!("pre preserva espaços");
+}</pre>
+  <p class="centro">Texto centralizado<br>com quebra de linha</p>
+  <form><input placeholder="Pesquisar..."> <input type="submit" value="Buscar"> <input type="checkbox" checked> lembrar
+  <select><option>Opção A<option selected>Opção B</select></form>
+  <hr>
+  <p style="font-size: 12px; color: gray">Rodapé em 12px &copy; 2026 · São Paulo</p>
+</div>
+</body>
+</html>

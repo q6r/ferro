@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Canvas 2D no Ferro</title>
+<style>body{font-family:sans-serif;margin:20px;background:#f4f1ea} canvas{border:1px solid #ccc;background:white}</style></head>
+<body>
+<h1>Canvas 2D</h1>
+<canvas id=c width=600 height=360></canvas>
+<script>
+const x = c.getContext('2d');
+// fundo em gradiente
+const g = x.createLinearGradient(0, 0, 600, 0);
+g.addColorStop(0, '#ffecd2'); g.addColorStop(1, '#fcb69f');
+x.fillStyle = g; x.fillRect(0, 0, 600, 360);
+// gráfico de barras
+const dados = [120, 200, 150, 80, 260, 190];
+dados.forEach((v, i) => {
+  x.fillStyle = `hsl(${i * 50}, 70%, 55%)`;
+  x.fillRect(40 + i * 45, 300 - v, 32, v);
+  x.fillStyle = '#333'; x.font = '12px sans-serif'; x.textAlign = 'center';
+  x.fillText(String(v), 56 + i * 45, 295 - v);
+});
+x.strokeStyle = '#333'; x.lineWidth = 2;
+x.beginPath(); x.moveTo(30, 40); x.lineTo(30, 300); x.lineTo(320, 300); x.stroke();
+// pizza
+let a = -Math.PI / 2;
+[0.4, 0.25, 0.2, 0.15].forEach((f, i) => {
+  x.beginPath(); x.moveTo(460, 120); x.arc(460, 120, 90, a, a + f * Math.PI * 2); x.closePath();
+  x.fillStyle = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261'][i]; x.fill();
+  x.strokeStyle = 'white'; x.lineWidth = 3; x.lineJoin = 'round'; x.stroke();
+  a += f * Math.PI * 2;
+});
+// linha tracejada com curva
+x.setLineDash([8, 6]); x.strokeStyle = '#1d3557'; x.lineWidth = 3; x.lineCap = 'round';
+x.beginPath(); x.moveTo(360, 300); x.bezierCurveTo(420, 200, 500, 360, 580, 260); x.stroke();
+x.setLineDash([]);
+// texto girado não é suportado; texto normal
+x.fillStyle = '#1d3557'; x.font = 'bold 22px serif'; x.textAlign = 'left';
+x.fillText('Ferro desenha no canvas', 340, 340);
+// gradiente radial
+const r = x.createRadialGradient(560, 30, 2, 560, 30, 25);
+r.addColorStop(0, 'white'); r.addColorStop(1, 'rgba(255,0,100,0)');
+x.fillStyle = r; x.beginPath(); x.arc(560, 30, 25, 0, Math.PI * 2); x.fill();
+// semitransparência e rotação
+x.save(); x.translate(200, 80); x.rotate(Math.PI / 8); x.globalAlpha = 0.6;
+x.fillStyle = '#6a4c93'; x.fillRect(-40, -20, 80, 40); x.restore();
+// recorte
+x.save(); x.beginPath(); x.arc(110, 80, 30, 0, Math.PI * 2); x.clip();
+for (let i = 0; i < 12; i++) { x.fillStyle = i % 2 ? '#222' : '#ffd166'; x.fillRect(80 + i * 6, 50, 6, 60); }
+x.restore();
+</script>
+</body></html>

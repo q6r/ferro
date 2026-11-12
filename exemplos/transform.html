@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Transformações e sombras</title>
+<style>
+body { font-family: sans-serif; margin: 30px; background: #f4f1ea; }
+.card { display: inline-block; width: 160px; height: 100px; margin: 30px; padding: 12px; background: white;
+        border-radius: 14px; box-shadow: 0 8px 24px rgba(0,0,0,.25); vertical-align: top; }
+.r1 { transform: rotate(-8deg); background: #ffd166; }
+.r2 { transform: scale(1.2) rotate(12deg); background: #06d6a0; color: white; }
+.r3 { transform: skewX(-15deg); background: #118ab2; color: white; }
+.r4 { transform: rotate(45deg); transform-origin: top left; background: #ef476f; color: white; }
+h1 { text-shadow: 3px 3px 0 #e07a5f; color: #3d405b; font-size: 48px; }
+.seta { display: inline-block; font-size: 40px; transform: rotate(90deg); }
+</style></head>
+<body>
+<h1>Transformações e sombras</h1>
+<div class="card">Sombra suave</div>
+<div class="card r1">rotate(-8deg)</div>
+<div class="card r2">scale + rotate</div>
+<div class="card r3">skewX(-15deg)</div>
+<div class="card r4">origem no canto</div>
+<p>Seta girada: <span class="seta">➜</span></p>
+</body></html>

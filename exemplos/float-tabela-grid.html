@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Teste M2: float, tabela e grid</title>
+<style>
+  body { font-family: Georgia, serif; margin: 0; background: #fafafa; color: #222; }
+  .page { max-width: 900px; margin: 20px auto; background: white; padding: 20px 28px; border: 1px solid #ddd; }
+  .infobox { float: right; width: 240px; margin: 0 0 12px 16px; border: 1px solid #a2a9b1; background: #f8f9fa; font-family: Arial, sans-serif; font-size: 13px; }
+  .infobox th { background: #dbe8fd; }
+  .left-img { float: left; width: 120px; height: 90px; background: #e0a800; margin: 4px 12px 4px 0; }
+  .clear { clear: both; }
+  table.dados { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 14px; margin: 12px 0; }
+  table.dados td, table.dados th { border: 1px solid #ccc; padding: 6px 10px; }
+  table.dados tr:nth-child(2n) { background: #f2f2f2; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; margin-top: 16px; font-family: Arial, sans-serif; }
+  .grid div { background: #e8f0fe; padding: 14px; }
+  .layout { display: grid; grid-template-columns: 160px 1fr; grid-template-areas: "topo topo" "menu corpo" "rodape rodape"; gap: 8px; margin-top: 16px; font-family: Arial, sans-serif; }
+  .topo { grid-area: topo; background: #1f2328; color: white; padding: 10px; }
+  .menu { grid-area: menu; background: #eaeef2; padding: 10px; }
+  .corpo { grid-area: corpo; background: #fff8e1; padding: 10px; }
+  .rodape { grid-area: rodape; background: #ddd; padding: 6px 10px; }
+</style></head>
+<body><div class="page">
+  <h1>Float, tabela e grid</h1>
+  <table class="infobox">
+    <tr><th colspan="2">Rust</th></tr>
+    <tr><td><b>Paradigma</b></td><td>Multiparadigma</td></tr>
+    <tr><td><b>Surgido em</b></td><td>2010</td></tr>
+    <tr><td><b>Criado por</b></td><td>Graydon Hoare</td></tr>
+    <tr><td><b>Licença</b></td><td>MIT ou Apache 2.0</td></tr>
+  </table>
+  <p>Este parágrafo contorna o quadro flutuante à direita, como o artigo da Wikipédia contorna a infobox. O texto quebra em linhas mais curtas enquanto o quadro está ao lado e volta à largura total quando ele termina. Mais texto para encher as linhas e mostrar o contorno funcionando direito.</p>
+  <p><span class="left-img"></span>Aqui um bloco flutua à esquerda dentro do parágrafo, como uma imagem com float:left. As linhas começam depois dele e, quando ele acaba, voltam à margem. Mais algumas palavras para passar da altura do bloco e ver o texto voltar para a esquerda normalmente.</p>
+  <p class="clear">Este parágrafo tem clear: both e começa abaixo de todos os floats.</p>
+  <table class="dados">
+    <tr><th>Navegador</th><th>Motor</th><th>Linguagem</th></tr>
+    <tr><td>Chrome</td><td>Blink</td><td>C++</td></tr>
+    <tr><td>Firefox</td><td>Gecko</td><td>C++ e Rust</td></tr>
+    <tr><td>Ladybird</td><td>LibWeb</td><td>C++</td></tr>
+    <tr><td>Ferro</td><td>Ferro</td><td>Rust (100%)</td></tr>
+  </table>
+  <div class="grid"><div>Grid 1</div><div>Grid 2</div><div>Grid 3</div><div>Grid 4</div><div>Grid 5</div><div>Grid 6</div></div>
+  <div class="layout"><div class="topo">topo (grid-area)</div><div class="menu">menu</div><div class="corpo">corpo: 1fr ocupa o resto da largura e o menu estica até a altura dele. Texto extra para ter duas linhas.</div><div class="rodape">rodapé</div></div>
+</div></body></html>

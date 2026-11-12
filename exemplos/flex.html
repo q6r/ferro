@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Teste M2: flex e position</title>
+<style>
+  body { margin: 0; font-family: system-ui, sans-serif; background: #f4f5f7; color: #1f2328; }
+  nav { display: flex; justify-content: space-between; align-items: center; padding: 12px 24px; background: #1f2328; color: white; }
+  nav .links { display: flex; gap: 20px; }
+  nav a { color: #e6e6e6; text-decoration: none; }
+  .logo { font-weight: bold; font-size: 20px; }
+  main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+  .cards { display: flex; gap: 16px; flex-wrap: wrap; }
+  .card { flex: 1; min-width: 200px; background: white; border: 1px solid #d0d7de; padding: 16px; position: relative; }
+  .badge { position: absolute; top: 8px; right: 8px; background: crimson; color: white; padding: 2px 8px; font-size: 12px; }
+  .hidden-check { position: absolute; opacity: 0; width: 100%; height: 100%; }
+  .center { display: flex; justify-content: center; align-items: center; height: 120px; background: #dbe8fd; margin: 16px 0; }
+  .col { display: flex; flex-direction: column; gap: 8px; width: 260px; }
+  .col div { background: #fff3cd; padding: 8px; border-left: 4px solid #e0a800; }
+  .row-end { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+  .btn { background: #2da44e; color: white; padding: 6px 14px; }
+  .push { margin-left: auto; }
+  .split { display: flex; margin-top: 16px; background: white; border: 1px solid #d0d7de; }
+  .split .side { width: 180px; background: #eaeef2; padding: 12px; }
+  .split .body { flex: 1; padding: 12px; }
+  .over { position: relative; height: 60px; margin-top: 16px; }
+  .over div { position: absolute; width: 120px; height: 40px; }
+  .a { left: 0; top: 0; background: #ff8c00; z-index: 2; }
+  .b { left: 60px; top: 15px; background: #4169e1; z-index: 1; }
+  .faded { opacity: 0.4; background: black; color: white; padding: 8px; margin-top: 16px; }
+</style></head>
+<body>
+<nav><span class="logo">Ferro</span><div class="links"><a href="#">Início</a><a href="#">Docs</a><a href="#">Blog</a><a href="#">Sobre</a></div></nav>
+<main>
+  <h2>Cartões com flex: 1</h2>
+  <div class="cards">
+    <div class="card"><span class="badge">novo</span><input type="checkbox" class="hidden-check"><b>Flexbox</b><p>Itens em linha com gap e quebra.</p></div>
+    <div class="card"><b>Position</b><p>Absolute, relative, fixed e z-index.</p></div>
+    <div class="card"><b>Opacity</b><p>Elementos com opacidade zero somem.</p></div>
+  </div>
+  <div class="center"><b>Centralizado nos dois eixos</b></div>
+  <div class="split"><div class="side">Lateral fixa de 180px</div><div class="body">Corpo com flex: 1 ocupa o resto da largura, e a lateral estica até a altura do corpo (align-items: stretch). Texto comprido para quebrar em várias linhas e mostrar o esticamento.</div></div>
+  <div class="row-end"><span class="btn">Cancelar</span><span class="btn">Salvar</span></div>
+  <div class="split" style="padding: 8px; align-items: center"><span>Esquerda</span><span class="push btn">margin-left: auto</span></div>
+  <h3>Coluna com gap</h3>
+  <div class="col"><div>Um</div><div>Dois</div><div>Três</div></div>
+  <div class="over"><div class="a">z-index 2</div><div class="b">z-index 1</div></div>
+  <div class="faded">opacity: 0.4</div>
+</main>
+</body></html>
