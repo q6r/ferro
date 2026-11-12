@@ -779,3 +779,72 @@ fn with(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 // ---------------------------------------------------------------- DataView
 
+fn dv_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Some(nt) = a.new_target.clone() else {
+        return Err(vm.type_error("Constructor DataView requires 'new'"));
+    };
+    let Value::Object(buf) = a.arg(0) else {
+        return Err(vm.type_error("First argument to DataView constructor must be an ArrayBuffer"));
+    };
+    let Some(data) = buffer_bytes(&buf) else {
+        return Err(vm.type_error("First argument to DataView constructor must be an ArrayBuffer"));
+    };
+    let blen = data.borrow().len();
+    let offset = to_index(vm, &a.arg(1), "DataView offset")?;
+    if offset > blen {
+        return Err(vm.range_error(format!("Start offset {offset} is outside the bounds of the buffer")));
+    }
+    let length = if a.arg(2).is_undefined() {
+        blen - offset
+    } else {
+        let l = to_index(vm, &a.arg(2), "DataView length")?;
+        if offset + l > blen {
+            return Err(vm.range_error(format!("Invalid DataView length {l}")));
+        }
+        l
+    };
+    let def = vm.realm.data_view_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    Ok(Value::Object(ObjRef::new(Object::new(
+        Some(proto),
+        Kind::DataView(Box::new(TypedArrayData {
+            data,
+            buffer: buf,
+            kind: TaKind::U8,
+            offset,
+            length,
+        })),
+    ))))
+}
+
+fn this_dv(vm: &mut Vm, a: &CallArgs) -> Result<(Bytes, usize, usize), Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::DataView(t) = &o.borrow().kind
+    {
+        return Ok((t.data.clone(), t.offset, t.length));
+    }
+    Err(vm.type_error("Receiver is not a DataView"))
+}
+
+fn dv_byte_length(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, _, len) = this_dv(vm, a)?;
+    Ok(Value::Number(len as f64))
+}
+
+/// Bytes [pos, pos+n) da vista, já na ordem little-endian.
+fn dv_read(vm: &mut Vm, a: &CallArgs, n: usize) -> Result<[u8; 8], Value> {
+    let (data, off, len) = this_dv(vm, a)?;
+    let pos = to_index(vm, &a.arg(0), "offset")?;
+    if pos + n > len {
+        return Err(vm.range_error("Offset is outside the bounds of the DataView"));
+    }
+    let little = truthy(&a.arg(1));
+    let d = data.borrow();
+    let mut out = [0u8; 8];
+    out[..n].copy_from_slice(&d[off + pos..off + pos + n]);
+    if !little {
+        out[..n].reverse();
+    }
+    Ok(out)
+}
+
