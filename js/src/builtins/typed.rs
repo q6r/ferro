@@ -176,3 +176,80 @@ fn ab_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(b))
 }
 
+fn is_view(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(&a.arg(0), Value::Object(o) if matches!(o.borrow().kind, Kind::TypedArray(_) | Kind::DataView(_)))))
+}
+
+fn this_buffer(vm: &mut Vm, a: &CallArgs) -> Result<(ObjRef, Bytes), Value> {
+    if let Value::Object(o) = &a.this
+        && let Some(b) = buffer_bytes(o)
+    {
+        return Ok((o.clone(), b));
+    }
+    Err(vm.type_error("Method ArrayBuffer.prototype called on incompatible receiver"))
+}
+
+fn ab_byte_length(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, b) = this_buffer(vm, a)?;
+    let n = b.borrow().len();
+    Ok(Value::Number(n as f64))
+}
+
+fn ab_slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, b) = this_buffer(vm, a)?;
+    let len = b.borrow().len();
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let end = rel_index(vm, &a.arg(1), len, len)?;
+    let part: Vec<u8> = if start < end { b.borrow()[start..end].to_vec() } else { Vec::new() };
+    let nb = new_buffer(vm, 0)?;
+    if let Kind::ArrayBuffer(d) = &nb.borrow().kind {
+        *d.borrow_mut() = part;
+    }
+    Ok(Value::Object(nb))
+}
+
+// ------------------------------------------------------------ typed arrays
+
+fn kind_of_ctor(f: &ObjRef) -> TaKind {
+    match native_data(f) {
+        Value::Number(n) => TaKind::ALL[n as usize],
+        _ => TaKind::U8,
+    }
+}
+
+/// Cria um typed array novo (com buffer próprio zerado).
+pub fn new_typed(vm: &mut Vm, kind: TaKind, length: usize, proto: Option<ObjRef>) -> Result<ObjRef, Value> {
+    let Some(bytes) = length.checked_mul(kind.size()) else {
+        return Err(vm.range_error(format!("Invalid typed array length: {length}")));
+    };
+    let buf = new_buffer(vm, bytes)?;
+    let data = buffer_bytes(&buf).unwrap();
+    let idx = TaKind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
+    let proto = proto.unwrap_or_else(|| vm.realm.typed_protos[idx].clone());
+    Ok(ObjRef::new(Object::new(
+        Some(proto),
+        Kind::TypedArray(Box::new(TypedArrayData {
+            data,
+            buffer: buf,
+            kind,
+            offset: 0,
+            length,
+        })),
+    )))
+}
+
+fn view(o: &ObjRef, buffer: ObjRef, kind: TaKind, offset: usize, length: usize, proto: ObjRef) -> ObjRef {
+    let data = buffer_bytes(&buffer).unwrap_or_default();
+    let _ = o;
+    ObjRef::new(Object::new(
+        Some(proto),
+        Kind::TypedArray(Box::new(TypedArrayData {
+            data,
+            buffer,
+            kind,
+            offset,
+            length,
+        })),
+    ))
+}
+
