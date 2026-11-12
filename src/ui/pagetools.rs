@@ -171,3 +171,67 @@ impl Tools {
             .collect()
     }
 
+    /// Texto selecionado (quebras de linha onde a linha muda).
+    pub fn selected_text(&self, fonts: &Fonts) -> String {
+        let mut out = String::new();
+        let mut prev: Option<(f32, f32, f32)> = None; // (baseline, fim x, tamanho)
+        for (i, a, b) in self.selected_spans() {
+            let r = &self.runs[i];
+            let piece = &r.text[a..b];
+            if let Some((base, end, size)) = prev {
+                if (r.baseline - base).abs() > size * 0.5 {
+                    out.push('\n');
+                } else if r.x_at(fonts, a) - end > 1.5 && !out.ends_with(' ') && !piece.starts_with(' ') {
+                    out.push(' ');
+                }
+            }
+            out.push_str(piece);
+            prev = Some((r.baseline, r.x_at(fonts, b), r.size));
+        }
+        out
+    }
+
+    pub fn select_all(&mut self) {
+        if let Some(last) = self.runs.len().checked_sub(1) {
+            self.sel = Some(((0, 0), (last, self.runs[last].text.len())));
+        }
+    }
+}
+
+/// Aviso rápido no canto da página.
+pub struct Toast {
+    pub text: String,
+    pub since: Instant,
+}
+
+impl App {
+    /// Destaques da busca e da seleção por cima da página.
+    pub(super) fn draw_page_marks(&self, p: &mut Painter, area: Rect, scroll: f32) {
+        let tools = &self.tools;
+        let fonts = p.fonts;
+        let z = self.zoom;
+        let to_screen = |r: Rect| rect(area.x + r.x * z, area.y + (r.y - scroll) * z, r.w * z, r.h * z);
+        let visible = |r: &Rect| r.y + r.h >= area.y && r.y <= area.y + area.h;
+        if tools.find_open {
+            for (k, &(ri, a, b)) in tools.matches.iter().enumerate() {
+                let Some(run) = tools.runs.get(ri) else { continue };
+                let r = to_screen(run.span(fonts, a, b));
+                if !visible(&r) {
+                    continue;
+                }
+                let c = if k == tools.current {
+                    Color { r: 255, g: 150, b: 50, a: 150 }
+                } else {
+                    Color { r: 255, g: 230, b: 0, a: 110 }
+                };
+                p.rect(r, c);
+            }
+        }
+        for (ri, a, b) in tools.selected_spans() {
+            let r = to_screen(tools.runs[ri].span(fonts, a, b));
+            if visible(&r) {
+                p.rect(r, Color { r: 60, g: 120, b: 255, a: 90 });
+            }
+        }
+    }
+
