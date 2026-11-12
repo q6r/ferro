@@ -742,3 +742,62 @@ fn reverse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(o))
 }
 
+fn shift(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    if is_plain_array(&o)
+        && let Kind::Array(v) = &mut o.borrow_mut().kind
+    {
+        if v.is_empty() {
+            return Ok(Value::Undefined);
+        }
+        return Ok(match v.remove(0) {
+            Value::Empty => Value::Undefined,
+            x => x,
+        });
+    }
+    let len = vm.length_of(&o)?;
+    if len == 0 {
+        set_len(vm, &o, 0)?;
+        return Ok(Value::Undefined);
+    }
+    let first = get_i(vm, &o, 0)?;
+    for i in 1..len {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            set_i(vm, &o, i - 1, v)?;
+        } else {
+            del_i(vm, &o, i - 1)?;
+        }
+    }
+    del_i(vm, &o, len - 1)?;
+    set_len(vm, &o, len - 1)?;
+    Ok(first)
+}
+
+fn unshift(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    if is_plain_array(&o)
+        && let Kind::Array(v) = &mut o.borrow_mut().kind
+    {
+        let tail = std::mem::take(v);
+        v.extend(a.args.iter().cloned());
+        v.extend(tail);
+        return Ok(Value::Number(v.len() as f64));
+    }
+    let len = vm.length_of(&o)?;
+    let n = a.args.len();
+    for i in (0..len).rev() {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            set_i(vm, &o, i + n, v)?;
+        } else {
+            del_i(vm, &o, i + n)?;
+        }
+    }
+    for (k, v) in a.args.iter().enumerate() {
+        set_i(vm, &o, k, v.clone())?;
+    }
+    set_len(vm, &o, len + n)?;
+    Ok(Value::Number((len + n) as f64))
+}
+
