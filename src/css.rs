@@ -875,3 +875,43 @@ impl Parser<'_> {
 
 // --------------------------------------------------------------- @supports
 
+/// Propriedades que o motor entende (para avaliar `@supports`).
+const SUPPORTED_PROPERTIES: &[&str] = &[
+    "color", "background", "background-color", "margin", "margin-top", "margin-right", "margin-bottom",
+    "margin-left", "margin-block", "margin-inline", "padding", "padding-top", "padding-right",
+    "padding-bottom", "padding-left", "padding-block", "padding-inline", "border", "border-top",
+    "border-right", "border-bottom", "border-left", "border-width", "border-style", "border-color",
+    "width", "height", "min-width", "min-height", "max-width", "font", "font-size", "font-weight",
+    "font-style", "font-family", "line-height", "text-align", "text-decoration", "text-decoration-line",
+    "text-transform", "white-space", "visibility", "opacity", "z-index", "top", "left", "right", "bottom",
+    "inset", "position", "display", "flex", "flex-direction", "flex-wrap", "flex-flow", "flex-grow",
+    "flex-shrink", "flex-basis", "justify-content", "align-items", "align-self", "gap", "row-gap",
+    "column-gap", "order", "overflow", "overflow-x", "overflow-y", "box-sizing", "list-style",
+    "list-style-type",
+];
+
+fn supports_declaration(name: &str, value: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    let value = value.trim().to_ascii_lowercase();
+    if name.starts_with("--") {
+        return true;
+    }
+    // funções de valor que ainda não existem
+    const UNSUPPORTED_FUNCS: &[&str] = &[
+        "min(", "max(", "clamp(", "color-mix(", "env(", "lab(", "lch(", "oklab(", "oklch(", "attr(",
+        "anchor(", "round(",
+    ];
+    if UNSUPPORTED_FUNCS.iter().any(|f| value.contains(f)) {
+        return false;
+    }
+    match name.as_str() {
+        "display" => matches!(
+            value.split_whitespace().next().unwrap_or(""),
+            "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex" | "list-item" | "contents"
+                | "flow-root" | "table" | "table-row" | "table-cell"
+        ),
+        "position" => matches!(value.as_str(), "static" | "relative" | "absolute" | "fixed"),
+        _ => SUPPORTED_PROPERTIES.contains(&name.as_str()),
+    }
+}
+
