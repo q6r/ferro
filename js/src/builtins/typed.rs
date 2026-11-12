@@ -447,3 +447,70 @@ fn copy_within(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(a.this.clone())
 }
 
+fn iterate_cb(vm: &mut Vm, a: &CallArgs, mut f: impl FnMut(&mut Vm, usize, Value, Value) -> Result<bool, Value>) -> Result<(), Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let cb = callback(vm, a)?;
+    for i in 0..len {
+        let v = elem(&o, i);
+        let r = vm.call(&cb, a.arg(1), vec![v.clone(), Value::Number(i as f64), a.this.clone()])?;
+        if !f(vm, i, v, r)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn every(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut ok = true;
+    iterate_cb(vm, a, |_, _, _, r| {
+        if !truthy(&r) {
+            ok = false;
+        }
+        Ok(ok)
+    })?;
+    Ok(Value::Bool(ok))
+}
+
+fn some(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut found = false;
+    iterate_cb(vm, a, |_, _, _, r| {
+        if truthy(&r) {
+            found = true;
+        }
+        Ok(!found)
+    })?;
+    Ok(Value::Bool(found))
+}
+
+fn for_each(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    iterate_cb(vm, a, |_, _, _, _| Ok(true))?;
+    Ok(Value::Undefined)
+}
+
+fn find_generic(vm: &mut Vm, a: &CallArgs, rev: bool, want_index: bool) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let cb = callback(vm, a)?;
+    for k in 0..len {
+        let i = if rev { len - 1 - k } else { k };
+        let v = elem(&o, i);
+        let r = vm.call(&cb, a.arg(1), vec![v.clone(), Value::Number(i as f64), a.this.clone()])?;
+        if truthy(&r) {
+            return Ok(if want_index { Value::Number(i as f64) } else { v });
+        }
+    }
+    Ok(if want_index { Value::Number(-1.0) } else { Value::Undefined })
+}
+
+fn find(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    find_generic(vm, a, false, false)
+}
+fn find_index(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    find_generic(vm, a, false, true)
+}
+fn find_last(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    find_generic(vm, a, true, false)
+}
+fn find_last_index(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    find_generic(vm, a, true, true)
+}
+
