@@ -1822,3 +1822,51 @@ class MediaSource extends EventTarget {
   setLiveSeekableRange() {}
   clearLiveSeekableRange() {}
 }
+defineHandlers(MediaSource.prototype, ['sourceopen', 'sourceended', 'sourceclose']);
+hidden(G, 'MediaSource', MediaSource);
+hidden(G, 'WebKitMediaSource', MediaSource);
+
+const MEDIA_EL = new WeakMap();
+const mediaOf = (el) => {
+  let s = MEDIA_EL.get(el);
+  if (!s) MEDIA_EL.set(el, s = { ms: null, rate: 1, defaultRate: 1, volume: 1, muted: el.hasAttribute('muted'), error: null, network: 0, frames: 0 });
+  return s;
+};
+const stateOf = (el) => N.mediaState(el) || [0, 0, true, false, false, 0, 0, NaN];
+function fireMedia(el, types) {
+  for (const t of types) later(() => fireTrusted(el, new Event(t)));
+}
+/// Liga o elemento a uma fonte (blob: de um MediaSource) ou recusa o endereço.
+function loadMedia(el, url) {
+  const s = mediaOf(el);
+  if (s.ms) {
+    const old = MS.get(s.ms);
+    old.readyState = 'closed';
+    old.el = null;
+    const prev = s.ms;
+    later(() => fireTrusted(prev, new Event('sourceclose')));
+    N.mediaDetach(el);
+    s.ms = null;
+  }
+  s.error = null;
+  if (!url) { s.network = 0; return; }
+  const id = String(url).startsWith('blob:') ? String(url).split('/').pop() : null;
+  const src = id ? BLOBS.get(id) : null;
+  if (src instanceof MediaSource) {
+    s.ms = src;
+    s.network = 2;
+    const m = MS.get(src);
+    m.el = el;
+    N.mediaAttach(el, m.id);
+    later(() => {
+      fireTrusted(el, new Event('loadstart'));
+      m.readyState = 'open';
+      fireTrusted(src, new Event('sourceopen'));
+    });
+    return;
+  }
+  // arquivo comum: o Ferro baixa inteiro e toca (MP4 com H.264/AV1/AAC)
+  s.network = 2;
+  N.mediaLoadUrl(el, resolveURL(String(url)));
+  later(() => fireTrusted(el, new Event('loadstart')));
+}
