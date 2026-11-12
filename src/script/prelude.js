@@ -2180,3 +2180,66 @@ const SELECTION = {
   selectAllChildren() {}, toString() { return ''; }, containsNode() { return false; }, extend() {}, modify() {},
 };
 
+// Range: o bastante para createContextualFragment e medidas simples
+class Range {
+  constructor() { this.startContainer = document; this.endContainer = document; this.startOffset = 0; this.endOffset = 0; this.collapsed = true; }
+  setStart(n, o) { this.startContainer = n; this.startOffset = o; }
+  setEnd(n, o) { this.endContainer = n; this.endOffset = o; this.collapsed = false; }
+  setStartBefore(n) { this.startContainer = n; } setStartAfter(n) { this.startContainer = n; }
+  setEndBefore(n) { this.endContainer = n; } setEndAfter(n) { this.endContainer = n; }
+  selectNode(n) { this.startContainer = this.endContainer = n; }
+  selectNodeContents(n) { this.startContainer = this.endContainer = n; this.endOffset = n.childNodes.length; }
+  collapse() { this.collapsed = true; }
+  get commonAncestorContainer() { return this.startContainer; }
+  cloneRange() { return Object.assign(new Range(), this); }
+  detach() {}
+  createContextualFragment(html) {
+    const t = document.createElement('template');
+    t.innerHTML = html;
+    return t.content;
+  }
+  getBoundingClientRect() {
+    const n = this.startContainer;
+    return n && n.getBoundingClientRect ? n.getBoundingClientRect() : new DOMRect();
+  }
+  getClientRects() { return [this.getBoundingClientRect()]; }
+  toString() { return this.startContainer ? this.startContainer.textContent || '' : ''; }
+  deleteContents() {} insertNode(n) { this.startContainer.appendChild(n); }
+  surroundContents(n) { this.startContainer.appendChild(n); }
+  extractContents() { return document.createDocumentFragment(); }
+  cloneContents() { return document.createDocumentFragment(); }
+  compareBoundaryPoints() { return 0; }
+  intersectsNode() { return false; }
+}
+Range.START_TO_START = 0; Range.START_TO_END = 1; Range.END_TO_END = 2; Range.END_TO_START = 3;
+hidden(G, 'Range', Range);
+hidden(G, 'StaticRange', Range);
+
+// TreeWalker / NodeIterator
+const NodeFilter = {
+  FILTER_ACCEPT: 1, FILTER_REJECT: 2, FILTER_SKIP: 3, SHOW_ALL: 0xFFFFFFFF, SHOW_ELEMENT: 1, SHOW_ATTRIBUTE: 2,
+  SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, SHOW_PROCESSING_INSTRUCTION: 64, SHOW_COMMENT: 128, SHOW_DOCUMENT: 256,
+  SHOW_DOCUMENT_TYPE: 512, SHOW_DOCUMENT_FRAGMENT: 1024,
+};
+hidden(G, 'NodeFilter', NodeFilter);
+function acceptNode(w, n) {
+  if (!(w.whatToShow & (1 << (n.nodeType - 1)))) return 3;
+  const f = w.filter;
+  if (!f) return 1;
+  return typeof f === 'function' ? f(n) : f.acceptNode(n);
+}
+function nextInTree(n, root) {
+  if (n.firstChild) return n.firstChild;
+  while (n && n !== root) {
+    if (n.nextSibling) return n.nextSibling;
+    n = n.parentNode;
+  }
+  return null;
+}
+function prevInTree(n, root) {
+  if (n === root) return null;
+  let p = n.previousSibling;
+  if (!p) return n.parentNode;
+  while (p.lastChild) p = p.lastChild;
+  return p;
+}
