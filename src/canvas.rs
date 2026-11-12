@@ -236,3 +236,63 @@ pub fn decode_path(nums: &[f64]) -> Vec<Cmd> {
 
 type Poly = (Vec<(f32, f32)>, bool);
 
+/// Achata as curvas em polilinhas. Devolve (pontos, fechado).
+fn flatten(path: &[Cmd]) -> Vec<Poly> {
+    let mut out: Vec<Poly> = Vec::new();
+    let mut cur: Vec<(f32, f32)> = Vec::new();
+    let mut start = (0.0, 0.0);
+    let mut last = (0.0, 0.0);
+    for c in path {
+        match *c {
+            Cmd::Move(x, y) => {
+                if !cur.is_empty() {
+                    out.push((std::mem::take(&mut cur), false));
+                }
+                last = (x, y);
+                start = last;
+                cur.push(last);
+            }
+            Cmd::Line(x, y) => {
+                if cur.is_empty() {
+                    cur.push(last);
+                }
+                last = (x, y);
+                cur.push(last);
+            }
+            Cmd::Cubic(c1x, c1y, c2x, c2y, x, y) => {
+                if cur.is_empty() {
+                    cur.push(last);
+                }
+                let (p0, p1, p2, p3) = (last, (c1x, c1y), (c2x, c2y), (x, y));
+                let d = |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+                let len = d(p0, p1) + d(p1, p2) + d(p2, p3);
+                let n = (len / 2.0).ceil().clamp(1.0, 128.0) as usize;
+                for i in 1..=n {
+                    let t = i as f32 / n as f32;
+                    let mt = 1.0 - t;
+                    let (a, b, c, e) = (mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t);
+                    cur.push((
+                        a * p0.0 + b * p1.0 + c * p2.0 + e * p3.0,
+                        a * p0.1 + b * p1.1 + c * p2.1 + e * p3.1,
+                    ));
+                }
+                last = (x, y);
+            }
+            Cmd::Close => {
+                if !cur.is_empty() {
+                    out.push((std::mem::take(&mut cur), true));
+                }
+                last = start;
+                cur.push(last);
+            }
+        }
+    }
+    if cur.len() > 1 {
+        out.push((cur, false));
+    }
+    out
+}
+
+/// Cobertura (0..1) de um conjunto de polígonos num retângulo `bx..bx+bw`,
+/// `by..by+bh`: 4 sub-linhas por pixel, cobertura horizontal exata.
+fn coverage(polys: &[Poly], evenodd: bool, bx: i32, by: i32, bw: usize, bh: usize) -> Vec<f32> {
