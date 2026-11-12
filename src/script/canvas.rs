@@ -501,3 +501,64 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+/// `bitmapNew(fonte)`: guarda uma cópia da imagem (createImageBitmap). Devolve
+/// [id, largura, altura] ou null.
+fn bitmap_new(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let img = match source_image(vm, &a.arg(0))? {
+        Some(i) => Some(i),
+        None => {
+            // ImageData: { width, height, data }
+            let v = a.arg(0);
+            if matches!(v, Value::Object(_)) {
+                let wv = get(vm, &v, "width")?;
+                let w = vm.to_number(&wv)? as u32;
+                let hv = get(vm, &v, "height")?;
+                let h = vm.to_number(&hv)? as u32;
+                let d = get(vm, &v, "data")?;
+                super::web::bytes_of(&d)
+                    .filter(|b| b.len() == (w * h * 4) as usize)
+                    .map(|rgba| Arc::new(ImageData { width: w, height: h, rgba }))
+            } else {
+                None
+            }
+        }
+    };
+    let Some(img) = img else { return Ok(Value::Null) };
+    let (w, h) = (img.width, img.height);
+    let id = write(vm, |hb| {
+        hb.bitmap_seq += 1;
+        let id = hb.bitmap_seq;
+        hb.bitmaps.insert(id, img);
+        id
+    });
+    Ok(vm.array_value(vec![Value::Number(id as f64), Value::Number(w as f64), Value::Number(h as f64)]))
+}
+
+/// `bitmapDecode(bytes)`: decodifica PNG/JPEG/GIF/WebP (createImageBitmap de um Blob).
+fn bitmap_decode(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let bytes = super::web::bytes_of(&a.arg(0)).unwrap_or_default();
+    let Some(img) = crate::engine::decode_image(&bytes) else { return Ok(Value::Null) };
+    let (w, h) = (img.width, img.height);
+    let id = write(vm, |hb| {
+        hb.bitmap_seq += 1;
+        let id = hb.bitmap_seq;
+        hb.bitmaps.insert(id, Arc::new(img));
+        id
+    });
+    Ok(vm.array_value(vec![Value::Number(id as f64), Value::Number(w as f64), Value::Number(h as f64)]))
+}
+
+/// `cvSvgPath(d)`: caminho SVG → Float64Array no formato do canvas.
+fn svg_path(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let d = text(vm, a, 0)?;
+    let nums = crate::svg::path_commands(&d);
+    let o = ferro_js::builtins::typed::new_typed(vm, TaKind::F64, nums.len(), None)?;
+    if let Kind::TypedArray(t) = &o.borrow().kind {
+        let mut data = t.data.borrow_mut();
+        for (i, v) in nums.iter().enumerate() {
+            data[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    Ok(Value::Object(o))
+}
+
