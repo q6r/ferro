@@ -1119,3 +1119,51 @@ impl Session {
         self.cursor_at(target)
     }
 
+    /// Ponteiro pedido pelo CSS para o elemento.
+    fn cursor_at(&self, target: Option<NodeId>) -> Cursor {
+        let hb = self.host.borrow();
+        let (Some(mut n), Some(info)) = (target, hb.layout.as_ref()) else { return Cursor::Auto };
+        let doc = &hb.page.doc;
+        for _ in 0..64 {
+            if let Some(Some(st)) = info.styles.nodes.get(n) {
+                return st.cursor;
+            }
+            match doc.flat_parent(n) {
+                Some(p) => n = p,
+                None => break,
+            }
+        }
+        Cursor::Auto
+    }
+
+    /// Tecla pressionada na página (`key` no formato do DOM: "a", "Enter"...).
+    pub fn key(&mut self, key: &str, text: Option<&str>, ctrl: bool, shift: bool, alt: bool, meta: bool) {
+        self.last_input = Some(Instant::now());
+        // teclas para o quadro com o foco
+        let ff = self.host.borrow().focused_frame;
+        if let Some(n) = ff {
+            let c = self.host.borrow_mut().frames.remove(&n);
+            if let Some(mut c) = c {
+                c.session.key(key, text, ctrl, shift, alt, meta);
+                c.stale = true;
+                self.host.borrow_mut().frames.insert(n, c);
+                return;
+            }
+        }
+        if key == "Tab" {
+            self.host.borrow_mut().keyboard_focus = true;
+        }
+        let text = text.map_or(Value::Null, Value::str);
+        self.hook(
+            "key",
+            vec![
+                Value::str(key),
+                text,
+                Value::Bool(ctrl),
+                Value::Bool(shift),
+                Value::Bool(alt),
+                Value::Bool(meta),
+            ],
+        );
+    }
+
