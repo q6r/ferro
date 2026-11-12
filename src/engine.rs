@@ -330,3 +330,48 @@ fn fetch_stylesheets(doc: &Document, base: &Url, net: &Net) -> (Vec<StyleSource>
     (list, texts)
 }
 
+/// Regras do modo quirks (HTML, seção "Rendering"): tabelas não herdam
+/// alinhamento nem fonte de quem está em volta.
+const QUIRKS_STYLESHEET: &str = "table { font-weight: normal; font-style: normal; font-size: medium; \
+     line-height: normal; white-space: normal; text-align: left; }";
+
+/// Sem <!DOCTYPE html>, o documento é renderizado em modo quirks.
+pub fn is_quirks(doc: &Document) -> bool {
+    !doc.node(Document::ROOT).children.iter().any(|&c| match &doc.node(c).data {
+        crate::dom::NodeData::Doctype(d) => d.to_ascii_lowercase().starts_with("html"),
+        _ => false,
+    })
+}
+
+thread_local! {
+    /// Folhas já analisadas (texto + tamanho da janela, por causa do @media).
+    static SHEETS: std::cell::RefCell<HashMap<(u64, usize, u32, u32), std::rc::Rc<css::Stylesheet>>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Analisa a folha ou devolve a que já foi analisada (os scripts provocam
+/// muitos redesenhos, e reanalisar todo o CSS a cada um custa caro).
+fn cached_sheet(text: &str, media: &MediaContext) -> std::rc::Rc<css::Stylesheet> {
+    use std::hash::Hasher;
+    let mut h = ferro_js::fxhash::FxHasher::default();
+    h.write(text.as_bytes());
+    let key = (h.finish(), text.len(), media.width.to_bits(), media.height.to_bits());
+    SHEETS.with(|c| {
+        if let Some(s) = c.borrow().get(&key) {
+            return s.clone();
+        }
+        let s = std::rc::Rc::new(css::parse_stylesheet(text, media));
+        let mut c = c.borrow_mut();
+        if c.len() > 200 {
+            c.clear();
+        }
+        c.insert(key, s.clone());
+        s
+    })
+}
+
+/// Estilo + layout para uma largura de janela.
+pub fn render(loaded: &Loaded, images: &Images, fonts: &Fonts, width: f32, height: f32) -> Page {
+    render_styled(loaded, images, fonts, width, height).0
+}
+
