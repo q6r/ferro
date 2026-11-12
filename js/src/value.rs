@@ -718,3 +718,51 @@ impl TypedArrayData {
     }
 }
 
+pub enum Kind {
+    Ordinary,
+    Array(Vec<Value>),
+    Function(Func),
+    Error,
+    Boolean(bool),
+    Number(f64),
+    String(JsStr),
+    Symbol(Sym),
+    Map(Collection),
+    Set(Collection),
+    /// WeakMap / WeakSet: as chaves não ficam presas.
+    WeakMap(WeakColl),
+    WeakSet(WeakColl),
+    Date(f64),
+    Arguments,
+    ArrayIter { target: Value, index: usize, kind: IterKind },
+    MapIter { target: ObjRef, index: usize, kind: IterKind },
+    StringIter { s: JsStr, pos: usize },
+    ForIn { keys: Vec<JsStr>, index: usize, target: Option<ObjRef> },
+    /// Registro de iterador em uso (for-of, desestruturação, spread).
+    IterRecord { iter: Value, next: Value, done: bool, sync_wrapped: bool },
+    RegExp { source: JsStr, flags: JsStr, prog: Rc<crate::regex::Program> },
+    /// Iterador de String.prototype.matchAll.
+    RegExpStringIter { rx: ObjRef, s: JsStr, global: bool, unicode: bool, done: bool },
+    /// Alvo fraco (símbolos ficam fortes: não são coletados).
+    WeakRef(WeakKey),
+    Generator(Box<crate::builtins::generator::GenData>),
+    Promise(Box<crate::builtins::promise::PromiseData>),
+    /// Dados das funções resolve/reject de uma promessa.
+    PromiseResolver { promise: ObjRef, done: Rc<std::cell::Cell<bool>> },
+    /// Função async pausada num await.
+    Async(Box<crate::builtins::promise::AsyncData>),
+    /// Objeto embrulhando um BigInt (`Object(1n)`).
+    BigIntBox(Rc<crate::bigint::BigInt>),
+    ArrayBuffer(Bytes),
+    /// Objeto do hospedeiro (o navegador): `class` e `id` têm o significado
+    /// que ele der (ex.: nó do DOM com o NodeId).
+    Host { class: u32, id: usize },
+    /// Objetos do Intl (NumberFormat, DateTimeFormat...).
+    Intl(Box<crate::builtins::intl::IntlObj>),
+    /// Proxy (alvo e handler; None depois de revogado).
+    Proxy { target: Option<ObjRef>, handler: Option<ObjRef> },
+    TypedArray(Box<TypedArrayData>),
+    DataView(Box<TypedArrayData>),
+    AsyncGenerator(Box<crate::builtins::async_generator::AsyncGenData>),
+}
+
