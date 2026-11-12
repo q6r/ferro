@@ -87,3 +87,71 @@ mod av1 {
 
     const EAGAIN: i32 = -11;
 
+    impl Av1 {
+        pub fn new() -> Option<Av1> {
+            unsafe {
+                let mut s = std::mem::MaybeUninit::<Dav1dSettings>::zeroed();
+                d::dav1d_default_settings(NonNull::new(s.as_mut_ptr())?);
+                let mut s = s.assume_init();
+                s.n_threads = std::thread::available_parallelism().map_or(2, |n| n.get().min(8)) as i32;
+                s.max_frame_delay = 1;
+                let mut ctx: Option<Dav1dContext> = None;
+                let r = d::dav1d_open(NonNull::new(&mut ctx), NonNull::new(&mut s));
+                if r.0 != 0 {
+                    return None;
+                }
+                Some(Av1 { ctx })
+            }
+        }
+
+        fn pictures(&mut self, out: &mut Vec<Frame>) {
+            unsafe {
+                loop {
+                    let mut pic: Dav1dPicture = Default::default();
+                    let r = d::dav1d_get_picture(self.ctx.clone(), NonNull::new(&mut pic));
+                    if r.0 != 0 {
+                        break;
+                    }
+                    if let Some(f) = convert(&pic) {
+                        out.push(f);
+                    }
+                    d::dav1d_picture_unref(NonNull::new(&mut pic));
+                }
+            }
+        }
+
+        pub fn decode(&mut self, s: &Sample) -> Result<Vec<Frame>, String> {
+            let mut out = Vec::new();
+            unsafe {
+                let mut data: Dav1dData = Default::default();
+                let ptr = d::dav1d_data_create(NonNull::new(&mut data), s.data.len());
+                if ptr.is_null() {
+                    return Err("av1: sem memória".into());
+                }
+                std::ptr::copy_nonoverlapping(s.data.as_ptr(), ptr, s.data.len());
+                data.m.timestamp = (s.pts * 1_000_000.0).round() as i64;
+                loop {
+                    let r = d::dav1d_send_data(self.ctx.clone(), NonNull::new(&mut data));
+                    if r.0 == EAGAIN {
+                        // decodificador cheio: tira quadros e tenta de novo
+                        self.pictures(&mut out);
+                        continue;
+                    }
+                    if r.0 != 0 {
+                        d::dav1d_data_unref(NonNull::new(&mut data));
+                        return Err(format!("av1: erro {}", r.0));
+                    }
+                    if data.sz == 0 {
+                        break;
+                    }
+                }
+            }
+            self.pictures(&mut out);
+            Ok(out)
+        }
+
+        pub fn reset(&mut self) {
+            unsafe { d::dav1d_flush(self.ctx.clone().unwrap()) }
+        }
+    }
+
