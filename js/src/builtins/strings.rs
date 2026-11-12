@@ -330,3 +330,95 @@ fn repeat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::String(JsStr::from_units(s.units().repeat(n as usize))))
 }
 
+/// GetSubstitution: expande `$&`, `$1`, `$<nome>` etc. na substituição.
+pub fn get_substitution(
+    vm: &mut Vm,
+    matched: &JsStr,
+    s: &JsStr,
+    pos: usize,
+    captures: &[Value],
+    groups: &Value,
+    replacement: &JsStr,
+) -> Result<JsStr, Value> {
+    let r = replacement.units();
+    let mut out: Vec<u16> = Vec::with_capacity(r.len());
+    let m = captures.len();
+    let mut i = 0;
+    while i < r.len() {
+        let c = r[i];
+        if c != b'$' as u16 || i + 1 >= r.len() {
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        let n = r[i + 1];
+        match n {
+            0x24 => {
+                out.push(0x24);
+                i += 2;
+            }
+            0x26 => {
+                out.extend_from_slice(matched.units());
+                i += 2;
+            }
+            0x60 => {
+                out.extend_from_slice(&s.units()[..pos]);
+                i += 2;
+            }
+            0x27 => {
+                let end = (pos + matched.len()).min(s.len());
+                out.extend_from_slice(&s.units()[end..]);
+                i += 2;
+            }
+            0x30..=0x39 => {
+                let d1 = (n - 0x30) as usize;
+                let two = if i + 2 < r.len() && (0x30..=0x39).contains(&r[i + 2]) {
+                    Some(d1 * 10 + (r[i + 2] - 0x30) as usize)
+                } else {
+                    None
+                };
+                let (idx, adv) = match two {
+                    Some(t) if t >= 1 && t <= m => (t, 3),
+                    _ => (d1, 2),
+                };
+                if idx >= 1 && idx <= m {
+                    if let Value::String(cap) = &captures[idx - 1] {
+                        out.extend_from_slice(cap.units());
+                    }
+                    i += adv;
+                } else {
+                    out.push(c);
+                    i += 1;
+                }
+            }
+            0x3C => {
+                if groups.is_undefined() {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                let close = r[i + 2..].iter().position(|&x| x == 0x3E);
+                match close {
+                    Some(p) => {
+                        let name = JsStr::from_slice(&r[i + 2..i + 2 + p]);
+                        let v = vm.get(groups, &PropKey::Str(name))?;
+                        if !v.is_undefined() {
+                            out.extend_from_slice(vm.to_string(&v)?.units());
+                        }
+                        i += p + 3;
+                    }
+                    None => {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Ok(JsStr::from_units(out))
+}
+
