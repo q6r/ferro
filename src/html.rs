@@ -558,3 +558,56 @@ impl TreeBuilder {
         }
     }
 
+    fn start_tag(&mut self, name: String, attrs: Vec<(String, String)>, self_closing: bool) {
+        match name.as_str() {
+            "html" => {
+                self.ensure_html();
+                return;
+            }
+            "head" => {
+                if self.body.is_none() {
+                    self.ensure_head();
+                }
+                return;
+            }
+            "body" => {
+                if self.body.is_none() {
+                    self.ensure_body();
+                    if let Some(b) = self.body
+                        && let NodeData::Element(e) = &mut self.doc.nodes[b].data
+                    {
+                        e.attrs = attrs;
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
+
+        let is_void = VOID.contains(&name.as_str());
+        self.skip_newline = matches!(name.as_str(), "pre" | "listing" | "textarea");
+
+        // Conteúdo de <head> antes do <body> vai para o <head>.
+        if self.body.is_none() && HEAD_CONTENT.contains(&name.as_str()) {
+            self.ensure_head();
+            let head = self.head.unwrap();
+            let el = self.new_element(&name, attrs);
+            self.doc.append(head, el);
+            if !is_void && !self_closing {
+                self.stack.push(el);
+            }
+            return;
+        }
+
+        self.ensure_body();
+        self.close_implied(&name);
+
+        let el = self.new_element(&name, attrs);
+        let parent = self.current();
+        self.doc.append(parent, el);
+        let foreign_self_closing = self_closing && (self.in_foreign() || name == "svg" || name == "math");
+        if !is_void && !foreign_self_closing {
+            self.stack.push(el);
+        }
+    }
+
