@@ -1590,3 +1590,81 @@ for (const k of ['shadowBlur', 'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 
     get() { return this._s[k]; }, set(v) { this._s[k] = typeof this._s[k] === 'number' ? Number(v) : String(v); }, configurable: true,
   });
 }
+hidden(G, 'CanvasRenderingContext2D', CanvasRenderingContext2D);
+
+// ponto dentro do caminho (polígono aproximado, curvas achatadas)
+function pointInPath(d, x, y, evenodd) {
+  const pts = [];
+  let cur = [], start = null, last = null;
+  const flush = () => { if (cur.length > 2) pts.push(cur); cur = []; };
+  for (let i = 0; i < d.length;) {
+    const op = d[i];
+    if (op === 0) { flush(); last = start = [d[i + 1], d[i + 2]]; cur.push(last); i += 3; }
+    else if (op === 1) { last = [d[i + 1], d[i + 2]]; cur.push(last); i += 3; }
+    else if (op === 2) {
+      const [x0, y0] = last || [d[i + 1], d[i + 2]];
+      for (let k = 1; k <= 8; k++) {
+        const t = k / 8, u = 1 - t;
+        cur.push([u * u * u * x0 + 3 * u * u * t * d[i + 1] + 3 * u * t * t * d[i + 3] + t * t * t * d[i + 5],
+          u * u * u * y0 + 3 * u * u * t * d[i + 2] + 3 * u * t * t * d[i + 4] + t * t * t * d[i + 6]]);
+      }
+      last = [d[i + 5], d[i + 6]]; i += 7;
+    } else { flush(); last = start; if (start) cur.push(start); i += 1; }
+  }
+  flush();
+  let wind = 0;
+  for (const poly of pts) {
+    for (let i = 0; i < poly.length; i++) {
+      const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % poly.length];
+      if ((ay <= y) !== (by <= y)) {
+        const xi = ax + (y - ay) * (bx - ax) / (by - ay);
+        if (xi > x) wind += by > ay ? 1 : -1;
+      }
+    }
+  }
+  return evenodd ? wind % 2 !== 0 : wind !== 0;
+}
+
+const CANVAS = HTMLCanvasElement.prototype;
+for (const [k, def] of [['width', 300], ['height', 150]]) {
+  Object.defineProperty(CANVAS, k, {
+    get() { const v = parseInt(this.getAttribute(k), 10); return Number.isFinite(v) && v >= 0 ? v : def; },
+    set(v) {
+      v = Math.max(0, Math.trunc(Number(v)) || 0);
+      this.setAttribute(k, String(v));
+      const c = CTX2D.get(this);
+      if (c) c._resetState();
+    },
+    configurable: true, enumerable: true,
+  });
+}
+methods(CANVAS, {
+  getContext(type) {
+    type = String(type);
+    if (type !== '2d') return null;
+    let c = CTX2D.get(this);
+    if (!c) {
+      c = new CanvasRenderingContext2D(this);
+      CTX2D.set(this, c);
+      N.cvSize(this, this.width, this.height);
+    }
+    return c;
+  },
+  toDataURL() {
+    if (!CTX2D.get(this)) this.getContext('2d');
+    return N.cvDataURL(this);
+  },
+  toBlob(cb, type) {
+    const url = this.toDataURL(type);
+    setTimeout(() => {
+      if (url === 'data:,') return cb(null);
+      const bin = atob(url.slice(url.indexOf(',') + 1));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      cb(new Blob([bytes], { type: 'image/png' }));
+    }, 0);
+  },
+  captureStream() { return null; },
+  transferControlToOffscreen() { throw new DOMException('transferControlToOffscreen ainda não é suportado.', 'NotSupportedError'); },
+});
+
