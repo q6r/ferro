@@ -2001,3 +2001,73 @@ impl App {
 }
 
 impl ApplicationHandler<UserEvent> for App {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        if let Some(c) = &self.capture {
+            if !self.tabs.is_empty() {
+                return;
+            }
+            if let Some(id) = &c.theme {
+                self.theme = theme::by_id(id);
+            }
+            if let Some(l) = &c.layout {
+                self.layout = LayoutMode::from_id(l);
+            }
+            let typed = c.typed.clone();
+            let extra = c.extra_tabs.clone();
+            let initial = self.initial.take();
+            for u in extra {
+                self.new_tab(Some(u), true);
+            }
+            self.new_tab(initial, true);
+            if let Some(text) = typed {
+                self.open_palette(false);
+                if !text.is_empty() {
+                    self.omni.insert(&text);
+                    self.palette_edited = true;
+                    self.refresh_suggestions();
+                }
+            }
+            if !self.tabs.iter().any(|t| t.loading) {
+                self.capture_now(el);
+            }
+            return;
+        }
+        if self.window.is_some() {
+            return;
+        }
+        let attrs = Window::default_attributes()
+            .with_title("Ferro")
+            .with_inner_size(LogicalSize::new(1280.0, 860.0))
+            .with_min_inner_size(LogicalSize::new(640.0, 420.0));
+        let window = match el.create_window(attrs) {
+            Ok(w) => Rc::new(w),
+            Err(e) => {
+                eprintln!("[ferro] não foi possível abrir a janela: {e}");
+                el.exit();
+                return;
+            }
+        };
+        self.scale = window.scale_factor() as f32;
+        let context = match softbuffer::Context::new(window.clone()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[ferro] softbuffer: {e}");
+                el.exit();
+                return;
+            }
+        };
+        let surface = match softbuffer::Surface::new(&context, window.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[ferro] softbuffer: {e}");
+                el.exit();
+                return;
+            }
+        };
+        self.window = Some(window);
+        self.context = Some(context);
+        self.surface = Some(surface);
+        let initial = self.initial.take();
+        self.new_tab(initial, true);
+    }
+
