@@ -136,3 +136,79 @@ struct ColorTable {
 }
 
 impl ColorTable {
+    fn parse(data: &[u8]) -> Option<ColorTable> {
+        let u16_at = |o: usize| -> Option<u16> { Some(u16::from_be_bytes([*data.get(o)?, *data.get(o + 1)?])) };
+        let u32_at = |o: usize| -> Option<u32> {
+            Some(u32::from_be_bytes([*data.get(o)?, *data.get(o + 1)?, *data.get(o + 2)?, *data.get(o + 3)?]))
+        };
+        // diretório de tabelas
+        let n = u16_at(4)? as usize;
+        let mut colr = None;
+        let mut cpal = None;
+        for i in 0..n {
+            let rec = 12 + i * 16;
+            let tag = data.get(rec..rec + 4)?;
+            let off = u32_at(rec + 8)? as usize;
+            match tag {
+                b"COLR" => colr = Some(off),
+                b"CPAL" => cpal = Some(off),
+                _ => {}
+            }
+        }
+        let (c, p) = (colr?, cpal?);
+        let nbase = u16_at(c + 2)? as usize;
+        let base_off = c + u32_at(c + 4)? as usize;
+        let layer_off = c + u32_at(c + 8)? as usize;
+        let nlayers = u16_at(c + 12)? as usize;
+        let mut base = HashMap::with_capacity(nbase);
+        for i in 0..nbase {
+            let r = base_off + i * 6;
+            base.insert(u16_at(r)?, (u16_at(r + 2)?, u16_at(r + 4)?));
+        }
+        let mut layers = Vec::with_capacity(nlayers);
+        for i in 0..nlayers {
+            let r = layer_off + i * 4;
+            layers.push((u16_at(r)?, u16_at(r + 2)?));
+        }
+        let entries = u16_at(p + 2)? as usize;
+        let records = p + u32_at(p + 8)? as usize;
+        let first = u16_at(p + 12)? as usize;
+        let mut palette = Vec::with_capacity(entries);
+        for i in 0..entries {
+            let r = records + (first + i) * 4;
+            // BGRA no arquivo
+            palette.push([*data.get(r + 2)?, *data.get(r + 1)?, *data.get(r)?, *data.get(r + 3)?]);
+        }
+        Some(ColorTable { base, layers, palette, data: data.to_vec() })
+    }
+}
+
+/// Um emoji colorido rasterizado: RGBA não pré-multiplicado, com a mesma
+/// posição de um glifo comum (`metrics`).
+pub struct ColorGlyph {
+    pub metrics: Metrics,
+    pub rgba: Vec<u8>,
+}
+
+pub struct Fonts {
+    faces: Vec<Face>,
+    glyphs: RefCell<HashMap<(FontId, char, u32), Glyph>>,
+    advances: RefCell<HashMap<(FontId, char, u32), f32>>,
+    color_glyphs: RefCell<HashMap<(FontId, char, u32), Option<std::rc::Rc<ColorGlyph>>>>,
+}
+
+#[derive(Clone)]
+pub struct Glyph {
+    pub metrics: Metrics,
+    pub coverage: std::rc::Rc<Vec<u8>>,
+}
+
+/// Métricas verticais de uma fonte num tamanho.
+#[derive(Clone, Copy, Debug)]
+pub struct LineMetrics {
+    pub ascent: f32,
+    pub descent: f32,
+    /// Altura de linha "normal" (ascent + descent + line gap).
+    pub normal: f32,
+}
+
