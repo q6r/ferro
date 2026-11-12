@@ -41,3 +41,63 @@ impl Drop for StrData {
     }
 }
 
+impl JsStr {
+    fn from_box(b: Box<[u16]>) -> JsStr {
+        let len = b.len();
+        let flat = OnceCell::new();
+        let _ = flat.set(b);
+        JsStr(Rc::new(StrData {
+            hash: std::cell::Cell::new(0),
+            len,
+            flat,
+            parts: RefCell::new(None),
+        }))
+    }
+
+    pub fn new(s: &str) -> JsStr {
+        JsStr::from_box(s.encode_utf16().collect::<Vec<u16>>().into_boxed_slice())
+    }
+
+    pub fn from_units(v: Vec<u16>) -> JsStr {
+        JsStr::from_box(v.into_boxed_slice())
+    }
+
+    pub fn from_slice(v: &[u16]) -> JsStr {
+        JsStr::from_box(v.into())
+    }
+
+    pub fn empty() -> JsStr {
+        JsStr::from_box(Box::new([]))
+    }
+
+    /// O conteúdo (achata a corda na primeira vez).
+    pub fn units(&self) -> &[u16] {
+        self.0.flat.get_or_init(|| self.flatten())
+    }
+
+    fn flatten(&self) -> Box<[u16]> {
+        let mut out: Vec<u16> = Vec::with_capacity(self.0.len);
+        let root = self.0.parts.borrow().clone();
+        let mut stack: Vec<JsStr> = Vec::new();
+        if let Some((a, b)) = root {
+            stack.push(b);
+            stack.push(a);
+        }
+        while let Some(s) = stack.pop() {
+            if let Some(f) = s.0.flat.get() {
+                out.extend_from_slice(f);
+                continue;
+            }
+            let parts = s.0.parts.borrow().clone();
+            if let Some((a, b)) = parts {
+                stack.push(b);
+                stack.push(a);
+            }
+        }
+        // as metades não são mais necessárias
+        let old = self.0.parts.borrow_mut().take();
+        drop(stack);
+        drop(old);
+        out.into_boxed_slice()
+    }
+
