@@ -1386,3 +1386,207 @@ const CTX_DEFAULTS = () => ({
   textRendering: 'auto',
 });
 
+class CanvasRenderingContext2D {
+  constructor(el, canvas) {
+    this._el = el; this._canvas = canvas || el;
+    this._s = CTX_DEFAULTS(); this._stack = []; this._path = new PathBuilder();
+  }
+  get canvas() { return this._canvas; }
+  getContextAttributes() { return { alpha: true, colorSpace: 'srgb', desynchronized: false, willReadFrequently: false }; }
+  isContextLost() { return false; }
+  // estado
+  save() { const s = this._s; this._stack.push({ ...s, dash: s.dash.slice(), m: s.m.slice() }); N.cvSave(this._el); }
+  restore() { if (this._stack.length) { this._s = this._stack.pop(); N.cvRestore(this._el); } }
+  reset() {
+    this._s = CTX_DEFAULTS(); this._stack = []; this._path = new PathBuilder();
+    N.cvResetState(this._el); N.cvSize(this._el, this._canvas.width, this._canvas.height);
+  }
+  _resetState() { this._s = CTX_DEFAULTS(); this._stack = []; this._path = new PathBuilder(); N.cvResetState(this._el); }
+  // transformação
+  scale(x, y) { if (fin(x, y)) this._s.m = mmul(this._s.m, [x, 0, 0, y, 0, 0]); }
+  rotate(a) { if (fin(a)) { const c = Math.cos(a), s = Math.sin(a); this._s.m = mmul(this._s.m, [c, s, -s, c, 0, 0]); } }
+  translate(x, y) { if (fin(x, y)) this._s.m = mmul(this._s.m, [1, 0, 0, 1, x, y]); }
+  transform(a, b, c, d, e, f) { if (fin(a, b, c, d, e, f)) this._s.m = mmul(this._s.m, [a, b, c, d, e, f]); }
+  setTransform(a, b, c, d, e, f) {
+    if (a === undefined) return this.resetTransform();
+    if (typeof a === 'object') { const v = new DOMMatrix(a)._v(); if (fin(...v)) this._s.m = v; return; }
+    if (fin(a, b, c, d, e, f)) this._s.m = [a, b, c, d, e, f];
+  }
+  resetTransform() { this._s.m = IDENT(); }
+  getTransform() { return new DOMMatrix(this._s.m); }
+  // estilos
+  get fillStyle() { return this._s.fill; }
+  set fillStyle(v) { this._s.fill = this._style(v, this._s.fill); }
+  get strokeStyle() { return this._s.stroke; }
+  set strokeStyle(v) { this._s.stroke = this._style(v, this._s.stroke); }
+  _style(v, old) {
+    if (v instanceof CanvasGradient || v instanceof CanvasPattern) return v;
+    const c = N.cvColor(String(v));
+    return c === null ? old : c;
+  }
+  get globalAlpha() { return this._s.alpha; }
+  set globalAlpha(v) { v = Number(v); if (v >= 0 && v <= 1) this._s.alpha = v; }
+  get globalCompositeOperation() { return this._s.op; }
+  set globalCompositeOperation(v) {
+    const ok = ['source-over', 'source-in', 'source-out', 'source-atop', 'destination-over', 'destination-in', 'destination-out',
+      'destination-atop', 'lighter', 'copy', 'xor', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'color-dodge',
+      'color-burn', 'hard-light', 'soft-light', 'difference', 'exclusion', 'hue', 'saturation', 'color', 'luminosity'];
+    if (ok.includes(String(v))) this._s.op = String(v);
+  }
+  get lineWidth() { return this._s.lineWidth; }
+  set lineWidth(v) { v = Number(v); if (v > 0 && Number.isFinite(v)) this._s.lineWidth = v; }
+  get lineCap() { return this._s.lineCap; }
+  set lineCap(v) { if (['butt', 'round', 'square'].includes(v)) this._s.lineCap = v; }
+  get lineJoin() { return this._s.lineJoin; }
+  set lineJoin(v) { if (['round', 'bevel', 'miter'].includes(v)) this._s.lineJoin = v; }
+  get miterLimit() { return this._s.miterLimit; }
+  set miterLimit(v) { v = Number(v); if (v > 0 && Number.isFinite(v)) this._s.miterLimit = v; }
+  get lineDashOffset() { return this._s.dashOffset; }
+  set lineDashOffset(v) { v = Number(v); if (Number.isFinite(v)) this._s.dashOffset = v; }
+  setLineDash(list) {
+    const l = Array.from(list, Number);
+    if (l.some((x) => !(x >= 0) || !Number.isFinite(x))) return;
+    this._s.dash = l.length % 2 ? l.concat(l) : l;
+  }
+  getLineDash() { return this._s.dash.slice(); }
+  get font() { return this._s.font; }
+  set font(v) { if (String(v).trim()) this._s.font = String(v); }
+  get textAlign() { return this._s.textAlign; }
+  set textAlign(v) { if (['start', 'end', 'left', 'right', 'center'].includes(v)) this._s.textAlign = v; }
+  get textBaseline() { return this._s.textBaseline; }
+  set textBaseline(v) { if (['top', 'hanging', 'middle', 'alphabetic', 'ideographic', 'bottom'].includes(v)) this._s.textBaseline = v; }
+  get direction() { return this._s.direction; }
+  set direction(v) { if (['ltr', 'rtl', 'inherit'].includes(v)) this._s.direction = v; }
+  get imageSmoothingEnabled() { return this._s.smoothing; }
+  set imageSmoothingEnabled(v) { this._s.smoothing = !!v; }
+  get imageSmoothingQuality() { return this._s.smoothingQuality; }
+  set imageSmoothingQuality(v) { if (['low', 'medium', 'high'].includes(v)) this._s.smoothingQuality = v; }
+  // caminho atual
+  beginPath() { this._path = new PathBuilder(); }
+  closePath() { this._path.closePath(); }
+  moveTo(x, y) { this._path.moveTo(this._s.m, +x, +y); }
+  lineTo(x, y) { this._path.lineTo(this._s.m, +x, +y); }
+  bezierCurveTo(a, b, c, d, x, y) { this._path.bezierCurveTo(this._s.m, +a, +b, +c, +d, +x, +y); }
+  quadraticCurveTo(a, b, x, y) { this._path.quadraticCurveTo(this._s.m, +a, +b, +x, +y); }
+  rect(x, y, w, h) { this._path.rect(this._s.m, +x, +y, +w, +h); }
+  roundRect(x, y, w, h, r) { this._path.roundRect(this._s.m, +x, +y, +w, +h, r); }
+  arc(x, y, r, a0, a1, ccw = false) { this._path.ellipse(this._s.m, +x, +y, +r, +r, 0, +a0, +a1, !!ccw); }
+  ellipse(x, y, rx, ry, rot, a0, a1, ccw = false) { this._path.ellipse(this._s.m, +x, +y, +rx, +ry, +rot, +a0, +a1, !!ccw); }
+  arcTo(x1, y1, x2, y2, r) { this._path.arcTo(this._s.m, +x1, +y1, +x2, +y2, +r); }
+  // caminho para desenhar: o atual ou um Path2D (com a transformação de agora)
+  _pathOf(p) {
+    if (p instanceof Path2D) { const pb = new PathBuilder(); replayPath(pb, PATH_OPS.get(p), this._s.m); return pb.d; }
+    return this._path.d;
+  }
+  _args(a) {
+    let p = null, rule = 'nonzero';
+    if (a[0] instanceof Path2D) { p = a[0]; rule = a[1] ?? 'nonzero'; } else rule = a[0] ?? 'nonzero';
+    return [new Float64Array(this._pathOf(p)), rule === 'evenodd'];
+  }
+  fill(...a) { const [d, eo] = this._args(a); N.cvFill(this._el, d, eo, this._s.fill, this._s.m, this._s.alpha, this._s.op); }
+  _strokePath(d, style) {
+    const s = this._s, k = Math.sqrt(Math.abs(s.m[0] * s.m[3] - s.m[1] * s.m[2])) || 1;
+    N.cvStroke(this._el, d, style, s.m, s.alpha, s.op, s.lineWidth * k, s.lineCap, s.lineJoin, s.miterLimit,
+      s.dash.map((x) => x * k), s.dashOffset * k);
+  }
+  stroke(p) { this._strokePath(new Float64Array(this._pathOf(p instanceof Path2D ? p : null)), this._s.stroke); }
+  clip(...a) { const [d, eo] = this._args(a); N.cvClip(this._el, d, eo); }
+  isPointInPath(...a) {
+    let p = null;
+    if (a[0] instanceof Path2D) p = a.shift();
+    const [x, y, rule = 'nonzero'] = a;
+    const d = p ? (() => { const pb = new PathBuilder(); replayPath(pb, PATH_OPS.get(p), IDENT()); return pb.d; })() : this._path.d;
+    // os pontos do caminho atual já estão no espaço do dispositivo
+    return pointInPath(d, +x, +y, rule === 'evenodd');
+  }
+  isPointInStroke() { return false; }
+  // retângulos
+  _rectPath(x, y, w, h) { const pb = new PathBuilder(); pb.rect(this._s.m, +x, +y, +w, +h); return new Float64Array(pb.d); }
+  fillRect(x, y, w, h) { if (fin(+x, +y, +w, +h)) N.cvFill(this._el, this._rectPath(x, y, w, h), false, this._s.fill, this._s.m, this._s.alpha, this._s.op); }
+  strokeRect(x, y, w, h) { if (fin(+x, +y, +w, +h)) this._strokePath(this._rectPath(x, y, w, h), this._s.stroke); }
+  clearRect(x, y, w, h) {
+    [x, y, w, h] = [+x, +y, +w, +h];
+    if (!fin(x, y, w, h)) return;
+    const m = this._s.m;
+    if (m[1] === 0 && m[2] === 0) {
+      const x0 = m[0] * x + m[4], y0 = m[3] * y + m[5], x1 = m[0] * (x + w) + m[4], y1 = m[3] * (y + h) + m[5];
+      N.cvClear(this._el, Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+    } else N.cvFill(this._el, this._rectPath(x, y, w, h), false, '#000', m, 1, 'destination-out');
+  }
+  // texto
+  _align() {
+    const a = this._s.textAlign, rtl = this._s.direction === 'rtl';
+    return a === 'start' ? (rtl ? 'right' : 'left') : a === 'end' ? (rtl ? 'left' : 'right') : a;
+  }
+  fillText(t, x, y, maxW) {
+    if (!fin(+x, +y)) return;
+    N.cvText(this._el, String(t), +x, +y, this._s.font, this._align(), this._s.textBaseline, this._s.fill, this._s.m, this._s.alpha, this._s.op, maxW === undefined ? Infinity : +maxW);
+  }
+  strokeText(t, x, y, maxW) {
+    if (!fin(+x, +y)) return;
+    N.cvText(this._el, String(t), +x, +y, this._s.font, this._align(), this._s.textBaseline, this._s.stroke, this._s.m, this._s.alpha, this._s.op, maxW === undefined ? Infinity : +maxW);
+  }
+  measureText(t) {
+    const [w, asc, desc, fa, fd] = N.cvMeasure(this._s.font, String(t));
+    const m = new TextMetrics();
+    const align = this._align();
+    const left = align === 'center' ? w / 2 : align === 'right' ? w : 0;
+    Object.assign(m, {
+      width: w, actualBoundingBoxLeft: left, actualBoundingBoxRight: w - left,
+      actualBoundingBoxAscent: asc, actualBoundingBoxDescent: desc,
+      fontBoundingBoxAscent: fa, fontBoundingBoxDescent: fd, emHeightAscent: fa, emHeightDescent: fd,
+      hangingBaseline: fa * 0.8, alphabeticBaseline: 0, ideographicBaseline: -fd,
+    });
+    return m;
+  }
+  // imagens
+  drawImage(img, ...a) {
+    if (!img) throw new TypeError("Failed to execute 'drawImage': The image argument is null.");
+    const src = img._el || img;
+    let sw, sh;
+    if (img instanceof ImageBitmap) [sw, sh] = [img.width, img.height];
+    else [sw, sh] = N.cvSourceSize(src);
+    if (!sw || !sh) return;
+    let sx = 0, sy = 0, dx, dy, dw = sw, dh = sh;
+    if (a.length === 2) [dx, dy] = a;
+    else if (a.length === 4) [dx, dy, dw, dh] = a;
+    else if (a.length === 8) [sx, sy, sw, sh, dx, dy, dw, dh] = a;
+    else throw new TypeError("Failed to execute 'drawImage': Valid arities are: [3, 5, 9].");
+    if (!fin(+sx, +sy, +sw, +sh, +dx, +dy, +dw, +dh)) return;
+    N.cvImage(this._el, img instanceof ImageBitmap ? img : src, +sx, +sy, +sw, +sh, +dx, +dy, +dw, +dh, this._s.m, this._s.alpha, this._s.op, this._s.smoothing);
+  }
+  createLinearGradient(x0, y0, x1, y1) { return new CanvasGradient('linear', [+x0, +y0, +x1, +y1]); }
+  createRadialGradient(x0, y0, r0, x1, y1, r1) {
+    if (r0 < 0 || r1 < 0) throw new DOMException(`The ${r0 < 0 ? 'r0' : 'r1'} provided is less than 0.`, 'IndexSizeError');
+    return new CanvasGradient('radial', [+x0, +y0, +r0, +x1, +y1, +r1]);
+  }
+  createConicGradient(a, x, y) { return new CanvasGradient('conic', [+a, +x, +y]); }
+  createPattern(img, rep) {
+    rep = rep === null || rep === undefined || rep === '' ? 'repeat' : String(rep);
+    if (!['repeat', 'repeat-x', 'repeat-y', 'no-repeat'].includes(rep)) throw new DOMException(`The provided type ('${rep}') is not one of 'repeat', 'repeat-x', 'repeat-y', or 'no-repeat'.`, 'SyntaxError');
+    return new CanvasPattern(img instanceof ImageBitmap ? img : (img._el || img), rep);
+  }
+  // pixels
+  createImageData(w, h) { return w instanceof ImageData ? new ImageData(w.width, w.height) : new ImageData(Math.abs(w), Math.abs(h)); }
+  getImageData(x, y, w, h) {
+    [x, y, w, h] = [x | 0, y | 0, w | 0, h | 0];
+    if (!w || !h) throw new DOMException(`The source ${w ? 'height' : 'width'} is 0.`, 'IndexSizeError');
+    if (w < 0) { x += w; w = -w; }
+    if (h < 0) { y += h; h = -h; }
+    return new ImageData(N.cvGetData(this._el, x, y, w, h), w, h);
+  }
+  putImageData(img, dx, dy, x = 0, y = 0, w = img.width, h = img.height) {
+    if (w < 0) { x += w; w = -w; }
+    if (h < 0) { y += h; h = -h; }
+    N.cvPutData(this._el, img.data, img.width, img.height, dx | 0, dy | 0, x | 0, y | 0, w | 0, h | 0);
+  }
+  drawFocusIfNeeded() {}
+  scrollPathIntoView() {}
+}
+// sombras e filtros: aceitos, mas ainda não desenhados
+for (const k of ['shadowBlur', 'shadowColor', 'shadowOffsetX', 'shadowOffsetY', 'filter', 'letterSpacing', 'wordSpacing',
+  'fontKerning', 'fontStretch', 'fontVariantCaps', 'textRendering']) {
+  Object.defineProperty(CanvasRenderingContext2D.prototype, k, {
+    get() { return this._s[k]; }, set(v) { this._s[k] = typeof this._s[k] === 'number' ? Number(v) : String(v); }, configurable: true,
+  });
+}
