@@ -579,3 +579,28 @@ impl Lexer {
         Ok(true)
     }
 
+    fn read_string(&mut self, quote: char) -> Result<Vec<u16>, LexError> {
+        self.pos += 1;
+        let mut out = Vec::new();
+        loop {
+            if self.pos >= self.src.len() {
+                return Err(self.err("string sem fim"));
+            }
+            let c = self.peek();
+            if c == quote {
+                self.pos += 1;
+                return Ok(out);
+            }
+            if c == '\\' {
+                self.pos += 1;
+                self.read_escape(&mut out, false)?;
+            } else if c == '\n' || c == '\r' {
+                return Err(self.err("quebra de linha dentro de string"));
+            } else {
+                let mut buf = [0u16; 2];
+                out.extend_from_slice(c.encode_utf16(&mut buf));
+                self.pos += 1;
+            }
+        }
+    }
+
