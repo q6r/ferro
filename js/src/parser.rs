@@ -1495,3 +1495,94 @@ impl Parser {
         }
     }
 
+    fn parse_object(&mut self) -> PResult<Expr> {
+        self.expect("{")?;
+        let mut props = Vec::new();
+        while !self.eat("}")? {
+            if self.eat("...")? {
+                props.push(Prop {
+                    key: PropKeyExpr::Name("".into()),
+                    value: self.parse_assign(false)?,
+                    kind: PropKind::Spread,
+                });
+                if !self.is("}") {
+                    self.expect(",")?;
+                }
+                continue;
+            }
+            let start = self.tok.start;
+            let line = self.line();
+            // prefixos get/set/async/*
+            let mut is_async = false;
+            let mut is_gen = false;
+            let mut accessor: Option<PropKind> = None;
+            if let Tok::Ident(n) = self.tok.tok.clone()
+                && matches!(&*n, "get" | "set" | "async")
+            {
+                let next = self.peek()?;
+                let is_prefix = !matches!(next.tok, Tok::Punct(",") | Tok::Punct(":") | Tok::Punct("(") | Tok::Punct("}") | Tok::Punct("="));
+                if is_prefix {
+                    match &*n {
+                        "get" => accessor = Some(PropKind::Get),
+                        "set" => accessor = Some(PropKind::Set),
+                        _ => is_async = true,
+                    }
+                    self.advance()?;
+                }
+            }
+            if self.eat("*")? {
+                is_gen = true;
+            }
+            let key = self.parse_prop_key()?;
+            if let Some(kind) = accessor {
+                let fkind = if matches!(kind, PropKind::Get) { FnKind::Getter } else { FnKind::Setter };
+                let f = self.parse_function_rest(None, fkind, false, false, start, line)?;
+                props.push(Prop {
+                    key,
+                    value: Expr::Function(f),
+                    kind,
+                });
+            } else if self.is("(") {
+                let name = match &key {
+                    PropKeyExpr::Name(n) => Some(n.clone()),
+                    _ => None,
+                };
+                let f = self.parse_function_rest(name, FnKind::Method, is_async, is_gen, start, line)?;
+                props.push(Prop {
+                    key,
+                    value: Expr::Function(f),
+                    kind: PropKind::Init,
+                });
+            } else if self.eat(":")? {
+                let value = self.parse_assign(false)?;
+                props.push(Prop {
+                    key,
+                    value,
+                    kind: PropKind::Init,
+                });
+            } else {
+                // abreviação { x } ou { x = 1 } (só vale em desestruturação)
+                let name = match &key {
+                    PropKeyExpr::Name(n) => n.clone(),
+                    _ => return self.unexpected(),
+                };
+                let mut value = Expr::Ident(name.clone(), line);
+                if self.eat("=")? {
+                    let def = self.parse_assign(false)?;
+                    value = Expr::Assign(AssignOp::Assign, Box::new(Pattern::Ident(name)), Box::new(def));
+                }
+                props.push(Prop {
+                    key,
+                    value,
+                    kind: PropKind::Init,
+                });
+            }
+            if !self.is("}") {
+                self.expect(",")?;
+            }
+        }
+        Ok(Expr::Object(props))
+    }
+
+    // ------------------------------------------------------------- funções
+
