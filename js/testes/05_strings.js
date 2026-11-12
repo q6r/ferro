@@ -1,0 +1,20 @@
+const s = "Olá, Mundo! Olá!";
+console.log(s.length, s.indexOf("Olá", 1), s.lastIndexOf("Olá"), s.at(0), s.charAt(100), s[3]);
+console.log(s.split(", "), s.split("", 3), s.split(), "a,b,,c".split(","), "".split(","), "abc".split("", 0));
+console.log(s.replace("Olá", "Oi"), s.replaceAll("Olá", "Oi"), "aaa".replace("a", "$&$&"), "abc".replace("b", (m, i) => `[${m}${i}]`));
+console.log("x-$-y".replace("-", "$$"), "abc".replace("b", "$`|$'"));
+console.log("  pad ".trimStart() + "|", "|" + " pad  ".trimEnd(), "5".padStart(3, "0"), "abc".padEnd(6, "12"), "x".padStart(0));
+console.log("ß".toUpperCase(), "ÇÃO".toLowerCase(), "straße".length);
+console.log("abc".localeCompare("abd"), "😀".length, [..."😀a"].length, "😀".codePointAt(0), "😀".charCodeAt(1));
+console.log(String.fromCodePoint(128512, 65), String.raw`a\nb${1}`, `multi
+line`.length, "\u{1F600}" === "😀");
+console.log("abc".substring(2, 0), "abc".substr(-2, 1), "abcdef".slice(-3, -1), "abc".concat(1, [2, 3]));
+console.log("Hello".startsWith("ell", 1), "Hello".endsWith("ell", 4), "abc".includes(""), "aXbXc".split("X", 2));
+console.log("tab\there", 'quote\'s', "back\\slash", "\x41B\u{43}");
+console.log(["a", "b"], ["it's"], ['say "hi"'], ["both ' and \""], { s: "x\ny" });
+console.log("abc".repeat(0) === "", "ab".repeat(2), [..."abc"].reverse().join(""));
+console.log("café".normalize() === "café", "a".codePointAt(5), "abc".charCodeAt(-1), "%", "100%", "%d", "a%sb");
+console.log(`${1 + 1} ${"x".repeat(3)} ${[1, 2]} ${{}} ${null} ${undefined} ${() => 1}`);
+const str = new String("obj"); console.log(typeof str, str.length, str + "!", str instanceof String, str);
+console.log([1, 2, 3].map(n => n.toString().padStart(3, " ")).join("|"), "a\tb".split("\t"));
+console.log(escape("ç ü"), encodeURI("http://x.com/a b?q=ç&r=1#h"), decodeURI("%41%20"), encodeURIComponent("é😀"));
