@@ -1146,3 +1146,59 @@ impl Vm {
         self.ordinary_has_instance(t, v)
     }
 
+    pub fn ordinary_has_instance(&mut self, c: &ObjRef, v: &Value) -> Result<bool, Value> {
+        if !c.is_callable() {
+            return Ok(false);
+        }
+        let bound = match &c.borrow().kind {
+            Kind::Function(Func::Bound { target, .. }) => Some(target.clone()),
+            _ => None,
+        };
+        if let Some(t) = bound {
+            return self.instance_of(v, &Value::Object(t));
+        }
+        let Value::Object(o) = v else { return Ok(false) };
+        let proto = self.get_obj(c, &PropKey::str("prototype"))?;
+        let Value::Object(proto) = proto else {
+            return Err(self.type_error("Function has non-object prototype in instanceof check"));
+        };
+        let mut cur = self.get_prototype_of(o)?;
+        while let Some(p) = cur {
+            if p.ptr_eq(&proto) {
+                return Ok(true);
+            }
+            cur = self.get_prototype_of(&p)?;
+        }
+        Ok(false)
+    }
+
+    // --------------------------------------------------------- iteração
+
+    pub fn get_iterator(&mut self, v: &Value) -> Result<ObjRef, Value> {
+        let key = PropKey::Sym(self.realm.sym_iterator.clone());
+        let m = self.get(v, &key)?;
+        if !m.is_callable() {
+            let d = match v {
+                Value::Number(_) | Value::Bool(_) | Value::Symbol(_) => format!("{} {}", crate::vm::typeof_str(v), self.describe(v)),
+                Value::Object(o) if o.is_callable() => "function".into(),
+                Value::Object(_) => "object".into(),
+                _ => self.describe(v),
+            };
+            return Err(self.type_error(format!("{d} is not iterable (cannot read property Symbol(Symbol.iterator))")));
+        }
+        let it = self.call(&m, v.clone(), Vec::new())?;
+        if !matches!(it, Value::Object(_)) {
+            return Err(self.type_error("Result of the Symbol.iterator method is not an object"));
+        }
+        let next = self.get_str(&it, "next")?;
+        Ok(ObjRef::new(Object::new(
+            None,
+            Kind::IterRecord {
+                iter: it,
+                next,
+                done: false,
+                sync_wrapped: false,
+            },
+        )))
+    }
+
