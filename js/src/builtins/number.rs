@@ -269,3 +269,52 @@ fn bool_value_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 // ----------------------------------------------------------------- Math
 
+fn n0(vm: &mut Vm, a: &CallArgs) -> Result<f64, Value> {
+    vm.to_number(&a.arg(0))
+}
+
+macro_rules! math1 {
+    ($name:ident, $f:expr) => {
+        fn $name(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+            let x = n0(vm, a)?;
+            #[allow(clippy::redundant_closure_call)]
+            Ok(Value::Number($f(x)))
+        }
+    };
+}
+
+math1!(m_abs, f64::abs);
+math1!(m_acos, f64::acos);
+math1!(m_acosh, f64::acosh);
+math1!(m_asin, f64::asin);
+math1!(m_asinh, f64::asinh);
+math1!(m_atan, f64::atan);
+math1!(m_atanh, f64::atanh);
+math1!(m_cbrt, f64::cbrt);
+math1!(m_ceil, f64::ceil);
+math1!(m_cos, f64::cos);
+math1!(m_cosh, f64::cosh);
+math1!(m_exp, f64::exp);
+math1!(m_expm1, f64::exp_m1);
+math1!(m_floor, f64::floor);
+math1!(m_fround, |x: f64| x as f32 as f64);
+math1!(m_log, f64::ln);
+math1!(m_log1p, f64::ln_1p);
+math1!(m_log10, f64::log10);
+math1!(m_log2, f64::log2);
+math1!(m_sin, f64::sin);
+math1!(m_sinh, f64::sinh);
+math1!(m_sqrt, f64::sqrt);
+math1!(m_tan, f64::tan);
+math1!(m_tanh, f64::tanh);
+math1!(m_trunc, f64::trunc);
+math1!(m_sign, |x: f64| if x.is_nan() || x == 0.0 { x } else { x.signum() });
+math1!(m_clz32, |x: f64| conv::to_uint32(x).leading_zeros() as f64);
+math1!(m_round, |x: f64| {
+    if !x.is_finite() || x == 0.0 {
+        return x;
+    }
+    let r = (x + 0.5).floor();
+    if r == 0.0 && x < 0.0 { -0.0 } else if x.fract().abs() == 0.5 && x < 0.0 { x.ceil() } else { r }
+});
+
