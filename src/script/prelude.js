@@ -2969,3 +2969,135 @@ hidden(G, 'fetch', function fetch(input, init) {
 
 // ------------------------------------------------- XMLHttpRequest
 class XMLHttpRequestEventTarget extends EventTarget {}
+class XMLHttpRequest extends XMLHttpRequestEventTarget {
+  constructor() {
+    super();
+    this.readyState = 0;
+    this.status = 0;
+    this.statusText = '';
+    this.responseType = '';
+    this.responseURL = '';
+    this.timeout = 0;
+    this.withCredentials = false;
+    this.upload = new XMLHttpRequestEventTarget();
+    this._headers = [];
+    this._res = null;
+    this._seq = 0;
+  }
+  open(method, url, async = true) {
+    const p = N.urlParse(String(url), document.baseURI);
+    if (!p) throw new DOMException(`Failed to execute 'open' on 'XMLHttpRequest': Invalid URL`, 'SyntaxError');
+    this._method = String(method).toUpperCase();
+    this._url = p.href;
+    this._async = async !== false;
+    this._headers = [];
+    this._res = null;
+    this._seq++;
+    this.status = 0;
+    this._state(1);
+  }
+  setRequestHeader(k, v) {
+    if (this.readyState !== 1) throw new DOMException("Failed to execute 'setRequestHeader' on 'XMLHttpRequest': The object's state must be OPENED.", 'InvalidStateError');
+    this._headers.push([String(k), String(v)]);
+  }
+  _state(n) {
+    this.readyState = n;
+    this.dispatchEvent(new Event('readystatechange'));
+  }
+  _fire(type, extra) {
+    this.dispatchEvent(new ProgressEvent(type, extra || {}));
+  }
+  send(body) {
+    if (this.readyState !== 1) throw new DOMException("Failed to execute 'send' on 'XMLHttpRequest': The object's state must be OPENED.", 'InvalidStateError');
+    const [bytes, ct] = encodeBody(this._method === 'GET' || this._method === 'HEAD' ? null : body);
+    const headers = this._headers.slice();
+    if (ct && !headers.some(([k]) => k.toLowerCase() === 'content-type')) headers.push(['Content-Type', ct]);
+    const done = (r) => {
+      if (r.error) {
+        this._state(4);
+        this._fire('error');
+        this._fire('loadend');
+        return;
+      }
+      this._res = r;
+      this.status = r.status;
+      this.statusText = STATUS_TEXT[r.status] ?? '';
+      this.responseURL = r.url;
+      this._state(2);
+      this._state(3);
+      const total = r.body ? r.body.length : 0;
+      this._fire('progress', { lengthComputable: true, loaded: total, total });
+      this._state(4);
+      this._fire('load', { lengthComputable: true, loaded: total, total });
+      this._fire('loadend', { lengthComputable: true, loaded: total, total });
+    };
+    this._fire('loadstart');
+    if (!this._async) {
+      done(N.fetchSync(this._method, this._url, headers, bytes, true));
+      return;
+    }
+    const seq = this._seq;
+    N.fetch(this._method, this._url, headers, bytes, true, (r) => {
+      if (seq === this._seq) done(r);
+    });
+    if (this.timeout > 0) {
+      setTimeout(() => {
+        if (seq === this._seq && this.readyState !== 4) {
+          this._seq++;
+          this._state(4);
+          this._fire('timeout');
+          this._fire('loadend');
+        }
+      }, this.timeout);
+    }
+  }
+  abort() {
+    if (this.readyState === 0 || this.readyState === 4) return;
+    this._seq++;
+    this._state(4);
+    this.readyState = 0;
+    this._fire('abort');
+    this._fire('loadend');
+  }
+  overrideMimeType(t) { this._mime = t; }
+  getResponseHeader(k) {
+    if (!this._res) return null;
+    k = String(k).toLowerCase();
+    const vs = this._res.headers.filter(([a]) => a === k).map((e) => e[1]);
+    return vs.length ? vs.join(', ') : null;
+  }
+  getAllResponseHeaders() {
+    if (!this._res) return '';
+    return this._res.headers.map(([k, v]) => `${k}: ${v}\r\n`).join('');
+  }
+  get responseText() {
+    if (this.responseType !== '' && this.responseType !== 'text') throw new DOMException("Failed to read the 'responseText' property from 'XMLHttpRequest': The value is only accessible if the object's 'responseType' is '' or 'text'.", 'InvalidStateError');
+    if (!this._res || !this._res.body) return '';
+    if (this._text === undefined || this._textFor !== this._res) {
+      this._textFor = this._res;
+      this._text = N.utf8Decode(this._res.body, charsetOf(this._mime || this._res.contentType));
+    }
+    return this._text;
+  }
+  get response() {
+    if (!this._res || this.readyState !== 4) return this.responseType === '' || this.responseType === 'text' ? '' : null;
+    const b = this._res.body || new Uint8Array(0);
+    switch (this.responseType) {
+      case 'json': try { return JSON.parse(this.responseText_()); } catch (e) { return null; }
+      case 'arraybuffer': return b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+      case 'blob': return new Blob([b], { type: this.getResponseHeader('content-type') || '' });
+      case 'document': return null;
+      default: return this.responseText;
+    }
+  }
+  responseText_() { return N.utf8Decode(this._res.body, charsetOf(this._res.contentType)); }
+  get responseXML() { return null; }
+}
+for (const [k, v] of [['UNSENT', 0], ['OPENED', 1], ['HEADERS_RECEIVED', 2], ['LOADING', 3], ['DONE', 4]]) {
+  Object.defineProperty(XMLHttpRequest, k, { value: v });
+  Object.defineProperty(XMLHttpRequest.prototype, k, { value: v });
+}
+// on* das requisições: propriedades comuns, achadas pelo despacho
+for (const P of [XMLHttpRequestEventTarget.prototype]) {
+  defineHandlers(P, ['loadstart', 'progress', 'abort', 'error', 'load', 'timeout', 'loadend', 'readystatechange']);
+}
