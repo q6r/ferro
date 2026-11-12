@@ -417,3 +417,103 @@ fn act(session: &mut ferro::script::Session, a: &Args, action: &str) -> Option<f
     })
 }
 
+fn render_png_inner(a: &Args) -> Result<(), String> {
+    let start = Instant::now();
+    ferro::html::set_scripting(a.js);
+    let target = a.target.as_deref().ok_or("informe uma URL ou um arquivo HTML")?;
+    let mut go = ferro::script::Nav {
+        url: resolve_target(target)?,
+        post: None,
+    };
+    let net = Net::new();
+    let fonts = std::rc::Rc::new(Fonts::system()?);
+    // FERRO_ACOES="clique 640 245; digita texto; tecla Enter": interage com a página
+    let mut actions: std::collections::VecDeque<String> = std::env::var("FERRO_ACOES")
+        .unwrap_or_default()
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut hops = 0;
+    let mut session = loop {
+        let mut session = open_session(a, &net, &fonts, &go)?;
+        let mut nav = session.take_navigation();
+        while nav.is_none() {
+            let Some(action) = actions.pop_front() else { break };
+            nav = act(&mut session, a, &action);
+        }
+        match nav {
+            Some(next) if hops < 8 => {
+                log(format!("a página pediu para navegar para {}", next.url));
+                hops += 1;
+                go = next;
+            }
+            _ => break session,
+        }
+    };
+    // depuração: FERRO_AVALIA="código" roda na página e mostra o resultado
+    if let Ok(code) = std::env::var("FERRO_AVALIA") {
+        match session.js.eval(&code, "avalia") {
+            Ok(v) => println!("{}", session.js.inspect(&v)),
+            Err(e) => println!("{}", session.js.error_text(&e)),
+        }
+    }
+    if a.dump_dom {
+        println!("{}", session.host.borrow().page.doc.dump());
+    }
+
+    let t = Instant::now();
+    let page = session.render();
+    log(format!(
+        "estilo + layout: {} itens, página com {:.0} px, {:.0} ms",
+        page.items.len(),
+        page.height,
+        ms(t)
+    ));
+    let frames = session.video_frames();
+    let paused = session.paused_videos();
+    let hb = session.host.borrow();
+    let loaded = &hb.page;
+    if a.dump_boxes {
+        let media = ferro::css::MediaContext {
+            width: a.width,
+            height: a.height,
+        };
+        let mut sheets = vec![(
+            std::rc::Rc::new(ferro::css::parse_stylesheet(ferro::UA_STYLESHEET, &media)),
+            ferro::style::Origin::UserAgent,
+        )];
+        for s in &loaded.css {
+            sheets.push((std::rc::Rc::new(ferro::css::parse_stylesheet(&s.text, &media)), ferro::style::Origin::Author));
+        }
+        let styles = ferro::style::compute(&loaded.doc, &sheets, &media);
+        if let Some(root) = layout::build_box_tree(&loaded.doc, &styles) {
+            println!("{}", root.dump(&loaded.doc));
+        }
+    }
+
+    if let Some(out) = &a.out {
+        let t = Instant::now();
+        let h = page.height.min(a.max_h).ceil() as usize;
+        let mut canvas = Canvas::new(a.width as usize, h, page.background);
+        canvas.videos = frames;
+        canvas.paused = paused;
+        if std::env::var_os("FERRO_MIDIA_LOG").is_some() {
+            let vids: Vec<_> = page
+                .items
+                .iter()
+                .filter_map(|it| match it {
+                    ferro::paint::DisplayItem::Video { rect, node } => Some((*node, *rect)),
+                    _ => None,
+                })
+                .collect();
+            log(format!("vídeos na pintura: {vids:?}; quadros: {:?}", canvas.videos.keys().collect::<Vec<_>>()));
+        }
+        canvas.paint(&page.items, &fonts, 0.0);
+        canvas.save_png(out)?;
+        log(format!("pintura: {:.0} ms", ms(t)));
+        log(format!("título: {}", loaded.current_title()));
+        log(format!("pronto: {} ({}×{}) em {:.0} ms", out.display(), a.width, h, ms(start)));
+    }
+    Ok(())
+}
