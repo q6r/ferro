@@ -3342,3 +3342,167 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn atomic_item(&self, n: NodeId, b: &LayoutBox, out: &mut Vec<Item<'a>>, inh: &Inherited, avail: f32) {
+        let Some(el) = self.doc.element(n) else { return };
+        let s = &b.style;
+        let fs = s.font_size;
+        let px = |l: Len| match l {
+            Len::Px(v) => Some(v),
+            _ => None,
+        };
+        let attr_px = |name: &str| {
+            el.attr(name)
+                .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+        };
+        let w = s.width.resolve(avail).or_else(|| attr_px("width"));
+        let h = px(s.height).or_else(|| attr_px("height"));
+        let font = self.fonts.for_style(s);
+        let text_w = |t: &str| self.fonts.measure(font, fs, t);
+        let control_h = (fs * 1.25 + 6.0).round();
+        let mut own = inh.clone();
+        if !b.generated {
+            own.elem = Some(n);
+            own.no_hit = !s.pointer_events || !s.visible;
+        }
+        let push = |out: &mut Vec<Item<'a>>, w: f32, h: f32, paint: AtomicPaint, label: Option<(String, Color)>| {
+            out.push(Item::Atomic {
+                w,
+                h,
+                paint,
+                label,
+                style: s.clone(),
+                inh: own.clone(),
+            })
+        };
+        let gray = Color::rgb(0x75, 0x75, 0x75);
+        match el.tag.as_str() {
+            "img" if self.images.nodes.contains_key(&n) => {
+                let img = &self.images.nodes[&n];
+                let (iw, ih) = (img.width as f32, img.height as f32);
+                let (mut w, mut h) = match (w, h) {
+                    (Some(w), Some(h)) => (w, h),
+                    (Some(w), None) => (w, w * ih / iw),
+                    (None, Some(h)) => (h * iw / ih, h),
+                    (None, None) => (iw, ih),
+                };
+                if let Some(max) = s.max_width.resolve(avail)
+                    && w > max
+                    && w > 0.0
+                {
+                    h *= max / w;
+                    w = max;
+                }
+                push(out, w, h, AtomicPaint::Image(img.clone()), None);
+            }
+            "img" => match (w, h) {
+                (Some(w), Some(h)) => push(out, w, h, AtomicPaint::Placeholder, None),
+                _ => {
+                    // sem tamanho conhecido: mostra o alt
+                    let alt = el.attr("alt").unwrap_or("").trim();
+                    if !alt.is_empty() {
+                        out.push(Item::Text {
+                            text: alt.to_string(),
+                            style: s.clone(),
+                            inh: inh.clone(),
+                        });
+                    } else if let Some(side) = w.or(h) {
+                        push(out, side, side, AtomicPaint::Placeholder, None);
+                    }
+                }
+            },
+            "svg" => {
+                let (w, h) = (w.unwrap_or(fs), h.unwrap_or(fs));
+                let paint = match inline_svg(self.doc, n, w, h, s.color) {
+                    Some(img) => AtomicPaint::Image(img),
+                    None => AtomicPaint::Invisible,
+                };
+                push(out, w, h, paint, None)
+            }
+            "input" => {
+                let ty = el.attr("type").unwrap_or("text").to_ascii_lowercase();
+                match ty.as_str() {
+                    "hidden" => {}
+                    "checkbox" | "radio" => {
+                        push(out, 13.0, 13.0, AtomicPaint::Check(el.attr("checked").is_some()), None)
+                    }
+                    "submit" | "button" | "reset" => {
+                        let label = el.attr("value").map(str::to_string).unwrap_or_else(|| {
+                            match ty.as_str() {
+                                "submit" => "Enviar",
+                                "reset" => "Redefinir",
+                                _ => "",
+                            }
+                            .to_string()
+                        });
+                        let bw = w.unwrap_or(text_w(&label) + 16.0);
+                        push(out, bw, h.unwrap_or(control_h), AtomicPaint::Button, Some((label, s.color)));
+                    }
+                    "image" => push(out, w.unwrap_or(20.0), h.unwrap_or(20.0), AtomicPaint::Placeholder, None),
+                    _ => {
+                        let label = match el.attr("value").filter(|v| !v.is_empty()) {
+                            Some(v) if ty == "password" => Some(("•".repeat(v.chars().count()), s.color)),
+                            Some(v) => Some((v.to_string(), s.color)),
+                            None => el.attr("placeholder").map(|p| (p.to_string(), gray)),
+                        };
+                        let size: f32 = el.attr("size").and_then(|v| v.parse().ok()).unwrap_or(20.0);
+                        let bw = w.unwrap_or(size * fs * 0.55 + 8.0);
+                        push(out, bw, h.unwrap_or(control_h), AtomicPaint::Control, label);
+                    }
+                }
+            }
+            "select" => {
+                let options = self.doc.descendants(n);
+                let chosen = options
+                    .iter()
+                    .copied()
+                    .filter(|&o| self.doc.tag(o) == Some("option"))
+                    .find(|&o| self.doc.element(o).is_some_and(|e| e.attr("selected").is_some()))
+                    .or_else(|| options.iter().copied().find(|&o| self.doc.tag(o) == Some("option")));
+                let label = chosen
+                    .map(|o| self.doc.text_content(o).split_whitespace().collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                let bw = w.unwrap_or(text_w(&label) + 28.0);
+                push(out, bw, h.unwrap_or(control_h), AtomicPaint::Control, Some((format!("{label}  ▾"), s.color)));
+            }
+            "textarea" => {
+                let cols: f32 = el.attr("cols").and_then(|v| v.parse().ok()).unwrap_or(20.0);
+                let rows: f32 = el.attr("rows").and_then(|v| v.parse().ok()).unwrap_or(2.0);
+                let text = self.doc.text_content(n);
+                let label = if text.trim().is_empty() {
+                    el.attr("placeholder").map(|p| (p.to_string(), gray))
+                } else {
+                    Some((text.trim().to_string(), s.color))
+                };
+                push(
+                    out,
+                    w.unwrap_or(cols * fs * 0.55 + 8.0),
+                    h.unwrap_or(rows * fs * 1.2 + 8.0),
+                    AtomicPaint::Control,
+                    label,
+                );
+            }
+            "audio" => {
+                if el.attr("controls").is_some() {
+                    push(out, w.unwrap_or(300.0), h.unwrap_or(54.0), AtomicPaint::Placeholder, None);
+                }
+            }
+            "video" => push(out, w.unwrap_or(300.0), h.unwrap_or(150.0), AtomicPaint::Video(n), None),
+            "canvas" | "iframe" => {
+                // largura/altura do CSS; senão, as do atributo (padrão 300×150),
+                // mantendo a proporção se só uma foi dada
+                let (aw, ah) = (attr_px("width").unwrap_or(300.0), attr_px("height").unwrap_or(150.0));
+                let (cw, ch) = match (s.width.resolve(avail), px(s.height)) {
+                    (Some(cw), Some(ch)) => (cw, ch),
+                    (Some(cw), None) => (cw, if aw > 0.0 { cw * ah / aw } else { ah }),
+                    (None, Some(ch)) => (if ah > 0.0 { ch * aw / ah } else { aw }, ch),
+                    (None, None) => (aw, ah),
+                };
+                push(out, cw, ch, AtomicPaint::Canvas(n), None)
+            }
+            _ => push(out, w.unwrap_or(300.0), h.unwrap_or(150.0), AtomicPaint::Placeholder, None),
+        }
+    }
+}
+
+// ------------------------------------------------------ quebra de linhas
+
