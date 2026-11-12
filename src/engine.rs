@@ -520,3 +520,81 @@ enum Job {
     Font(FontFaceRule),
 }
 
+/// Baixa, com 8 threads, as imagens dos <img>, as imagens de fundo do CSS e
+/// as fontes web (que vão para o catálogo global). `cancel` interrompe cedo
+/// (quando o usuário já navegou para outra página).
+pub fn fetch_resources(
+    net: &Net,
+    nodes: Vec<(NodeId, Url)>,
+    bg_urls: Vec<String>,
+    font_faces: Vec<FontFaceRule>,
+    cancel: &(dyn Fn() -> bool + Sync),
+) -> Images {
+    // a mesma URL aparece várias vezes (ícones repetidos): baixa uma vez só
+    let mut by_url: HashMap<Url, Vec<NodeId>> = HashMap::new();
+    for (n, u) in nodes {
+        by_url.entry(u).or_default().push(n);
+    }
+    let mut jobs: Vec<Job> = by_url.into_iter().map(|(u, n)| Job::Img(u, n)).collect();
+    jobs.extend(bg_urls.into_iter().map(Job::Bg));
+    // fontes primeiro (são as últimas a sair da pilha... então vão no fim)
+    jobs.extend(font_faces.into_iter().map(Job::Font));
+    let queue = Mutex::new(jobs);
+    let result = Mutex::new(Images::new());
+    let decode = |bytes: &[u8]| decode_image(bytes).map(Arc::new);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                loop {
+                    if cancel() {
+                        return;
+                    }
+                    let Some(job) = queue.lock().unwrap().pop() else { return };
+                    match job {
+                        Job::Img(url, nodes) => {
+                            let Ok(res) = net.fetch(&url) else { continue };
+                            if res.status >= 400 {
+                                continue;
+                            }
+                            if let Some(img) = decode(&res.body) {
+                                let mut r = result.lock().unwrap();
+                                for n in nodes {
+                                    r.nodes.insert(n, img.clone());
+                                }
+                            }
+                        }
+                        Job::Bg(u) => {
+                            let Ok(url) = Url::parse(&u) else { continue };
+                            let Ok(res) = net.fetch(&url) else { continue };
+                            if res.status >= 400 {
+                                continue;
+                            }
+                            if let Some(img) = decode(&res.body) {
+                                result.lock().unwrap().urls.insert(u, img);
+                            }
+                        }
+                        Job::Font(face) => {
+                            for src in &face.sources {
+                                if fonts::web_font_tried(src) {
+                                    break;
+                                }
+                                let Ok(url) = Url::parse(src) else { continue };
+                                let Ok(res) = net.fetch(&url) else { continue };
+                                if res.status < 400
+                                    && res.body.len() < 4 * 1024 * 1024
+                                    && fonts::register_web_font(src, &face.family, face.weight, face.italic, &res.body)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    result.into_inner().unwrap()
+}
+
+// ---------------------------------------------------- thread de renderização
+
