@@ -1183,3 +1183,79 @@ fn inner_html(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(s(&read(vm, |h| h.page.doc.serialize(n, false))))
 }
 
+fn set_inner_html(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let html = if a.arg(0).is_nullish() { String::new() } else { arg_string(vm, a, 0)? };
+    let target = read(vm, |h| h.templates.get(&n).copied().unwrap_or(n));
+    removing_children(vm, target);
+    write(vm, |h| h.page.doc.remove_children(target));
+    let nodes = parse_html(vm, &html, n);
+    write(vm, |h| {
+        for &c in &nodes {
+            h.page.doc.append(target, c);
+        }
+    });
+    inserted(vm, &nodes, target);
+    Ok(Value::Undefined)
+}
+
+fn outer_html(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(s(&read(vm, |h| h.page.doc.serialize(n, true))))
+}
+
+fn set_outer_html(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let html = arg_string(vm, a, 0)?;
+    let Some(p) = read(vm, |h| h.page.doc.node(n).parent) else { return Ok(Value::Undefined) };
+    let nodes = parse_html(vm, &html, p);
+    removing(vm, n);
+    write(vm, |h| {
+        for &c in &nodes {
+            h.page.doc.insert_before(p, c, Some(n));
+        }
+        h.page.doc.detach(n);
+    });
+    inserted(vm, &nodes, p);
+    Ok(Value::Undefined)
+}
+
+/// Onde inserir para insertAdjacent*: (pai, antes de).
+fn adjacent(vm: &mut Vm, n: NodeId, pos: &str) -> Result<Option<(NodeId, Option<NodeId>)>, Value> {
+    let pos = pos.to_ascii_lowercase();
+    Ok(read(vm, |h| {
+        let doc = &h.page.doc;
+        match pos.as_str() {
+            "beforebegin" => doc.node(n).parent.map(|p| (p, Some(n))),
+            "afterbegin" => Some((n, doc.node(n).children.first().copied())),
+            "beforeend" => Some((n, None)),
+            "afterend" => doc.node(n).parent.map(|p| (p, sibling(doc, n, 1, false))),
+            _ => None,
+        }
+    }))
+    .and_then(|r| match r {
+        Some(x) => Ok(Some(x)),
+        None if !matches!(pos.as_str(), "beforebegin" | "afterbegin" | "beforeend" | "afterend") => Err(dom_error(
+            vm,
+            "SyntaxError",
+            &format!("The value provided ('{pos}') is not one of 'beforeBegin', 'afterBegin', 'beforeEnd', or 'afterEnd'."),
+        )),
+        None => Ok(None),
+    })
+}
+
+fn insert_adjacent_html(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let pos = arg_string(vm, a, 0)?;
+    let html = arg_string(vm, a, 1)?;
+    let Some((p, before)) = adjacent(vm, n, &pos)? else { return Ok(Value::Undefined) };
+    let nodes = parse_html(vm, &html, p);
+    write(vm, |h| {
+        for &c in &nodes {
+            h.page.doc.insert_before(p, c, before);
+        }
+    });
+    inserted(vm, &nodes, p);
+    Ok(Value::Undefined)
+}
+
