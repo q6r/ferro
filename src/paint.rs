@@ -22,3 +22,77 @@ impl std::fmt::Debug for ImageData {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum DisplayItem {
+    Rect {
+        rect: Rect,
+        color: Color,
+    },
+    RoundRect {
+        rect: Rect,
+        radius: f32,
+        color: Color,
+    },
+    Text {
+        x: f32,
+        baseline: f32,
+        text: String,
+        font: FontId,
+        size: f32,
+        color: Color,
+    },
+    Image {
+        rect: Rect,
+        image: Arc<ImageData>,
+    },
+    /// Borda de largura única com cantos arredondados.
+    RoundBorder {
+        rect: Rect,
+        radius: f32,
+        width: f32,
+        color: Color,
+    },
+    /// Gradiente linear (ângulo em graus, paradas de 0 a 1).
+    Gradient {
+        rect: Rect,
+        radius: f32,
+        angle: f32,
+        stops: Arc<Vec<(Color, f32)>>,
+    },
+    /// Imagem de fundo: `tile` é a posição e o tamanho de uma cópia; com
+    /// repetição, as cópias cobrem `rect`.
+    BgImage {
+        rect: Rect,
+        image: Arc<ImageData>,
+        tile: Rect,
+        repeat: (bool, bool),
+        /// Pinta só o formato da imagem com esta cor (mask-image).
+        tint: Option<Color>,
+    },
+    PushClip(Rect),
+    PopClip,
+    /// Começo do conteúdo de um elemento posicionado (relative/sticky): o
+    /// layout separa o trecho numa camada pintada na ordem da árvore.
+    /// `z: None` = z-index auto. Nunca chegam à pintura.
+    LayerStart { z: Option<i32>, order: usize },
+    LayerEnd,
+    /// Área de um `<video>`: o pintor põe ali o quadro atual (sem refazer o layout).
+    Video { rect: Rect, node: usize },
+    /// Área de um `<canvas>`: a imagem dele (do mapa de quadros) esticada.
+    Canvas { rect: Rect, node: usize },
+    /// Trecho com `position: fixed`: não acompanha a rolagem (o pintor
+    /// desfaz o deslocamento da rolagem entre as marcas).
+    FixedStart,
+    FixedEnd,
+    /// Trecho transformado (rotate/scale/skew/matrix): `m` é a matriz em
+    /// torno de `origin` (coordenadas do documento). O pintor desenha o
+    /// trecho à parte e o aplica transformado.
+    TransformStart { m: [f32; 6], origin: (f32, f32) },
+    TransformEnd,
+    /// Sombra (box-shadow): retângulo já deslocado e espalhado.
+    Shadow { rect: Rect, radius: f32, blur: f32, color: Color },
+    /// Área do elemento que recebe o mouse, na ordem de pintura. Só existe
+    /// durante o layout (vira `Page::hits`); nunca chega à pintura.
+    Hit { rect: Rect, node: usize },
+}
+
