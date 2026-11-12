@@ -352,3 +352,56 @@ fn posicao_fixa_nao_rola() {
     });
 }
 
+#[test]
+fn iframe_mensagens_e_clique() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0"><iframe id=f style="width:200px;height:100px;border:0" srcdoc="
+                 <body style='margin:0'><button id=b style='width:200px;height:100px'>x</button><script>
+                   window.cliques = 0; b.onclick = () => { cliques++; parent.postMessage({ cliques, topo: top === parent }, '*'); };
+                   addEventListener('message', (e) => parent.postMessage('eco:' + e.data, '*'));
+                 </script></body>"></iframe>
+               <script>window.log = []; addEventListener('message', (e) => log.push(JSON.stringify(e.data)));
+                 f.onload = () => log.push('load');</script></body>"#,
+        );
+        let _ = s.render();
+        let wait = |s: &mut Session, n: &str| {
+            let t = std::time::Instant::now();
+            while t.elapsed().as_millis() < 1500 && eval(s, "log.length") != n {
+                s.tick();
+                let _ = s.render();
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        wait(&mut s, "1");
+        assert_eq!(eval(&mut s, "log.join()"), "load");
+        // clique na área do iframe vai para o botão de dentro
+        s.click(50.0, 50.0);
+        wait(&mut s, "2");
+        assert_eq!(eval(&mut s, "log[1]"), r#"{"cliques":1,"topo":true}"#);
+        // mensagem da página para o quadro e a resposta
+        eval(&mut s, "f.contentWindow.postMessage('oi', '*')");
+        wait(&mut s, "3");
+        assert_eq!(eval(&mut s, "log[2]"), r#""eco:oi""#);
+        // o quadro foi desenhado e aparece na lista de imagens
+        assert!(s.video_frames().len() >= 1);
+    });
+}
+
+#[test]
+fn select_abre_lista_e_escolhe() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0"><select id=s style="width:120px;height:24px"><option>Um</option><option disabled>Dois</option><option value=3>Três</option></select>
+               <script>window.mudou = ''; s.addEventListener('change', () => mudou = s.value);</script></body>"#,
+        );
+        let _ = s.render();
+        s.click(10.0, 10.0);
+        let p = s.take_select_popup().expect("lista");
+        assert_eq!(p.labels, vec!["Um", "Dois", "Três"]);
+        assert_eq!(p.disabled, vec![false, true, false]);
+        assert_eq!(p.selected, 0);
+        s.choose_select(p.node, 2);
+        assert_eq!(eval(&mut s, "mudou + ',' + s.selectedIndex"), "3,2");
+    });
+}
