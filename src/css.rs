@@ -915,3 +915,62 @@ fn supports_declaration(name: &str, value: &str) -> bool {
     }
 }
 
+/// Divide por uma palavra-chave (" and ", " or ") fora de parênteses.
+fn split_keyword<'a>(s: &'a str, kw: &str) -> Vec<&'a str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && s[i..].starts_with(kw) {
+            parts.push(&s[start..i]);
+            i += kw.len();
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
+/// Avalia a condição de um `@supports`.
+pub fn supports_matches(cond: &str) -> bool {
+    let c = cond.trim();
+    let lower = c.to_ascii_lowercase();
+    let ors = split_keyword(&lower, " or ");
+    if ors.len() > 1 {
+        return ors.iter().any(|p| supports_matches(p));
+    }
+    let ands = split_keyword(&lower, " and ");
+    if ands.len() > 1 {
+        return ands.iter().all(|p| supports_matches(p));
+    }
+    if let Some(rest) = lower.strip_prefix("not") {
+        let rest = rest.trim_start();
+        if rest.starts_with('(') {
+            return !supports_matches(rest);
+        }
+    }
+    if let Some(inner) = lower.strip_prefix("selector(").and_then(|r| r.strip_suffix(')')) {
+        return parse_selector_list(inner).is_some();
+    }
+    if let Some(inner) = lower.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+        let inner = inner.trim();
+        if inner.starts_with('(') || inner.starts_with("not") || inner.starts_with("selector(") {
+            return supports_matches(inner);
+        }
+        return match inner.split_once(':') {
+            Some((n, v)) => supports_declaration(n, v),
+            None => false,
+        };
+    }
+    false
+}
+
