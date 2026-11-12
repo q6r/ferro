@@ -675,3 +675,72 @@ fn make_aggregate(vm: &mut Vm, errors: Vec<Value>) -> Value {
     }
 }
 
+/// Esqueleto comum: itera, resolve cada item e liga os callbacks.
+fn combinator(vm: &mut Vm, a: &CallArgs, mode: u8) -> Result<Value, Value> {
+    let cap = vm.new_capability(&a.this)?;
+    let result = (|| -> Result<(), Value> {
+        let items = vm.iterate_to_vec(&a.arg(0))?;
+        let rec = combinator_record(vm, &cap, items.len());
+        let resolve_m = vm.get_str(&a.this, "resolve")?;
+        for (i, item) in items.into_iter().enumerate() {
+            let p = vm.call(&resolve_m, a.this.clone(), vec![item])?;
+            let (on_f, on_r) = match mode {
+                0 => {
+                    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
+                    (Value::Object(element_fn(vm, &rec, i, 0)), cap.reject.clone())
+                }
+                1 => {
+                    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
+                    (Value::Object(element_fn(vm, &rec, i, 1)), Value::Object(element_fn(vm, &rec, i, 2)))
+                }
+                2 => (cap.resolve.clone(), cap.reject.clone()),
+                _ => {
+                    vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
+                    (cap.resolve.clone(), Value::Object(element_fn(vm, &rec, i, 3)))
+                }
+            };
+            let then = vm.get_str(&p, "then")?;
+            vm.call(&then, p, vec![on_f, on_r])?;
+        }
+        if mode != 2 && rec_done(vm, &rec) {
+            let values = rec_get(&rec, "values");
+            if mode == 3 {
+                let errors = super::function::list_from_array_like(vm, &values)?;
+                let agg = make_aggregate(vm, errors);
+                vm.call(&cap.reject, Value::Undefined, vec![agg])?;
+            } else {
+                vm.call(&cap.resolve, Value::Undefined, vec![values])?;
+            }
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        vm.call(&cap.reject, Value::Undefined, vec![e])?;
+    }
+    Ok(cap.promise)
+}
+
+fn promise_all(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    combinator(vm, a, 0)
+}
+
+fn promise_all_settled(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    combinator(vm, a, 1)
+}
+
+fn promise_race(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    combinator(vm, a, 2)
+}
+
+fn promise_any(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    combinator(vm, a, 3)
+}
+
+fn queue_microtask(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let f = a.arg(0);
+    if !f.is_callable() {
+        return Err(vm.type_error("Failed to execute 'queueMicrotask': parameter 1 is not of type 'Function'."));
+    }
+    vm.microtasks.push_back(Job::Call(f, Vec::new()));
+    Ok(Value::Undefined)
+}
