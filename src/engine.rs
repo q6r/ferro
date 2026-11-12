@@ -185,3 +185,85 @@ pub fn load_with(net: &Net, url: &Url, post: Option<&crate::script::PostData>) -
     Ok(page_from_response(net, res))
 }
 
+fn page_from_response(net: &Net, res: net::Response) -> Loaded {
+    let ct = res.content_type.as_deref().unwrap_or("").to_ascii_lowercase();
+    let text = if ct.starts_with("image/") {
+        format!(
+            "<html><head><title>{0}</title></head><body style=\"margin:0;background:#0e0e0e;text-align:center\"><img src=\"{0}\" style=\"max-width:100%\"></body></html>",
+            escape_html(res.url.as_str())
+        )
+    } else if ct.starts_with("text/plain") || (ct.is_empty() && res.url.path().ends_with(".txt")) {
+        format!(
+            "<pre style=\"white-space:pre-wrap\">{}</pre>",
+            escape_html(&net::decode_text(&res.body, res.content_type.as_deref(), false))
+        )
+    } else {
+        net::decode_text(&res.body, res.content_type.as_deref(), true)
+    };
+    let doc = html::parse(&text);
+    let base = base_url(&doc, &res.url);
+    let title = doc
+        .find_first("title")
+        .map(|t| doc.text_content(t).split_whitespace().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default();
+    let (css, sheet_texts) = fetch_stylesheets(&doc, &base, net);
+    Loaded {
+        url: res.url,
+        base,
+        status: res.status,
+        doc,
+        css,
+        title,
+        sheet_texts,
+    }
+}
+
+pub fn base_url(doc: &Document, page: &Url) -> Url {
+    doc.find_first("base")
+        .and_then(|b| doc.element(b)?.attr("href"))
+        .and_then(|h| page.join(h.trim()).ok())
+        .unwrap_or_else(|| page.clone())
+}
+
+enum Source {
+    Inline(String),
+    Link(Url),
+}
+
+/// Troca os `url(...)` relativos do CSS por endereços absolutos (as URLs de
+/// uma folha externa são relativas a ela, não à página).
+pub fn absolutize_css_urls(css: &str, base: &Url) -> String {
+    let lower = css.to_ascii_lowercase();
+    let mut out = String::with_capacity(css.len() + 64);
+    let mut i = 0;
+    while let Some(off) = lower[i..].find("url(") {
+        let start = i + off + 4;
+        out.push_str(&css[i..start]);
+        let rest = &css[start..];
+        let lead = rest.len() - rest.trim_start().len();
+        let body = rest.trim_start();
+        // fim do url(): depois da aspa de fechamento, se houver
+        let end = match body.chars().next() {
+            Some(q @ ('"' | '\'')) => body[1..].find(q).and_then(|e| body[e + 2..].find(')').map(|p| e + 2 + p)),
+            _ => body.find(')'),
+        };
+        let Some(end) = end else {
+            i = start;
+            break;
+        };
+        let raw = body[..end].trim().trim_matches(|c| c == '"' || c == '\'');
+        if raw.is_empty() || raw.starts_with("data:") || raw.starts_with('#') {
+            out.push_str(&rest[..lead + end]);
+        } else if let Ok(u) = base.join(raw) {
+            out.push('"');
+            out.push_str(u.as_str());
+            out.push('"');
+        } else {
+            out.push_str(&rest[..lead + end]);
+        }
+        i = start + lead + end;
+    }
+    out.push_str(&css[i..]);
+    out
+}
+
