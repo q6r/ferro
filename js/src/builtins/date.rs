@@ -254,3 +254,89 @@ fn parse_date_vm(vm: &Vm, s: &str) -> f64 {
     time_clip(if local { local_to_utc(vm, t) } else { t })
 }
 
+fn parse_iso(s: &str) -> Option<(f64, bool)> {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let num = |i: &mut usize, n: usize| -> Option<i64> {
+        if *i + n > b.len() || !b[*i..*i + n].iter().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let v = std::str::from_utf8(&b[*i..*i + n]).ok()?.parse().ok()?;
+        *i += n;
+        Some(v)
+    };
+    let year = if b.first() == Some(&b'+') || b.first() == Some(&b'-') {
+        let neg = b[0] == b'-';
+        i = 1;
+        let y = num(&mut i, 6)?;
+        if neg { -y } else { y }
+    } else {
+        num(&mut i, 4)?
+    };
+    let (mut month, mut day) = (1, 1);
+    if i < b.len() && b[i] == b'-' {
+        i += 1;
+        month = num(&mut i, 2)?;
+        if i < b.len() && b[i] == b'-' {
+            i += 1;
+            day = num(&mut i, 2)?;
+        }
+    }
+    let (mut h, mut mi, mut sec, mut ms) = (0, 0, 0, 0);
+    let mut offset: Option<i64> = None;
+    let date_only = i == b.len();
+    if i < b.len() {
+        if b[i] != b'T' && b[i] != b't' && b[i] != b' ' {
+            return None;
+        }
+        i += 1;
+        h = num(&mut i, 2)?;
+        if i >= b.len() || b[i] != b':' {
+            return None;
+        }
+        i += 1;
+        mi = num(&mut i, 2)?;
+        if i < b.len() && b[i] == b':' {
+            i += 1;
+            sec = num(&mut i, 2)?;
+            if i < b.len() && (b[i] == b'.' || b[i] == b',') {
+                i += 1;
+                let start = i;
+                while i < b.len() && b[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let frac = &s[start..i];
+                let frac = format!("{:0<3}", &frac[..frac.len().min(3)]);
+                ms = frac.parse().ok()?;
+            }
+        }
+        if i < b.len() {
+            match b[i] {
+                b'Z' | b'z' => {
+                    offset = Some(0);
+                    i += 1;
+                }
+                b'+' | b'-' => {
+                    let sign = if b[i] == b'-' { -1 } else { 1 };
+                    i += 1;
+                    let oh = num(&mut i, 2)?;
+                    if i < b.len() && b[i] == b':' {
+                        i += 1;
+                    }
+                    let om = num(&mut i, 2).unwrap_or(0);
+                    offset = Some(sign * (oh * 60 + om));
+                }
+                _ => return None,
+            }
+        }
+    }
+    if i != b.len() || !(1..=12).contains(&month) || !(1..=31).contains(&day) || h > 24 || mi > 59 || sec > 59 {
+        return None;
+    }
+    let d = make_day(year as f64, (month - 1) as f64, day as f64);
+    let t = d * MS_PER_DAY + make_time(h as f64, mi as f64, sec as f64, ms as f64);
+    let t = t - offset.unwrap_or(0) as f64 * 60_000.0;
+    // só data = UTC; data e hora sem fuso = hora local
+    Some((t, !date_only && offset.is_none()))
+}
+
