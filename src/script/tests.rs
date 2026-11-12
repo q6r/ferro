@@ -194,3 +194,74 @@ fn rolagem_dentro_de_elemento() {
     });
 }
 
+#[test]
+fn mouse_hover_e_cursor() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<style>
+                 #a:hover { width: 300px } #a { cursor: pointer; width: 200px; height: 50px }
+                 #capa { position: absolute; top: 0; left: 0; width: 500px; height: 30px; pointer-events: none }
+                 #menu { position: absolute; top: 100px; left: 0; width: 100px; height: 40px; z-index: 5 }
+               </style>
+               <body style="margin:0"><div id=a><span id=t>texto</span></div><div id=capa></div>
+               <div style="height:200px"><p id=fundo style="margin:0;padding-top:100px;height:40px">fundo</p></div>
+               <div id=menu></div>
+               <script>
+                 window.log = [];
+                 for (const ty of ['mouseover', 'mouseout', 'mouseenter', 'mouseleave'])
+                   a.addEventListener(ty, (e) => log.push(ty + ':' + e.target.id));
+                 a.addEventListener('mousemove', (e) => log.push('move:' + e.clientX));
+               </script></body>"#,
+        );
+        let _ = s.render();
+        assert_eq!(eval(&mut s, "a.getBoundingClientRect().width"), "200");
+        // a capa com pointer-events: none não pega o mouse
+        let c = s.mouse_move(Some((10.0, 10.0)));
+        assert_eq!(c, crate::style::Cursor::Pointer);
+        assert_eq!(eval(&mut s, "log.join()"), "mouseover:t,mouseenter:a,move:10");
+        assert_eq!(eval(&mut s, "a.matches(':hover') + ',' + t.matches(':hover')"), "true,true");
+        let _ = s.render();
+        assert_eq!(eval(&mut s, "a.getBoundingClientRect().width"), "300");
+        // o menu (z-index) fica por cima do parágrafo, que é mais fundo na árvore
+        eval(&mut s, "log = []");
+        let c = s.mouse_move(Some((10.0, 110.0)));
+        assert_eq!(c, crate::style::Cursor::Auto);
+        assert_eq!(eval(&mut s, "log.join()"), "mouseout:t,mouseleave:a");
+        assert_eq!(eval(&mut s, "document.querySelector(':hover:not(html):not(body)').id"), "menu");
+        let _ = s.render();
+        assert_eq!(eval(&mut s, "a.getBoundingClientRect().width"), "200");
+    });
+}
+
+#[test]
+fn modulos_es_na_pagina() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<script>window.log = []; document.addEventListener('DOMContentLoaded', () => log.push('dcl'));</script>
+               <script type=importmap>{"imports": {"util": "data:text/javascript,export const z = 3;"}}</script>
+               <script type=module>
+                 import v, { x } from "data:text/javascript,export default 5; export const x = 7;";
+                 import { z } from "util";
+                 log.push('m1:' + (v + x + z));
+                 const m = await import("data:text/javascript,export const y = 9;");
+                 log.push('dyn:' + m.y + ':' + Object.prototype.toString.call(m));
+               </script>
+               <script>log.push('classic');</script>"#,
+        );
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 2000 && eval(&mut s, "log.length") != "4" {
+            s.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(eval(&mut s, "log.join()"), "classic,m1:15,dcl,dyn:9:[object Module]");
+        // import() de um script clássico; erro de especificador
+        eval(&mut s, "import('data:text/javascript,export default 1').then(m => log.push('c:' + m.default)); import('nu').catch(e => log.push(e.name))");
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 2000 && eval(&mut s, "log.length") != "6" {
+            s.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(eval(&mut s, "log.slice(4).sort().join()"), "TypeError,c:1");
+    });
+}
+
