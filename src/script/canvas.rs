@@ -444,3 +444,60 @@ fn draw_text(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn u8c_array(vm: &mut Vm, bytes: &[u8]) -> R {
+    let o = ferro_js::builtins::typed::new_typed(vm, TaKind::U8C, bytes.len(), None)?;
+    if let Kind::TypedArray(t) = &o.borrow().kind {
+        t.data.borrow_mut().copy_from_slice(bytes);
+    }
+    Ok(Value::Object(o))
+}
+
+/// `cvGetData(el, x, y, w, h)` → Uint8ClampedArray.
+fn get_data(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let (x, y) = (num(vm, a, 1)? as i32, num(vm, a, 2)? as i32);
+    let (w, h) = (num(vm, a, 3)?.max(0.0) as usize, num(vm, a, 4)?.max(0.0) as usize);
+    let data = read(vm, |hb| hb.canvases.get(&n).map(|b| b.get_image_data(x, y, w, h)));
+    let data = data.unwrap_or_else(|| vec![0; w * h * 4]);
+    u8c_array(vm, &data)
+}
+
+/// `cvPutData(el, dados, w, h, dx, dy, sujo x, y, w, h)`.
+fn put_data(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let data = super::web::bytes_of(&a.arg(1)).unwrap_or_default();
+    let mut v = [0i32; 8];
+    for (i, x) in v.iter_mut().enumerate() {
+        *x = num(vm, a, 2 + i)? as i32;
+    }
+    with_bitmap(vm, n, |b| {
+        b.put_image_data(&data, v[0].max(0) as usize, v[1].max(0) as usize, v[2], v[3], (v[4], v[5], v[6], v[7]))
+    });
+    Ok(Value::Undefined)
+}
+
+/// `cvDataURL(el)`: PNG em base64.
+fn data_url(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let img = read(vm, |h| h.canvases.get(&n).map(Bitmap::snapshot));
+    let Some(img) = img.filter(|i| i.width > 0 && i.height > 0) else {
+        return Ok(Value::str("data:,"));
+    };
+    let png = crate::canvas::encode_png(&img);
+    Ok(Value::str(&format!("data:image/png;base64,{}", base64(&png))))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (b[0] as u32) << 16 | (b[1] as u32) << 8 | b[2] as u32;
+        out.push(B64[(n >> 18) as usize & 63] as char);
+        out.push(B64[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { B64[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { B64[n as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
