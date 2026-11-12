@@ -268,3 +268,116 @@ pub fn path_commands(d: &str) -> Vec<f64> {
     out
 }
 
+fn parse_path(d: &str) -> Vec<Seg> {
+    // separa em (comando, números)
+    let mut cmds: Vec<(char, Vec<f32>)> = Vec::new();
+    let mut start = None;
+    for (i, c) in d.char_indices() {
+        if c.is_ascii_alphabetic() && c != 'e' && c != 'E' {
+            if let Some((s, cmd)) = start {
+                cmds.push((cmd, numbers(&d[s..i])));
+            }
+            start = Some((i + 1, c));
+        }
+    }
+    if let Some((s, cmd)) = start {
+        cmds.push((cmd, numbers(&d[s..])));
+    }
+
+    let mut out = Vec::new();
+    let mut cur = (0.0f32, 0.0f32);
+    let mut start_pt = cur;
+    let mut last_ctrl: Option<(f32, f32)> = None; // para S/T
+    let mut last_quad: Option<(f32, f32)> = None;
+    for (cmd, args) in cmds {
+        let rel = cmd.is_ascii_lowercase();
+        let up = cmd.to_ascii_uppercase();
+        let off = |p: (f32, f32), cur: (f32, f32)| if rel { (p.0 + cur.0, p.1 + cur.1) } else { p };
+        let arity = match up {
+            'M' | 'L' | 'T' => 2,
+            'H' | 'V' => 1,
+            'C' => 6,
+            'S' | 'Q' => 4,
+            'A' => 7,
+            _ => 0,
+        };
+        if up == 'Z' {
+            out.push(Seg::Close);
+            cur = start_pt;
+            last_ctrl = None;
+            last_quad = None;
+            continue;
+        }
+        if arity == 0 || args.len() < arity {
+            continue;
+        }
+        for (k, a) in args.chunks_exact(arity).enumerate() {
+            let mut ctrl = None;
+            let mut quad = None;
+            match up {
+                'M' => {
+                    let p = off((a[0], a[1]), cur);
+                    if k == 0 {
+                        out.push(Seg::Move(p));
+                        start_pt = p;
+                    } else {
+                        out.push(Seg::Line(p)); // pares extras de M viram L
+                    }
+                    cur = p;
+                }
+                'L' => {
+                    cur = off((a[0], a[1]), cur);
+                    out.push(Seg::Line(cur));
+                }
+                'H' => {
+                    cur = (if rel { cur.0 + a[0] } else { a[0] }, cur.1);
+                    out.push(Seg::Line(cur));
+                }
+                'V' => {
+                    cur = (cur.0, if rel { cur.1 + a[0] } else { a[0] });
+                    out.push(Seg::Line(cur));
+                }
+                'C' => {
+                    let c1 = off((a[0], a[1]), cur);
+                    let c2 = off((a[2], a[3]), cur);
+                    let p = off((a[4], a[5]), cur);
+                    out.push(Seg::Cubic(c1, c2, p));
+                    ctrl = Some(c2);
+                    cur = p;
+                }
+                'S' => {
+                    let c1 = last_ctrl.map_or(cur, |c| (2.0 * cur.0 - c.0, 2.0 * cur.1 - c.1));
+                    let c2 = off((a[0], a[1]), cur);
+                    let p = off((a[2], a[3]), cur);
+                    out.push(Seg::Cubic(c1, c2, p));
+                    ctrl = Some(c2);
+                    cur = p;
+                }
+                'Q' | 'T' => {
+                    let q = if up == 'Q' {
+                        off((a[0], a[1]), cur)
+                    } else {
+                        last_quad.map_or(cur, |c| (2.0 * cur.0 - c.0, 2.0 * cur.1 - c.1))
+                    };
+                    let p = if up == 'Q' { off((a[2], a[3]), cur) } else { off((a[0], a[1]), cur) };
+                    // quadrática → cúbica
+                    let c1 = (cur.0 + 2.0 / 3.0 * (q.0 - cur.0), cur.1 + 2.0 / 3.0 * (q.1 - cur.1));
+                    let c2 = (p.0 + 2.0 / 3.0 * (q.0 - p.0), p.1 + 2.0 / 3.0 * (q.1 - p.1));
+                    out.push(Seg::Cubic(c1, c2, p));
+                    quad = Some(q);
+                    cur = p;
+                }
+                'A' => {
+                    let p = off((a[5], a[6]), cur);
+                    arc_to_cubics(cur, a[0], a[1], a[2], a[3] != 0.0, a[4] != 0.0, p, &mut out);
+                    cur = p;
+                }
+                _ => {}
+            }
+            last_ctrl = ctrl;
+            last_quad = quad;
+        }
+    }
+    out
+}
+
