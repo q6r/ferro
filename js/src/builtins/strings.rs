@@ -630,3 +630,60 @@ fn regexp_delegate(vm: &mut Vm, a: &CallArgs, sym: Sym, what: &str, flags: &str)
     vm.call(&m, rx, vec![Value::String(s)])
 }
 
+fn match_(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.realm.sym_match.clone();
+    regexp_delegate(vm, a, s, "match", "")
+}
+
+fn match_all(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(o) = &a.arg(0)
+        && matches!(o.borrow().kind, Kind::RegExp { .. })
+    {
+        let flags = vm.get_str(&a.arg(0), "flags")?;
+        if !vm.to_rust_string(&flags)?.contains('g') {
+            return Err(vm.type_error("String.prototype.matchAll called with a non-global RegExp argument"));
+        }
+    }
+    let s = vm.realm.sym_match_all.clone();
+    regexp_delegate(vm, a, s, "matchAll", "g")
+}
+
+fn search(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.realm.sym_search.clone();
+    regexp_delegate(vm, a, s, "search", "")
+}
+
+fn is_well_formed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "isWellFormed")?;
+    let u = s.units();
+    let mut i = 0;
+    while i < u.len() {
+        let c = u[i];
+        if (0xD800..0xDC00).contains(&c) {
+            if i + 1 < u.len() && (0xDC00..0xE000).contains(&u[i + 1]) {
+                i += 2;
+                continue;
+            }
+            return Ok(Value::Bool(false));
+        }
+        if (0xDC00..0xE000).contains(&c) {
+            return Ok(Value::Bool(false));
+        }
+        i += 1;
+    }
+    Ok(Value::Bool(true))
+}
+
+fn to_well_formed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "toWellFormed")?;
+    Ok(Value::String(JsStr::new(&s.to_rust())))
+}
+
+fn iterator(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "[Symbol.iterator]")?;
+    Ok(Value::Object(ObjRef::new(Object::new(
+        Some(vm.realm.string_iter_proto.clone()),
+        Kind::StringIter { s, pos: 0 },
+    ))))
+}
+
