@@ -1259,3 +1259,57 @@ fn insert_adjacent_html(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn insert_adjacent_element(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let pos = arg_string(vm, a, 0)?;
+    let el = arg_node(vm, a, 1)?;
+    let Some((p, before)) = adjacent(vm, n, &pos)? else { return Ok(Value::Null) };
+    insert(vm, p, el, before)?;
+    Ok(a.arg(1))
+}
+
+fn insert_adjacent_text(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let pos = arg_string(vm, a, 0)?;
+    let text = arg_string(vm, a, 1)?;
+    let Some((p, before)) = adjacent(vm, n, &pos)? else { return Ok(Value::Undefined) };
+    let t = write(vm, |h| h.page.doc.create(NodeData::Text(text)));
+    insert(vm, p, t, before)?;
+    Ok(Value::Undefined)
+}
+
+// -------------------------------------------------------------- seletores
+
+/// Compila um seletor; `:scope` vira um atributo temporário no elemento base.
+fn selector(vm: &mut Vm, src: &str) -> Result<(Vec<crate::css::Selector>, bool), Value> {
+    let scoped = src.contains(":scope");
+    let text = src.replace(":scope", "[data-ferro-scope]");
+    match crate::css::parse_selector_list(&text) {
+        Some(s) => Ok((s, scoped)),
+        None => Err(dom_error(vm, "SyntaxError", &format!("'{src}' is not a valid selector."))),
+    }
+}
+
+fn select(vm: &mut Vm, root: NodeId, src: &str, first: bool) -> Result<Vec<NodeId>, Value> {
+    let (sels, scoped) = selector(vm, src)?;
+    Ok(write(vm, |h| {
+        if scoped {
+            h.page.doc.set_attr(root, "data-ferro-scope", "");
+        }
+        let doc = &h.page.doc;
+        let mut out = Vec::new();
+        for d in doc.descendants(root) {
+            if is_element(doc, d) && sels.iter().any(|s| crate::css::matches(doc, d, s)) {
+                out.push(d);
+                if first {
+                    break;
+                }
+            }
+        }
+        if scoped {
+            h.page.doc.remove_attr(root, "data-ferro-scope");
+        }
+        out
+    }))
+}
+
