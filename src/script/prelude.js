@@ -3466,3 +3466,167 @@ document.addEventListener('blur', (e) => {
   }
 }, true);
 
+// ---------------------------------------------------- ganchos do Rust
+const hooks = {
+  key(key, text, ctrl, shift, alt, meta) {
+    const target = document.activeElement || document.body || document.documentElement;
+    const kc = keyCodeOf(key);
+    const init = { key, code: codeOf(key), bubbles: true, cancelable: true, composed: true, view: G,
+      keyCode: kc, which: kc, charCode: 0, ctrlKey: ctrl, shiftKey: shift, altKey: alt, metaKey: meta };
+    const ok = fireTrusted(target, new KeyboardEvent('keydown', init));
+    if (ok) {
+      const printable = text && !ctrl && !meta && !/[\x00-\x1f\x7f]/.test(text);
+      if (printable) {
+        const cc = text.charCodeAt(0);
+        const press = fireTrusted(target, new KeyboardEvent('keypress', { ...init, charCode: cc, keyCode: cc, which: cc }));
+        if (press) {
+          if (editable(target)) editText(target, 'insertText', text);
+          else if (text === ' ' && (target.localName === 'button' || (target.localName === 'input' && /checkbox|radio|button|submit/.test(target.type)))) target.click();
+        }
+      } else if (key === 'Backspace') editText(target, 'deleteContentBackward');
+      else if (key === 'Delete') editText(target, 'deleteContentForward');
+      else if (key === 'Enter') {
+        if (target.localName === 'textarea' || (target.isContentEditable && target.localName !== 'input')) editText(target, 'insertLineBreak', '\n');
+        else if (target.localName === 'input' && target.form && editable(target)) {
+          const btn = target.form.querySelector('button:not([type=button]):not([type=reset]), input[type=submit], input[type=image]');
+          if (btn) btn.click(); else target.form.requestSubmit();
+        } else if (target.localName === 'a' || target.localName === 'button') target.click();
+      } else if (key === 'Tab') moveFocus(shift ? -1 : 1);
+      else if ((key === 'ArrowLeft' || key === 'ArrowRight' || key === 'Home' || key === 'End') && (target.localName === 'input' || target.localName === 'textarea') && editable(target)) {
+        let [a] = caretOf(target);
+        const len = target.value.length;
+        a = key === 'Home' ? 0 : key === 'End' ? len : Math.max(0, Math.min(len, a + (key === 'ArrowLeft' ? -1 : 1)));
+        SEL.set(target, [a, a]);
+      } else if (key === 'a' && ctrl && (target.localName === 'input' || target.localName === 'textarea')) {
+        SEL.set(target, [0, target.value.length]);
+      }
+    }
+    fireTrusted(target, new KeyboardEvent('keyup', init));
+  },
+  editing() { return editable(document.activeElement); },
+  fire(target, type, bubbles, cancelable) {
+    const ev = new Event(String(type), { bubbles: !!bubbles, cancelable: !!cancelable });
+    return fireTrusted(target, ev);
+  },
+  click(target, x, y) {
+    const init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y,
+      button: 0, view: G, detail: 1 };
+    const down = { ...init, buttons: 1 };
+    fireTrusted(target, new G.PointerEvent('pointerdown', down));
+    const ok = fireTrusted(target, new MouseEvent('mousedown', down));
+    if (ok) {
+      const f = target.closest && target.closest('a[href], button, input, select, textarea, [tabindex], [contenteditable]');
+      if (f && f.focus) f.focus();
+      else if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
+    }
+    fireTrusted(target, new G.PointerEvent('pointerup', init));
+    fireTrusted(target, new MouseEvent('mouseup', init));
+    const allowed = fireTrusted(target, new G.PointerEvent('click', init));
+    if (allowed) {
+      // botão de envio dentro de formulário: submit
+      const btn = target.closest && target.closest('button, input[type=submit], input[type=image]');
+      if (btn && !btn.disabled && (btn.localName === 'input' || btn.type === 'submit')) {
+        const form = btn.form;
+        if (form) { form.requestSubmit(btn); return false; }
+      }
+      // controles nativos: clicar no vídeo toca/pausa
+      const media = target.closest && target.closest('video[controls], audio[controls]');
+      if (media) {
+        if (media.paused) media.play().catch(() => {}); else media.pause();
+        return false;
+      }
+      // <select>: abre a lista de opções (a interface desenha)
+      const sel = target.closest && target.closest('select');
+      if (sel && !sel.disabled && !sel.multiple) {
+        const opts = [...sel.options];
+        N.openSelect(sel, opts.map((o) => (o.label || o.textContent || '').trim().replace(/\s+/g, ' ')),
+          opts.map((o) => o.disabled), sel.selectedIndex);
+        return false;
+      }
+      // label: repassa o clique ao controle
+      const label = target.closest && target.closest('label');
+      if (label && label.control && !label.control.contains(target)) {
+        label.control.click();
+        return false;
+      }
+    }
+    return allowed;
+  },
+  move(target, x, y, prev, changed) {
+    const base = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y,
+      button: 0, buttons: 0, view: G, detail: 0 };
+    const quiet = { ...base, bubbles: false, cancelable: false };
+    // elementos da cadeia até a raiz (atravessando a sombra)
+    const chain = (n) => {
+      const out = [];
+      for (let c = n; c; c = c.parentNode || (c.nodeType === 11 && c.host) || null) if (c.nodeType === 1) out.push(c);
+      return out;
+    };
+    if (changed) {
+      const oldC = prev ? chain(prev) : [], newC = target ? chain(target) : [];
+      const oldS = new Set(oldC), newS = new Set(newC);
+      if (prev) {
+        fireTrusted(prev, new G.PointerEvent('pointerout', { ...base, relatedTarget: target }));
+        fireTrusted(prev, new MouseEvent('mouseout', { ...base, relatedTarget: target }));
+        for (const n of oldC) if (!newS.has(n)) {
+          fireTrusted(n, new G.PointerEvent('pointerleave', { ...quiet, relatedTarget: target }));
+          fireTrusted(n, new MouseEvent('mouseleave', { ...quiet, relatedTarget: target }));
+        }
+      }
+      if (target) {
+        fireTrusted(target, new G.PointerEvent('pointerover', { ...base, relatedTarget: prev }));
+        fireTrusted(target, new MouseEvent('mouseover', { ...base, relatedTarget: prev }));
+        for (let i = newC.length - 1; i >= 0; i--) if (!oldS.has(newC[i])) {
+          fireTrusted(newC[i], new G.PointerEvent('pointerenter', { ...quiet, relatedTarget: prev }));
+          fireTrusted(newC[i], new MouseEvent('mouseenter', { ...quiet, relatedTarget: prev }));
+        }
+      }
+    }
+    if (target) {
+      fireTrusted(target, new G.PointerEvent('pointermove', base));
+      fireTrusted(target, new MouseEvent('mousemove', base));
+    }
+  },
+  rect(x, y, w, h) { return new DOMRect(x, y, w, h); },
+  mediaFile(el, ok) {
+    const s = mediaOf(el);
+    if (ok) {
+      s.network = 1;
+      if (el.autoplay) el.play().catch(() => {});
+    } else {
+      s.network = 3;
+      s.error = new MediaError(4, 'Formato não suportado pelo Ferro');
+      fireTrusted(el, new Event('error'));
+    }
+  },
+  selectChoose(sel, i) {
+    if (sel.selectedIndex === i) return;
+    sel.selectedIndex = i;
+    fireTrusted(sel, new Event('input', { bubbles: true, composed: true }));
+    fireTrusted(sel, new Event('change', { bubbles: true }));
+  },
+  frameMessage(el, json, origin) {
+    fireTrusted(G, new MessageEvent('message', { data: unpackMessage(json), origin, source: el.contentWindow }));
+  },
+  parentMessage(json, origin) {
+    fireTrusted(G, new MessageEvent('message', { data: unpackMessage(json), origin, source: G.parent }));
+  },
+  fullscreenChanged(el) {
+    const target = el.isConnected ? el : document;
+    fireTrusted(target, new Event('fullscreenchange', { bubbles: true, composed: true }));
+    fireTrusted(target, new Event('webkitfullscreenchange', { bubbles: true, composed: true }));
+  },
+  // módulos ES (ver script/module.rs)
+  newNamespace() {
+    const ns = Object.create(null);
+    Object.defineProperty(ns, Symbol.toStringTag, { value: 'Module' });
+    return ns;
+  },
+  importMeta(url) { return { url, resolve: (s) => new URL(s, url).href }; },
+  moduleDone(p, ns) { return Promise.resolve(p).then(() => ns); },
+  fireLater(target, type) { setTimeout(() => fireTrusted(target, new Event(String(type))), 0); },
+  mutation: notifyMutation,
+  connected,
+  disconnected,
+  attributeChanged,
+};
