@@ -1802,3 +1802,128 @@ impl Compiler {
         std::mem::take(&mut self.f().pending_labels)
     }
 
+    fn stmt(&mut self, s: &Stmt) -> CResult<()> {
+        if !matches!(s, Stmt::Labeled(..) | Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::ForOf { .. } | Stmt::While(..) | Stmt::DoWhile(..)) {
+            self.f().pending_labels.clear();
+        }
+        match s {
+            Stmt::Expr(e, line) => {
+                self.line(*line);
+                match self.fr().completion {
+                    Some(r) => {
+                        self.expr(e)?;
+                        self.emit(Op::SetReg(r));
+                    }
+                    None => self.expr_void(e)?,
+                }
+            }
+            Stmt::Var(kind, decls, line) => {
+                self.line(*line);
+                self.var_decls(*kind, decls, *line)?;
+            }
+            Stmt::Function(_) => {}
+            Stmt::Class(c) => {
+                self.line(c.line);
+                self.class(c, None)?;
+                let name = c.name.clone().unwrap_or_else(|| "".into());
+                self.init(&name);
+            }
+            Stmt::Return(e, line) => {
+                self.line(*line);
+                if self.fr().is_script {
+                    return syntax("'return' fora de função", *line);
+                }
+                match e {
+                    Some(e) => self.expr(e)?,
+                    None => {
+                        self.emit(Op::Undef);
+                    }
+                }
+                self.emit_return()?;
+            }
+            Stmt::If(test, cons, alt) => {
+                self.expr(test)?;
+                let j = self.emit(Op::JumpIfFalse(0));
+                self.stmt(cons)?;
+                match alt {
+                    Some(alt) => {
+                        let j2 = self.emit(Op::Jump(0));
+                        self.patch(j);
+                        self.stmt(alt)?;
+                        self.patch(j2);
+                    }
+                    None => self.patch(j),
+                }
+            }
+            Stmt::Block(b) => self.block(b)?,
+            Stmt::For { init, test, update, body } => self.for_loop(init, test, update, body)?,
+            Stmt::ForIn { left, right, body } => self.for_in(left, right, body)?,
+            Stmt::ForOf { left, right, body, is_await } => {
+                if *is_await && !self.fr().is_async {
+                    return syntax("for await só pode ser usado dentro de funções async", 0);
+                }
+                self.for_of(left, right, body, *is_await)?;
+            }
+            Stmt::While(test, body) => {
+                let labels = self.take_labels();
+                let top = self.here();
+                self.expr(test)?;
+                let exit = self.emit(Op::JumpIfFalse(0));
+                self.push_loop(labels, LoopKind::Plain);
+                self.stmt(body)?;
+                self.emit(Op::Jump(top as u32));
+                self.pop_loop(top, Some(exit));
+            }
+            Stmt::DoWhile(body, test) => {
+                let labels = self.take_labels();
+                let top = self.here();
+                self.push_loop(labels, LoopKind::Plain);
+                self.stmt(body)?;
+                let cont = self.here();
+                self.expr(test)?;
+                self.emit(Op::JumpIfTrue(top as u32));
+                self.pop_loop(cont, None);
+            }
+            Stmt::Break(label, line) => self.jump_out(label.as_ref(), false, *line)?,
+            Stmt::Continue(label, line) => self.jump_out(label.as_ref(), true, *line)?,
+            Stmt::Throw(e, line) => {
+                self.line(*line);
+                self.expr(e)?;
+                self.emit(Op::Throw);
+            }
+            Stmt::Try {
+                block,
+                param,
+                handler,
+                finalizer,
+            } => self.try_stmt(block, param.as_ref(), handler.as_deref(), finalizer.as_deref())?,
+            Stmt::Switch(disc, cases) => self.switch(disc, cases)?,
+            Stmt::Labeled(label, body) => {
+                self.f().pending_labels.push(label.clone());
+                match &**body {
+                    Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::ForOf { .. } | Stmt::While(..) | Stmt::DoWhile(..) | Stmt::Labeled(..) => {
+                        self.stmt(body)?;
+                    }
+                    _ => {
+                        let labels = self.take_labels();
+                        let env_depth = self.fr().env_depth;
+                        self.f().ctl.push(Ctl::Block {
+                            labels,
+                            breaks: Vec::new(),
+                            env_depth,
+                            is_switch: false,
+                        });
+                        self.stmt(body)?;
+                        if let Some(Ctl::Block { breaks, .. }) = self.f().ctl.pop() {
+                            for b in breaks {
+                                self.patch(b);
+                            }
+                        }
+                    }
+                }
+            }
+            Stmt::Empty | Stmt::Debugger => {}
+        }
+        Ok(())
+    }
+
