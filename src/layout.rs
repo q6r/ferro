@@ -1420,3 +1420,50 @@ impl<'a> Ctx<'a> {
         (l, r, next)
     }
 
+    /// Posiciona um float no bloco contêiner [cb_x, cb_x + cb_w) a partir de `y`.
+    fn place_float(&mut self, b: &'a LayoutBox, cb_x: f32, cb_w: f32, y: f32, inh: &Inherited) -> FloatBox {
+        let s = &b.style;
+        let left = s.float != Float::Right;
+        let bm = self.shrink_bm(b, cb_w, false);
+        let outer_w = bm.content_w + bm.extra_h() + bm.margin[LEFT] + bm.margin[RIGHT];
+        let mut top = y;
+        if s.clear != Clear::None {
+            top = top.max(self.clear_y(s.clear));
+        }
+        // floats anteriores ficam acima ou ao lado, nunca abaixo
+        if let Some(prev) = self.bfc_floats().last() {
+            top = top.max(prev.rect.y);
+        }
+        let mut guard = 0;
+        let (l, r) = loop {
+            let (l, r, next) = self.free_band(top, 1.0, cb_x, cb_w);
+            match next {
+                Some(n) if r - l < outer_w - 0.5 && guard < 50 => {
+                    top = n;
+                    guard += 1;
+                }
+                _ => break (l, r),
+            }
+        };
+        let x = if left { l } else { r - outer_w };
+        let order = self.next_layer;
+        self.next_layer += 1;
+        let mark = self.mark();
+        let res = self.layout_block(b, &bm, x, top + bm.margin[TOP], inh, Opts::bfc());
+        let items = self.items.split_off(mark.items);
+        self.layers.push(Layer { z: 0, order, items, fixed: self.in_fixed > 0 });
+        let f = FloatBox {
+            rect: Rect {
+                x,
+                y: top,
+                w: outer_w,
+                h: bm.margin[TOP] + res.height + bm.margin[BOTTOM],
+            },
+            left,
+        };
+        self.floats.push(f);
+        f
+    }
+
+    // ------------------------------------------------------------ blocos
+
