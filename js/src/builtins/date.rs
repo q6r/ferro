@@ -694,3 +694,67 @@ fn set_time(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(set_this_time(a, t))
 }
 
+/// Aplica componentes novos (índices de Parts: 0=ano ... 6=ms) a partir de `first`.
+fn set_parts(vm: &mut Vm, a: &CallArgs, first: usize, max: usize, local: bool) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    let n = nums(vm, a, 0, max)?;
+    let base = if t.is_nan() {
+        if first == 0 { 0.0 } else { return Ok(Value::Number(f64::NAN)) }
+    } else if local {
+        t + offset_ms(vm, t)
+    } else {
+        t
+    };
+    let p = parts(base);
+    let mut c = [
+        p.year as f64,
+        p.month as f64,
+        p.day as f64,
+        p.hour as f64,
+        p.minute as f64,
+        p.second as f64,
+        p.ms as f64,
+    ];
+    if n.is_empty() {
+        return Ok(set_this_time(a, f64::NAN));
+    }
+    for (k, v) in n.iter().enumerate() {
+        c[first + k] = *v;
+    }
+    let t = make_day(c[0], c[1], c[2]) * MS_PER_DAY + make_time(c[3], c[4], c[5], c[6]);
+    let t = if local { local_to_utc(vm, t) } else { t };
+    Ok(set_this_time(a, t))
+}
+
+fn set_ms(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 6, 1, true)
+}
+
+fn set_utc_ms(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 6, 1, false)
+}
+
+fn set_seconds(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 5, 2, true)
+}
+
+fn set_utc_seconds(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 5, 2, false)
+}
+
+fn set_minutes(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 4, 3, true)
+}
+
+fn set_utc_minutes(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 4, 3, false)
+}
+
+fn set_hours(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 3, 4, true)
+}
+
+fn set_utc_hours(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    set_parts(vm, a, 3, 4, false)
+}
+
