@@ -910,3 +910,84 @@ pub fn sort_values(vm: &mut Vm, mut vals: Vec<Value>, cmp: &Value) -> Result<Vec
     Ok(out)
 }
 
+fn sort(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let cmp = a.arg(0);
+    if !cmp.is_undefined() && !cmp.is_callable() {
+        return Err(vm.type_error("The comparison function must be either a function or undefined"));
+    }
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let mut vals = Vec::new();
+    let mut holes = 0;
+    for i in 0..len {
+        if has_i(vm, &o, i) {
+            vals.push(get_i(vm, &o, i)?);
+        } else {
+            holes += 1;
+        }
+    }
+    let sorted = sort_values(vm, vals, &cmp)?;
+    let n = sorted.len();
+    if is_plain_array(&o) {
+        if let Kind::Array(v) = &mut o.borrow_mut().kind {
+            *v = sorted;
+            v.extend(std::iter::repeat_n(Value::Empty, holes));
+        }
+        return Ok(Value::Object(o));
+    }
+    for (i, v) in sorted.into_iter().enumerate() {
+        set_i(vm, &o, i, v)?;
+    }
+    for i in n..len {
+        del_i(vm, &o, i)?;
+    }
+    Ok(Value::Object(o))
+}
+
+fn splice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let del = if a.args.is_empty() {
+        0
+    } else if a.args.len() == 1 {
+        len - start
+    } else {
+        let n = vm.to_integer(&a.arg(1))?;
+        (n.max(0.0) as usize).min(len - start)
+    };
+    let items: Vec<Value> = a.args.iter().skip(2).cloned().collect();
+    if is_plain_array(&o) {
+        let removed: Vec<Value> = if let Kind::Array(v) = &mut o.borrow_mut().kind {
+            v.splice(start..start + del, items).collect()
+        } else {
+            Vec::new()
+        };
+        return Ok(vm.array_value(removed));
+    }
+    let mut removed = Vec::new();
+    for k in 0..del {
+        removed.push(get_i(vm, &o, start + k)?);
+    }
+    let n = items.len();
+    if n < del {
+        for k in start..len - del {
+            let v = get_i(vm, &o, k + del)?;
+            set_i(vm, &o, k + n, v)?;
+        }
+        for k in (len - del + n..len).rev() {
+            del_i(vm, &o, k)?;
+        }
+    } else if n > del {
+        for k in (start..len - del).rev() {
+            let v = get_i(vm, &o, k + del)?;
+            set_i(vm, &o, k + n, v)?;
+        }
+    }
+    for (k, v) in items.into_iter().enumerate() {
+        set_i(vm, &o, start + k, v)?;
+    }
+    set_len(vm, &o, len - del + n)?;
+    Ok(vm.array_value(removed))
+}
+
