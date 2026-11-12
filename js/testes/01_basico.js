@@ -1,0 +1,16 @@
+console.log(1 + "2", "3" * "4", true + 1, null + 1, undefined + 1, [] + [], [] + {}, [1, 2] + [3]);
+console.log(0.1 * 3, 1e21, 1e-7, 123456789.123, -0, 0 === -0, Object.is(0, -0), 2 ** -1, (-8) ** (1 / 3));
+console.log(5 / 2 | 0, ~~-3.7, 7 >>> 1, -7 >> 1, 1 << 40, 0xff, 0o17, 0b1010, 1_000_000, .5 + .5);
+console.log(typeof NaN, typeof [], typeof new Date(), typeof class {}, typeof Symbol.iterator, void 0);
+console.log("abc" < "abd", "B" < "a", "10" < "9", 10 < 9, "10" < 9, null >= 0, undefined == 0, NaN <= NaN);
+console.log([10, 9, 1, 100].sort(), [10, 9, 1, 100].sort((a, b) => a - b), ["b", "a", "C"].sort());
+let a = 1; a += 2; a *= 3; a -= 1; a /= 2; a %= 3; a **= 3; a <<= 2; a >>= 1; a |= 1; a &= 7; a ^= 2;
+console.log(a);
+let u; u ??= 5; u ||= 6; u &&= 7; console.log(u);
+console.log(String(123), (123).toString(), 123 + "", `${123}`, String(null), String([1, [2, 3]]), String({}));
+console.log(Number(""), Number(" 42 "), Number("4 2"), Number(null), Number(undefined), Number([]), Number([5]), Number(true), Number("1e3"), Number("-0x10"));
+console.log(parseInt("0x1A"), parseInt("08"), parseInt("1010", 2), parseInt(""), parseFloat(".5abc"), parseFloat("-.e1"));
+console.log(isFinite("12"), Number.isFinite("12"), Number.isNaN("x"), isNaN("x"));
+console.log(Math.max(), Math.min(), Math.max(1, NaN), Math.min(-0, 0), Math.pow(2, 53) + 1, Math.sqrt(-1));
+console.log((25).toString(36), (0.5).toString(2), (-255).toString(16), (1e21).toFixed(2), (1.45).toFixed(1), (8.345).toFixed(2));
+console.log((123.456).toPrecision(2), (0.00001).toPrecision(1), (1234.5).toExponential(), (0).toFixed(2));
