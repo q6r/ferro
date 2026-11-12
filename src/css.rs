@@ -554,3 +554,109 @@ fn nth_matches(a: i32, b: i32, pos: i32) -> bool {
     diff % a == 0 && diff / a >= 0
 }
 
+fn match_compound(doc: &Document, node: NodeId, c: &Compound) -> bool {
+    let Some(el) = doc.element(node) else {
+        return false;
+    };
+    if let Some(tag) = &c.tag
+        && *tag != el.tag
+    {
+        return false;
+    }
+    if let Some(id) = &c.id
+        && el.id() != Some(id.as_str())
+    {
+        return false;
+    }
+    if !c.classes.iter().all(|cl| el.has_class(cl)) {
+        return false;
+    }
+    for a in &c.attrs {
+        let Some(v) = el.attr(&a.name) else {
+            return false;
+        };
+        let (v, want) = if a.case_insensitive {
+            (v.to_lowercase(), a.value.to_lowercase())
+        } else {
+            (v.to_string(), a.value.clone())
+        };
+        let ok = match a.op {
+            AttrOp::Exists => true,
+            AttrOp::Equals => v == want,
+            AttrOp::Includes => v.split_ascii_whitespace().any(|x| x == want),
+            AttrOp::DashMatch => v == want || v.starts_with(&format!("{want}-")),
+            AttrOp::Prefix => !want.is_empty() && v.starts_with(&want),
+            AttrOp::Suffix => !want.is_empty() && v.ends_with(&want),
+            AttrOp::Substring => !want.is_empty() && v.contains(&want),
+        };
+        if !ok {
+            return false;
+        }
+    }
+    for p in &c.pseudos {
+        let ok = match p {
+            Pseudo::Never => false,
+            Pseudo::Hover => dyn_state(|d| d.hover.contains(&node)),
+            Pseudo::Active => dyn_state(|d| d.active.contains(&node)),
+            Pseudo::Focus => dyn_state(|d| d.focus == Some(node)),
+            Pseudo::FocusVisible => dyn_state(|d| d.focus == Some(node) && d.focus_visible),
+            Pseudo::FocusWithin => dyn_state(|d| d.focus_within.contains(&node)),
+            Pseudo::Fullscreen => dyn_state(|d| d.fullscreen == Some(node)),
+            Pseudo::PlaceholderShown => {
+                el.attr("placeholder").is_some()
+                    && match el.tag.as_str() {
+                        "input" => el.attr("value").is_none_or(str::is_empty),
+                        "textarea" => doc.text_content(node).is_empty(),
+                        _ => false,
+                    }
+            }
+            Pseudo::Root => doc.parent_element(node).is_none(),
+            Pseudo::Link => matches!(el.tag.as_str(), "a" | "area") && el.attr("href").is_some(),
+            Pseudo::Empty => doc.node(node).children.iter().all(|&ch| match &doc.node(ch).data {
+                crate::dom::NodeData::Text(t) => t.is_empty(),
+                crate::dom::NodeData::Comment(_) => true,
+                _ => false,
+            }),
+            Pseudo::Checked => el.attr("checked").is_some() || el.attr("selected").is_some(),
+            Pseudo::Disabled => el.attr("disabled").is_some(),
+            Pseudo::Enabled => {
+                matches!(el.tag.as_str(), "input" | "button" | "select" | "textarea")
+                    && el.attr("disabled").is_none()
+            }
+            Pseudo::FirstChild
+            | Pseudo::LastChild
+            | Pseudo::OnlyChild
+            | Pseudo::NthChild(..)
+            | Pseudo::NthLastChild(..) => {
+                let (pos, count) = element_position(doc, node, None);
+                let last = count - pos + 1;
+                match p {
+                    Pseudo::FirstChild => pos == 1,
+                    Pseudo::LastChild => last == 1,
+                    Pseudo::OnlyChild => count == 1,
+                    Pseudo::NthChild(a, b) => nth_matches(*a, *b, pos),
+                    Pseudo::NthLastChild(a, b) => nth_matches(*a, *b, last),
+                    _ => unreachable!(),
+                }
+            }
+            Pseudo::FirstOfType | Pseudo::LastOfType | Pseudo::NthOfType(..) => {
+                let (pos, count) = element_position(doc, node, Some(el.tag.as_str()));
+                match p {
+                    Pseudo::FirstOfType => pos == 1,
+                    Pseudo::LastOfType => pos == count,
+                    Pseudo::NthOfType(a, b) => nth_matches(*a, *b, pos),
+                    _ => unreachable!(),
+                }
+            }
+            Pseudo::Not(list) => !list.iter().any(|s| matches(doc, node, s)),
+            Pseudo::Is(list) | Pseudo::Where(list) => list.iter().any(|s| matches(doc, node, s)),
+        };
+        if !ok {
+            return false;
+        }
+    }
+    true
+}
+
+// ------------------------------------------------------------ folha de estilo
+
