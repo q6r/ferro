@@ -1314,3 +1314,72 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Fundo e bordas de um trecho de elemento em linha.
+    fn paint_inline_seg(&mut self, seg: &Seg, line_x: f32, baseline: f32) {
+        let s = &seg.style;
+        if !s.visible {
+            return;
+        }
+        let font = self.fonts.for_style(s);
+        let m = self.fonts.line_metrics(font, s.font_size);
+        let (bt, bb) = (s.border(TOP), s.border(BOTTOM));
+        let bl = if seg.first { s.border(LEFT) } else { 0.0 };
+        let br = if seg.last { s.border(RIGHT) } else { 0.0 };
+        let (pt, pb) = (px(s.padding[TOP]), px(s.padding[BOTTOM]));
+        let r = Rect {
+            x: line_x + seg.x0,
+            y: baseline - m.ascent - pt - bt,
+            w: (seg.x1 - seg.x0).max(0.0),
+            h: m.ascent + m.descent + pt + pb + bt + bb,
+        };
+        let radius = radius_of(s, r);
+        if !s.background.is_transparent() && s.mask_image.is_none() {
+            self.items.push(if radius > 0.0 {
+                DisplayItem::RoundRect {
+                    rect: r,
+                    radius,
+                    color: s.background,
+                }
+            } else {
+                DisplayItem::Rect {
+                    rect: r,
+                    color: s.background,
+                }
+            });
+        }
+        if let Some(BgImage::Linear(_)) = &s.bg_image
+            && let Some(item) = self.bg_item(s, r, radius)
+        {
+            self.items.push(item);
+        }
+        if bt + bb + bl + br > 0.0 {
+            if radius > 0.0 {
+                self.items.push(DisplayItem::RoundBorder {
+                    rect: r,
+                    radius,
+                    width: bt.max(bb).max(bl).max(br),
+                    color: s.border_color(TOP),
+                });
+            } else {
+                for (k, rect) in [
+                    Rect { x: r.x, y: r.y, w: r.w, h: bt },
+                    Rect { x: r.x + r.w - br, y: r.y, w: br, h: r.h },
+                    Rect { x: r.x, y: r.y + r.h - bb, w: r.w, h: bb },
+                    Rect { x: r.x, y: r.y, w: bl, h: r.h },
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if rect.w > 0.0 && rect.h > 0.0 {
+                        self.items.push(DisplayItem::Rect {
+                            rect,
+                            color: s.border_color(k),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------- floats
+
