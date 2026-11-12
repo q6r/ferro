@@ -637,3 +637,41 @@ fn map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(out))
 }
 
+fn pop(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    if is_plain_array(&o)
+        && let Kind::Array(v) = &mut o.borrow_mut().kind
+    {
+        return Ok(match v.pop() {
+            Some(Value::Empty) | None => Value::Undefined,
+            Some(x) => x,
+        });
+    }
+    let len = vm.length_of(&o)?;
+    if len == 0 {
+        set_len(vm, &o, 0)?;
+        return Ok(Value::Undefined);
+    }
+    let v = get_i(vm, &o, len - 1)?;
+    del_i(vm, &o, len - 1)?;
+    set_len(vm, &o, len - 1)?;
+    Ok(v)
+}
+
+fn push(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    if is_plain_array(&o)
+        && let Kind::Array(v) = &mut o.borrow_mut().kind
+    {
+        v.extend(a.args.iter().cloned());
+        return Ok(Value::Number(v.len() as f64));
+    }
+    let len = vm.length_of(&o)?;
+    for (k, v) in a.args.iter().enumerate() {
+        set_i(vm, &o, len + k, v.clone())?;
+    }
+    let n = len + a.args.len();
+    set_len(vm, &o, n)?;
+    Ok(Value::Number(n as f64))
+}
+
