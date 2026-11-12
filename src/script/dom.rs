@@ -57,3 +57,81 @@ pub(crate) fn dom_error(vm: &mut Vm, name: &str, msg: &str) -> Value {
     vm.type_error(msg)
 }
 
+/// Array com o protótipo de NodeList/HTMLCollection.
+pub(crate) fn list(vm: &mut Vm, ids: Vec<NodeId>, iface: &str) -> Value {
+    let items: Vec<Value> = ids.into_iter().map(|n| wrap(vm, n)).collect();
+    let arr = vm.new_array(items);
+    if let Some(p) = read(vm, |h| h.protos.get(iface).cloned()) {
+        arr.borrow_mut().proto = Some(p);
+    }
+    Value::Object(arr)
+}
+
+fn is_element(doc: &Document, n: NodeId) -> bool {
+    doc.element(n).is_some_and(|e| e.tag != FRAGMENT_TAG)
+}
+
+fn element_children(doc: &Document, n: NodeId) -> Vec<NodeId> {
+    doc.node(n).children.iter().copied().filter(|&c| is_element(doc, c)).collect()
+}
+
+fn sibling(doc: &Document, n: NodeId, delta: isize, elements: bool) -> Option<NodeId> {
+    let p = doc.node(n).parent?;
+    let kids = &doc.node(p).children;
+    let mut i = kids.iter().position(|&c| c == n)? as isize;
+    loop {
+        i += delta;
+        if i < 0 || i as usize >= kids.len() {
+            return None;
+        }
+        let c = kids[i as usize];
+        if !elements || is_element(doc, c) {
+            return Some(c);
+        }
+    }
+}
+
+/// Elemento dentro de `<svg>`?
+fn in_svg(doc: &Document, mut n: NodeId) -> bool {
+    loop {
+        if doc.tag(n) == Some("svg") {
+            return true;
+        }
+        match doc.node(n).parent {
+            Some(p) => n = p,
+            None => return false,
+        }
+    }
+}
+
+/// Interface (protótipo) de um nó; elementos personalizados trazem o deles.
+pub(crate) fn interface_of(h: &Host, n: NodeId) -> (&'static str, Option<ObjRef>) {
+    let doc = &h.page.doc;
+    match &doc.node(n).data {
+        NodeData::Document => ("HTMLDocument", None),
+        NodeData::Doctype(_) => ("DocumentType", None),
+        NodeData::Text(_) => ("Text", None),
+        NodeData::Comment(_) => ("Comment", None),
+        NodeData::Element(e) => {
+            if e.tag == FRAGMENT_TAG {
+                if doc.shadow_hosts.contains_key(&n) {
+                    return ("ShadowRoot", None);
+                }
+                return ("DocumentFragment", None);
+            }
+            if let Some(c) = h.custom.get(&e.tag)
+                && let Some(Value::Object(p)) = c.borrow().own(&ferro_js::value::PropKey::str("prototype")).map(|p| match p.slot {
+                    ferro_js::value::Slot::Data { value, .. } => value,
+                    _ => Value::Undefined,
+                })
+            {
+                return ("HTMLElement", Some(p));
+            }
+            if e.tag != "svg" && in_svg(doc, n) {
+                return ("SVGElement", None);
+            }
+            (iface_for_tag(&e.tag), None)
+        }
+    }
+}
+
