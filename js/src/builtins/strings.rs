@@ -230,3 +230,55 @@ fn starts_with(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(&s.units()[start..start + search.len()] == search.units()))
 }
 
+fn includes(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "includes")?;
+    reject_regexp(vm, &a.arg(0), "includes")?;
+    let search = vm.to_string(&a.arg(0))?;
+    let start = rel_clamp(vm, &a.arg(1), s.len(), 0)?;
+    Ok(Value::Bool(s.find(&search, start).is_some()))
+}
+
+fn index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "indexOf")?;
+    let search = vm.to_string(&a.arg(0))?;
+    let start = rel_clamp(vm, &a.arg(1), s.len(), 0)?;
+    Ok(Value::Number(s.find(&search, start).map_or(-1.0, |i| i as f64)))
+}
+
+fn last_index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "lastIndexOf")?;
+    let search = vm.to_string(&a.arg(0))?;
+    let n = vm.to_number(&a.arg(1))?;
+    let from = if n.is_nan() { s.len() } else { crate::conv::to_integer(n).clamp(0.0, s.len() as f64) as usize };
+    Ok(Value::Number(s.rfind(&search, from).map_or(-1.0, |i| i as f64)))
+}
+
+fn locale_compare(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "localeCompare")?.to_rust();
+    let t = vm.to_rust_string(&a.arg(0))?;
+    let opts = a.arg(2);
+    let (mut numeric, mut sens) = (false, "variant".to_string());
+    if let Value::Object(_) = &opts {
+        numeric = crate::vm::truthy(&vm.get_str(&opts, "numeric")?);
+        let sv = vm.get_str(&opts, "sensitivity")?;
+        if !sv.is_undefined() {
+            sens = vm.to_rust_string(&sv)?;
+        }
+    }
+    let ord = super::intl::collate(&s, &t, numeric, &sens);
+    Ok(Value::Number(match ord {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    }))
+}
+
+fn normalize(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "normalize")?;
+    let form = if a.arg(0).is_undefined() { "NFC".to_string() } else { vm.to_rust_string(&a.arg(0))? };
+    if !matches!(form.as_str(), "NFC" | "NFD" | "NFKC" | "NFKD") {
+        return Err(vm.range_error(format!("The normalization form should be one of NFC, NFD, NFKC, NFKD.")));
+    }
+    Ok(Value::String(s))
+}
+
