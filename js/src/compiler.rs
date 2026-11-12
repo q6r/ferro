@@ -3582,3 +3582,100 @@ impl Compiler {
         Ok(())
     }
 
+    /// Função sintética que inicializa campos (de instância ou estáticos).
+    fn init_function(&mut self, members: &[(usize, &ClassMember)], class_name: &str, key: usize) -> CResult<u32> {
+        let mut usage = Usage::default();
+        for (_, m) in members {
+            match &m.kind {
+                MemberKind::Field(Some(e)) => usage.expr(e, 0, true),
+                MemberKind::StaticBlock(b) => usage.stmts(b, 0, true),
+                _ => {}
+            }
+            if let Some(f) = &m.func {
+                usage.func(f, 0, true);
+            }
+        }
+        self.fns.push(FnState::new(FnKind::FieldInit, true, usage.inner, false));
+        self.push_scope(ScopeKind::Function, key);
+        let uses_this = self.fr().captured.contains("this");
+        if uses_this {
+            self.declare("this".into(), Decl::Hidden, true, true);
+        }
+        let mut vars = Vec::new();
+        for (_, m) in members {
+            if let MemberKind::StaticBlock(b) = &m.kind {
+                var_names(b, &mut vars, false, false);
+            }
+        }
+        for v in &vars {
+            self.declare(v.clone(), Decl::Var, false, true);
+        }
+        let var_end = self.fr().reg_top;
+        self.open_env();
+        if uses_this {
+            self.emit(Op::ThisRaw);
+            self.init("this");
+        }
+        // métodos privados primeiro
+        for (_, m) in members {
+            if let (Some(f), PropKeyExpr::Private(n)) = (&m.func, &m.key) {
+                let kind = match m.kind {
+                    MemberKind::Getter => GETTER,
+                    MemberKind::Setter => SETTER,
+                    _ => METHOD,
+                };
+                self.emit(Op::This);
+                self.load_private(n)?;
+                let idx = self.function(f, Some(format!("#{n}").into()), None, false)?;
+                self.emit(Op::Closure(idx));
+                self.emit(Op::DefinePrivateMethod(kind));
+                self.emit(Op::Pop);
+            }
+        }
+        for (i, m) in members {
+            match &m.kind {
+                MemberKind::Field(init) => {
+                    self.emit(Op::This);
+                    let fname: Name = match &m.key {
+                        PropKeyExpr::Name(n) => {
+                            let c = self.konst(n);
+                            self.emit(Op::Str(c));
+                            n.clone()
+                        }
+                        PropKeyExpr::Computed(_) => {
+                            self.load(&format!("%k{i}"));
+                            "".into()
+                        }
+                        PropKeyExpr::Private(n) => {
+                            self.load_private(n)?;
+                            format!("#{n}").into()
+                        }
+                    };
+                    match init {
+                        Some(e) => self.expr_named(e, Some(fname))?,
+                        None => {
+                            self.emit(Op::Undef);
+                        }
+                    }
+                    if matches!(m.key, PropKeyExpr::Private(_)) {
+                        self.emit(Op::DefinePrivate);
+                    } else {
+                        self.emit(Op::DefineProp);
+                    }
+                    self.emit(Op::Pop);
+                }
+                MemberKind::StaticBlock(b) => self.block(b)?,
+                _ => {}
+            }
+        }
+        self.emit(Op::Undef);
+        self.emit(Op::Return);
+        let st = self.fns.pop().unwrap();
+        let name = JsStr::new(&format!("<campos de {class_name}>"));
+        let code = self.finish(st, name, 0, 0, var_end, FnKind::FieldInit, false, false, "".into(), 0);
+        let f = self.f();
+        f.functions.push(Rc::new(code));
+        Ok((f.functions.len() - 1) as u32)
+    }
+}
+
