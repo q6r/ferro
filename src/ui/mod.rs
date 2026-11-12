@@ -1571,3 +1571,49 @@ impl App {
         }
     }
 
+    /// Teclas com a lista de um `<select>` aberta.
+    fn select_key(&mut self, ev: &KeyEvent) {
+        let Some((_, popup, hl, _)) = &mut self.select else { return };
+        let n = popup.labels.len();
+        let ok = |i: usize| !popup.disabled.get(i).copied().unwrap_or(false);
+        match &ev.logical_key {
+            Key::Named(NamedKey::ArrowDown) => {
+                let mut i = *hl;
+                while i + 1 < n {
+                    i += 1;
+                    if ok(i) {
+                        *hl = i;
+                        break;
+                    }
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                let mut i = *hl;
+                while i > 0 {
+                    i -= 1;
+                    if ok(i) {
+                        *hl = i;
+                        break;
+                    }
+                }
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                let i = *hl;
+                return self.choose_option(i);
+            }
+            Key::Named(NamedKey::Escape | NamedKey::Tab) => {
+                self.select = None;
+            }
+            _ => {}
+        }
+        if let Some((_, _, hl, first)) = &mut self.select {
+            const ROWS: usize = 10;
+            if *hl < *first {
+                *first = *hl;
+            } else if *hl >= *first + ROWS {
+                *first = *hl + 1 - ROWS;
+            }
+        }
+        self.request_redraw();
+    }
+
