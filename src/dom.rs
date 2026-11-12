@@ -372,3 +372,80 @@ impl Document {
         }
     }
 
+    /// Copia o nó (e os descendentes, se `deep`); a cópia fica solta.
+    pub fn clone_node(&mut self, id: NodeId, deep: bool) -> NodeId {
+        let data = self.nodes[id].data.clone();
+        let data = if let NodeData::Document = data { NodeData::Element(ElementData { tag: FRAGMENT_TAG.into(), attrs: Vec::new() }) } else { data };
+        let copy = self.create(data);
+        if deep {
+            let kids = self.nodes[id].children.clone();
+            for k in kids {
+                let c = self.clone_node(k, true);
+                self.append(copy, c);
+            }
+        }
+        copy
+    }
+
+    /// HTML do nó (`outerHTML`) ou só dos filhos (`innerHTML`).
+    pub fn serialize(&self, id: NodeId, outer: bool) -> String {
+        let mut out = String::new();
+        if outer {
+            self.serialize_node(id, &mut out);
+        } else {
+            let raw = self.tag(id).is_some_and(|t| RAW_TEXT.contains(&t));
+            for &c in &self.nodes[id].children {
+                if raw && let NodeData::Text(t) = &self.nodes[c].data {
+                    out.push_str(t);
+                    continue;
+                }
+                self.serialize_node(c, &mut out);
+            }
+        }
+        out
+    }
+
+    fn serialize_node(&self, id: NodeId, out: &mut String) {
+        match &self.nodes[id].data {
+            NodeData::Document => {
+                for &c in &self.nodes[id].children {
+                    self.serialize_node(c, out);
+                }
+            }
+            NodeData::Doctype(d) => {
+                out.push_str("<!DOCTYPE ");
+                out.push_str(d);
+                out.push('>');
+            }
+            NodeData::Comment(c) => {
+                out.push_str("<!--");
+                out.push_str(c);
+                out.push_str("-->");
+            }
+            NodeData::Text(t) => out.push_str(&escape_text(t)),
+            NodeData::Element(e) => {
+                if e.tag == FRAGMENT_TAG {
+                    out.push_str(&self.serialize(id, false));
+                    return;
+                }
+                out.push('<');
+                out.push_str(&e.tag);
+                for (k, v) in &e.attrs {
+                    out.push(' ');
+                    out.push_str(k);
+                    out.push_str("=\"");
+                    out.push_str(&escape_attr(v));
+                    out.push('"');
+                }
+                out.push('>');
+                if VOID.contains(&e.tag.as_str()) {
+                    return;
+                }
+                out.push_str(&self.serialize(id, false));
+                out.push_str("</");
+                out.push_str(&e.tag);
+                out.push('>');
+            }
+        }
+    }
+
