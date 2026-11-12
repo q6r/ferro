@@ -171,3 +171,57 @@ pub enum TextTransform {
     Capitalize,
 }
 
+/// Ponteiro do mouse pedido pelo CSS (`cursor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Cursor {
+    #[default]
+    Auto,
+    Default,
+    Pointer,
+    Text,
+    Move,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    Wait,
+    Progress,
+    Help,
+    Crosshair,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ZoomIn,
+    ZoomOut,
+    None,
+}
+
+impl Cursor {
+    /// Lê o valor de `cursor` (`url(...) x y, pointer` fica com a palavra do fim).
+    pub fn parse(v: &str) -> Option<Cursor> {
+        let last = v.rsplit(',').next()?.trim().to_ascii_lowercase();
+        Some(match last.as_str() {
+            "auto" => Cursor::Auto,
+            "default" | "context-menu" | "alias" | "copy" | "cell" => Cursor::Default,
+            "pointer" | "hand" => Cursor::Pointer,
+            "text" | "vertical-text" => Cursor::Text,
+            "move" | "all-scroll" => Cursor::Move,
+            "not-allowed" | "no-drop" => Cursor::NotAllowed,
+            "grab" | "-webkit-grab" => Cursor::Grab,
+            "grabbing" | "-webkit-grabbing" => Cursor::Grabbing,
+            "wait" => Cursor::Wait,
+            "progress" => Cursor::Progress,
+            "help" => Cursor::Help,
+            "crosshair" => Cursor::Crosshair,
+            "ew-resize" | "col-resize" | "e-resize" | "w-resize" => Cursor::EwResize,
+            "ns-resize" | "row-resize" | "n-resize" | "s-resize" => Cursor::NsResize,
+            "nesw-resize" | "ne-resize" | "sw-resize" => Cursor::NeswResize,
+            "nwse-resize" | "nw-resize" | "se-resize" => Cursor::NwseResize,
+            "zoom-in" | "-webkit-zoom-in" => Cursor::ZoomIn,
+            "zoom-out" | "-webkit-zoom-out" => Cursor::ZoomOut,
+            "none" => Cursor::None,
+            _ => return None,
+        })
+    }
+}
+
