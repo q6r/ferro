@@ -225,3 +225,48 @@ unsafe impl GlobalAlloc for Alloc {
         }
     }
 
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        let size = layout.size();
+        if size > SMALL || layout.align() > 16 {
+            unsafe { System.dealloc(ptr, layout) };
+            return;
+        }
+        let c = class_of(size);
+        let ok = LOCAL.try_with(|l| unsafe {
+            let l = &mut *l.get();
+            *(ptr as *mut *mut u8) = l.free[c];
+            l.free[c] = ptr;
+        });
+        if ok.is_err() {
+            // sem lista local: vai para o estoque global
+            with_shared(|s| unsafe {
+                *(ptr as *mut *mut u8) = s.free[c];
+                s.free[c] = ptr;
+            });
+        }
+    }
+
+    #[inline]
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let old = layout.size();
+        let small_old = old <= SMALL && layout.align() <= 16;
+        let small_new = new_size <= SMALL && layout.align() <= 16;
+        if small_old && small_new && class_of(old) == class_of(new_size) {
+            return ptr;
+        }
+        if !small_old && !small_new {
+            return unsafe { System.realloc(ptr, layout, new_size) };
+        }
+        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        let p = unsafe { self.alloc(new_layout) };
+        if !p.is_null() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr, p, old.min(new_size));
+                self.dealloc(ptr, layout);
+            }
+        }
+        p
+    }
+}
+
