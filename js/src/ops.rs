@@ -1235,3 +1235,52 @@ impl Vm {
         Ok(Some(self.get_str(&res, "value")?))
     }
 
+    /// Passo de um iterador de array sem chamar `next` (None = use o caminho geral).
+    pub fn array_iter_fast(&mut self, it: &ObjRef) -> Option<Option<Value>> {
+        let mut b = it.borrow_mut();
+        let Kind::ArrayIter { target, index, kind } = &mut b.kind else { return None };
+        let Value::Object(t) = target else { return None };
+        let tb = t.0.try_borrow().ok()?;
+        let Kind::Array(v) = &tb.kind else { return None };
+        if *index >= v.len() {
+            *index = usize::MAX;
+            return Some(None);
+        }
+        let i = *index;
+        *index += 1;
+        let val = match v[i] {
+            Value::Empty => Value::Undefined,
+            ref x => x.clone(),
+        };
+        Some(Some(match kind {
+            IterKind::Values => val,
+            IterKind::Keys => Value::Number(i as f64),
+            IterKind::Entries => {
+                let pair = vec![Value::Number(i as f64), val];
+                Value::Object(ObjRef::new(Object::new(Some(self.realm.array_proto.clone()), Kind::Array(pair))))
+            }
+        }))
+    }
+
+    pub fn iter_close(&mut self, rec: &ObjRef) -> Result<(), Value> {
+        let iter = match &rec.borrow().kind {
+            Kind::IterRecord { iter, done, .. } => {
+                if *done {
+                    return Ok(());
+                }
+                iter.clone()
+            }
+            _ => return Ok(()),
+        };
+        set_done(rec);
+        let ret = self.get_str(&iter, "return")?;
+        if ret.is_nullish() {
+            return Ok(());
+        }
+        let r = self.call(&ret, iter, Vec::new())?;
+        if !matches!(r, Value::Object(_)) {
+            return Err(self.type_error("Iterator result is not an object"));
+        }
+        Ok(())
+    }
+
