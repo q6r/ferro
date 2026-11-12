@@ -809,3 +809,69 @@ impl Parser<'_> {
         (self.s[start..].iter().collect(), None)
     }
 
+    /// Lê o conteúdo de um bloco já aberto até o '}' correspondente (consumido).
+    fn read_block(&mut self) -> String {
+        let start = self.pos;
+        let mut depth = 1;
+        let mut quote: Option<char> = None;
+        while !self.eof() {
+            let c = self.s[self.pos];
+            if let Some(q) = quote {
+                if c == '\\' {
+                    self.pos += 1;
+                } else if c == q {
+                    quote = None;
+                }
+            } else {
+                match c {
+                    '"' | '\'' => quote = Some(c),
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let block = self.s[start..self.pos].iter().collect();
+                            self.pos += 1;
+                            return block;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.pos += 1;
+        }
+        self.s[start..].iter().collect()
+    }
+
+    fn parse_at_rule(&mut self, rules: &mut Vec<Rule>) {
+        self.pos += 1;
+        let mut name = String::new();
+        while !self.eof() && (self.s[self.pos].is_alphanumeric() || self.s[self.pos] == '-') {
+            name.push(self.s[self.pos].to_ascii_lowercase());
+            self.pos += 1;
+        }
+        let (prelude, stop) = self.read_prelude();
+        if stop != Some('{') {
+            return; // @import, @charset, @layer a, b; ...
+        }
+        self.pos += 1;
+        let include = match name.as_str() {
+            "media" => media_matches(&prelude, self.ctx),
+            "supports" => supports_matches(&prelude),
+            "layer" => true,
+            _ => false, // @font-face, @keyframes, @page, @container...
+        };
+        if include {
+            self.parse_rule_list(rules, true);
+        } else if name == "font-face" {
+            let block = self.read_block();
+            if let Some(f) = parse_font_face(&block) {
+                self.faces.push(f);
+            }
+        } else {
+            self.read_block();
+        }
+    }
+}
+
+// --------------------------------------------------------------- @supports
+
