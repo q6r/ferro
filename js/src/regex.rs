@@ -1300,3 +1300,57 @@ fn starts_anchored(n: &Node) -> bool {
     }
 }
 
+/// Analisa e compila um padrão.
+pub fn compile(pattern: &[u16], flags: Flags) -> Result<Program, RegexError> {
+    // padrão como pontos de código (pares substitutos viram um só)
+    let mut s = Vec::with_capacity(pattern.len());
+    let mut i = 0;
+    while i < pattern.len() {
+        let c = pattern[i] as u32;
+        if (0xD800..0xDC00).contains(&c) && i + 1 < pattern.len() && (0xDC00..0xE000).contains(&(pattern[i + 1] as u32)) {
+            s.push(0x10000 + ((c - 0xD800) << 10) + (pattern[i + 1] as u32 - 0xDC00));
+            i += 2;
+        } else {
+            s.push(c);
+            i += 1;
+        }
+    }
+    let mut p = Parser {
+        s,
+        i: 0,
+        u: flags.full_unicode(),
+        has_named: false,
+        total_groups: 0,
+        ngroups: 0,
+        names: Vec::new(),
+    };
+    p.prescan();
+    let tree = p.disjunction()?;
+    if p.i < p.s.len() {
+        return err(if p.s[p.i] == ')' as u32 { "Unmatched ')'" } else { "Unexpected character" });
+    }
+    let mut c = Compiler {
+        insts: Vec::new(),
+        classes: Vec::new(),
+        nregs: 2 * (p.ngroups + 1),
+        flags,
+        names: p.names.iter().cloned().collect(),
+    };
+    c.emit(Inst::Save(0));
+    c.compile(&tree, false)?;
+    c.emit(Inst::Save(1));
+    c.emit(Inst::Match);
+    Ok(Program {
+        insts: c.insts,
+        classes: c.classes,
+        ngroups: p.ngroups,
+        nregs: c.nregs,
+        names: p.names,
+        flags,
+        first: first_set(&tree, flags),
+        anchored: !flags.multiline && starts_anchored(&tree),
+    })
+}
+
+// ---------------------------------------------------------------- execução
+
