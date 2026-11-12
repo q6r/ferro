@@ -583,3 +583,71 @@ getter!(get_minutes, get_utc_minutes, |p: Parts| p.minute);
 getter!(get_seconds, get_utc_seconds, |p: Parts| p.second);
 getter!(get_ms, get_utc_ms, |p: Parts| p.ms);
 
+fn get_time(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Number(this_time(vm, a)?))
+}
+
+fn get_tz_offset(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::Number(if t.is_nan() { f64::NAN } else { -offset_ms(vm, t) / 60_000.0 + 0.0 }))
+}
+
+fn to_iso_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    if t.is_nan() {
+        return Err(vm.range_error("Invalid time value"));
+    }
+    Ok(Value::str(&iso_string(t)))
+}
+
+fn to_json(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let tv = vm.to_primitive(&a.this, Hint::Number)?;
+    if let Value::Number(n) = tv
+        && !n.is_finite()
+    {
+        return Ok(Value::Null);
+    }
+    let f = vm.get_str(&a.this, "toISOString")?;
+    vm.call(&f, a.this.clone(), Vec::new())
+}
+
+fn fmt_or_invalid(vm: &mut Vm, a: &CallArgs, f: fn(f64) -> String) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&if t.is_nan() { "Invalid Date".to_string() } else { f(t) }))
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&if t.is_nan() { "Invalid Date".to_string() } else { full_string(vm, t) }))
+}
+
+fn to_date_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&if t.is_nan() { "Invalid Date".to_string() } else { date_string(t + offset_ms(vm, t)) }))
+}
+
+fn to_time_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = this_time(vm, a)?;
+    Ok(Value::str(&if t.is_nan() {
+        "Invalid Date".to_string()
+    } else {
+        format!("{} {}", clock_string(t + offset_ms(vm, t)), tz_suffix(vm, t))
+    }))
+}
+
+fn to_utc_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    fmt_or_invalid(vm, a, |t| {
+        let p = parts(t);
+        format!(
+            "{}, {:02} {} {} {:02}:{:02}:{:02} GMT",
+            DAYS[p.weekday],
+            p.day,
+            MONTHS[p.month as usize],
+            year_str(p.year),
+            p.hour,
+            p.minute,
+            p.second
+        )
+    })
+}
+
