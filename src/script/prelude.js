@@ -2873,3 +2873,59 @@ hidden(G, 'Request', Request);
 const STATUS_TEXT = { 200: 'OK', 201: 'Created', 204: 'No Content', 206: 'Partial Content', 301: 'Moved Permanently',
   302: 'Found', 304: 'Not Modified', 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
   405: 'Method Not Allowed', 429: 'Too Many Requests', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable' };
+class Response {
+  constructor(body = null, init = {}) {
+    const [bytes, ct] = encodeBody(body);
+    this._bytes = bytes === null ? new Uint8Array(0) : typeof bytes === 'string' ? N.utf8Encode(bytes) : bytes;
+    this.status = init.status ?? 200;
+    this.statusText = init.statusText ?? STATUS_TEXT[this.status] ?? '';
+    this.headers = new Headers(init.headers);
+    if (ct && !this.headers.has('content-type')) this.headers.set('content-type', ct);
+    this.url = '';
+    this.redirected = false;
+    this.type = 'default';
+    this.bodyUsed = false;
+  }
+  get ok() { return this.status >= 200 && this.status < 300; }
+  get body() {
+    const bytes = this._bytes;
+    let done = false;
+    return {
+      locked: false,
+      getReader() {
+        return {
+          read() {
+            if (done) return Promise.resolve({ done: true, value: undefined });
+            done = true;
+            return Promise.resolve({ done: false, value: bytes });
+          },
+          releaseLock() {}, cancel() { done = true; return Promise.resolve(); }, closed: Promise.resolve(),
+        };
+      },
+      cancel() { return Promise.resolve(); },
+    };
+  }
+  _use() {
+    if (this.bodyUsed) return Promise.reject(new TypeError('Failed to execute on \'Response\': body stream already read'));
+    this.bodyUsed = true;
+    return Promise.resolve(this._bytes);
+  }
+  text() { return this._use().then((b) => N.utf8Decode(b, charsetOf(this.headers.get('content-type')))); }
+  json() { return this.text().then((t) => JSON.parse(t)); }
+  arrayBuffer() { return this._use().then((b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.length)); }
+  bytes() { return this._use().then((b) => b.slice()); }
+  blob() { return this._use().then((b) => new Blob([b], { type: this.headers.get('content-type') || '' })); }
+  formData() { return this.text().then((t) => { const f = new FormData(); for (const [k, v] of new URLSearchParams(t)) f.append(k, v); return f; }); }
+  clone() {
+    const r = new Response(this._bytes.slice(), { status: this.status, statusText: this.statusText, headers: this.headers });
+    r.url = this.url; r.redirected = this.redirected; r.type = this.type;
+    return r;
+  }
+  static json(data, init = {}) {
+    const h = new Headers(init.headers);
+    h.set('content-type', 'application/json');
+    return new Response(JSON.stringify(data), { ...init, headers: h });
+  }
+  static error() { const r = new Response(null, { status: 0 }); r.type = 'error'; return r; }
+  static redirect(url, status = 302) { return new Response(null, { status, headers: { location: String(url) } }); }
+}
