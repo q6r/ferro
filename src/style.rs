@@ -2409,3 +2409,65 @@ fn font_family(v: &str) -> FontFamily {
     FontFamily::Sans
 }
 
+fn apply_font_shorthand(s: &mut ComputedStyle, parent: &ComputedStyle, v: &str, u: &Units) {
+    // [style] [variant] [weight] size[/line-height] family
+    let mut rest = v;
+    loop {
+        let (tok, tail) = match rest.trim_start().split_once(' ') {
+            Some(x) => x,
+            None => break,
+        };
+        match tok {
+            "italic" | "oblique" => s.italic = true,
+            "normal" | "small-caps" => {}
+            "bold" | "bolder" => s.font_weight = 700,
+            _ if tok.parse::<u16>().is_ok() => s.font_weight = tok.parse().unwrap(),
+            _ => {
+                let (size, lh) = match tok.split_once('/') {
+                    Some((a, b)) => (a, Some(b)),
+                    None => (tok, None),
+                };
+                if let Some(px) = parse_len(size, u).and_then(|l| l.resolve(parent.font_size)) {
+                    s.font_size = px;
+                    if let Some(lh) = lh {
+                        s.line_height = match lh.parse::<f32>() {
+                            Ok(n) => LineHeight::Number(n),
+                            Err(_) => match parse_len(lh, &Units { em: px, ..*u }) {
+                                Some(Len::Px(p)) => LineHeight::Px(p),
+                                _ => LineHeight::Normal,
+                            },
+                        };
+                    } else {
+                        s.line_height = LineHeight::Normal;
+                    }
+                    s.font_family = font_family(tail);
+                    s.font_names = Rc::new(font_names(tail));
+                }
+                break;
+            }
+        }
+        rest = tail;
+    }
+}
+
+fn is_inherited(name: &str) -> bool {
+    matches!(
+        name,
+        "color"
+            | "font-size"
+            | "font-weight"
+            | "font-style"
+            | "font-family"
+            | "font"
+            | "line-height"
+            | "text-align"
+            | "white-space"
+            | "text-transform"
+            | "list-style"
+            | "list-style-type"
+            | "visibility"
+            | "cursor"
+            | "pointer-events"
+    )
+}
+
