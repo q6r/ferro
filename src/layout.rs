@@ -3633,3 +3633,37 @@ struct LineBuilder<'a> {
     line_segs: Vec<Seg>,
 }
 
+fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
+    a.underline == b.underline
+        && a.line_through == b.line_through
+        && match (&a.link, &b.link) {
+            (None, None) => true,
+            (Some(x), Some(y)) => Rc::ptr_eq(x, y) || x == y,
+            _ => false,
+        }
+}
+
+fn transform(text: &str, t: TextTransform) -> String {
+    match t {
+        TextTransform::None => text.to_string(),
+        TextTransform::Upper => text.to_uppercase(),
+        TextTransform::Lower => text.to_lowercase(),
+        TextTransform::Capitalize => {
+            let mut out = String::with_capacity(text.len());
+            let mut start = true;
+            for c in text.chars() {
+                if start && c.is_alphabetic() {
+                    out.extend(c.to_uppercase());
+                    start = false;
+                } else {
+                    if c.is_whitespace() {
+                        start = true;
+                    }
+                    out.push(c);
+                }
+            }
+            out
+        }
+    }
+}
+
