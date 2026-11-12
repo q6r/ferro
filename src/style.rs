@@ -298,3 +298,45 @@ pub enum GridLine {
     Span(u32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FlexDirection {
+    Row,
+    RowReverse,
+    Column,
+    ColumnReverse,
+}
+
+impl FlexDirection {
+    pub fn is_column(self) -> bool {
+        matches!(self, FlexDirection::Column | FlexDirection::ColumnReverse)
+    }
+}
+
+/// justify-content
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Justify {
+    Start,
+    End,
+    Center,
+    SpaceBetween,
+    SpaceAround,
+    SpaceEvenly,
+}
+
+/// align-items / align-self
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Align {
+    Stretch,
+    Start,
+    End,
+    Center,
+    Baseline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FlexBasis {
+    Auto,
+    Content,
+    Len(Len),
+}
+
