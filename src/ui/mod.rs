@@ -263,3 +263,55 @@ struct Geo {
     content: Rect,
 }
 
+pub struct App {
+    proxy: EventLoopProxy<UserEvent>,
+    window: Option<Rc<Window>>,
+    context: Option<softbuffer::Context<Rc<Window>>>,
+    surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    surface_size: (u32, u32),
+    canvas: Canvas,
+    fonts: Fonts,
+    icons: IconCache,
+    scale: f32,
+    zoom: f32,
+    theme: usize,
+    layout: LayoutMode,
+    panel_collapsed: bool,
+    tabs: Vec<Tab>,
+    active: usize,
+    next_tab_id: u64,
+    next_nav: u64,
+    omni: TextField,
+    palette_open: bool,
+    palette_edited: bool,
+    suggestions: Vec<Suggestion>,
+    suggestion: usize,
+    mods: ModifiersState,
+    mouse: (f32, f32),
+    hits: Hits,
+    hover: Option<Hit>,
+    hover_link: Option<String>,
+    cursor: CursorIcon,
+    cursor_visible: bool,
+    scrollbar: Option<(Rect, f32)>,
+    drag_scroll: Option<f32>,
+    history: Vec<(Url, String)>,
+    clipboard: Option<arboard::Clipboard>,
+    initial: Option<Url>,
+    last_title: String,
+    capture: Option<Capture>,
+    /// Busca na página e seleção de texto (da aba ativa).
+    tools: pagetools::Tools,
+    /// Aviso rápido (download concluído...).
+    toast: Option<pagetools::Toast>,
+    /// Tela cheia: pela página (requestFullscreen) ou pelo F11.
+    fullscreen: Option<FullscreenBy>,
+    /// Rolagem antes da tela cheia da página (volta ao sair).
+    fs_scroll: f32,
+    /// Lista aberta de um `<select>` (aba, popup, opção destacada, primeira visível).
+    select: Option<(u64, crate::script::SelectPopup, usize, usize)>,
+    /// Menu de contexto aberto: posição e itens (rótulo, ação; None = separador).
+    menu: Option<((f32, f32), Vec<(&'static str, Option<MenuAction>)>)>,
+    started: Instant,
+}
+
