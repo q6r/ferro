@@ -497,3 +497,67 @@ fn get_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.get_prototype_of(&o)?.map(Value::Object).unwrap_or(Value::Null))
 }
 
+pub fn set_proto_checked(vm: &mut Vm, o: &ObjRef, p: Option<ObjRef>) -> Result<bool, Value> {
+    if super::proxy::is_proxy(o) {
+        return vm.proxy_set_proto(o, p);
+    }
+    if let Some(np) = &p {
+        // ciclos são proibidos
+        let mut cur = Some(np.clone());
+        while let Some(c) = cur {
+            if c.ptr_eq(o) {
+                return Err(vm.type_error("Cyclic __proto__ value"));
+            }
+            cur = c.proto();
+        }
+    }
+    let same = match (&o.proto(), &p) {
+        (Some(a), Some(b)) => a.ptr_eq(b),
+        (None, None) => true,
+        _ => false,
+    };
+    if same {
+        return Ok(true);
+    }
+    if !o.borrow().extensible {
+        return Ok(false);
+    }
+    o.borrow_mut().proto = p;
+    Ok(true)
+}
+
+fn set_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let target = a.arg(0);
+    if target.is_nullish() {
+        return Err(vm.type_error("Object.setPrototypeOf called on null or undefined"));
+    }
+    let p = match a.arg(1) {
+        Value::Object(p) => Some(p),
+        Value::Null => None,
+        _ => return Err(vm.type_error("Object prototype may only be an Object or null")),
+    };
+    if let Value::Object(o) = &target
+        && !set_proto_checked(vm, o, p)?
+    {
+        return Err(vm.type_error("#<Object> is not extensible"));
+    }
+    Ok(target)
+}
+
+pub fn freeze_obj(o: &ObjRef, freeze: bool) {
+    let mut b = o.borrow_mut();
+    b.extensible = false;
+    if freeze {
+        b.frozen = true;
+    }
+    let keys: Vec<PropKey> = b.props.iter().map(|(k, _)| k.clone()).collect();
+    for k in keys {
+        if let Some(p) = b.props.get_mut(&k) {
+            p.configurable = false;
+            if freeze && let Slot::Data { writable, .. } = &mut p.slot {
+                *writable = false;
+            }
+        }
+    }
+}
+
