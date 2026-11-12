@@ -626,3 +626,97 @@ impl Canvas {
         }
     }
 
+    /// Vidro fosco: desfoca o que já está pintado dentro do retângulo
+    /// arredondado `r`. Reduz a região 4x, aplica três passadas de média
+    /// móvel (aproxima um gaussiano) e amplia de volta com interpolação.
+    pub fn frost(&mut self, r: Rect, radius: f32, blur: f32) {
+        const F: usize = 4;
+        let full = self.full();
+        let pad = (blur * 2.0).ceil() as i32;
+        let c = full.intersect(Clip::from_rect(r));
+        if c.is_empty() {
+            return;
+        }
+        let e = full.intersect(Clip {
+            x0: c.x0 - pad,
+            y0: c.y0 - pad,
+            x1: c.x1 + pad,
+            y1: c.y1 + pad,
+        });
+        let (ew, eh) = ((e.x1 - e.x0) as usize, (e.y1 - e.y0) as usize);
+        let (sw, sh) = (ew.div_ceil(F), eh.div_ceil(F));
+        // reduz por média de blocos F x F
+        let mut small = vec![[0.0f32; 3]; sw * sh];
+        let mut count = vec![0.0f32; sw * sh];
+        for y in 0..eh {
+            let row = (e.y0 as usize + y) * self.width + e.x0 as usize;
+            for x in 0..ew {
+                let p = self.pixels[row + x];
+                let i = (y / F) * sw + x / F;
+                small[i][0] += ((p >> 16) & 0xff) as f32;
+                small[i][1] += ((p >> 8) & 0xff) as f32;
+                small[i][2] += (p & 0xff) as f32;
+                count[i] += 1.0;
+            }
+        }
+        for (v, n) in small.iter_mut().zip(&count) {
+            for ch in v.iter_mut() {
+                *ch /= n.max(1.0);
+            }
+        }
+        // média móvel horizontal e vertical, 3 vezes
+        let rad = ((blur / F as f32).round() as usize).max(1);
+        let mut tmp = small.clone();
+        for _ in 0..3 {
+            for (horizontal, len, lines) in [(true, sw, sh), (false, sh, sw)] {
+                for line in 0..lines {
+                    let idx = |k: usize| if horizontal { line * sw + k } else { k * sw + line };
+                    let mut acc = [0.0f32; 3];
+                    let win = (2 * rad + 1) as f32;
+                    for k in 0..=2 * rad {
+                        let src = small[idx(k.saturating_sub(rad).min(len - 1))];
+                        for ch in 0..3 {
+                            acc[ch] += src[ch];
+                        }
+                    }
+                    for k in 0..len {
+                        for ch in 0..3 {
+                            tmp[idx(k)][ch] = acc[ch] / win;
+                        }
+                        let out = small[idx(k.saturating_sub(rad))];
+                        let inn = small[idx((k + rad + 1).min(len - 1))];
+                        for ch in 0..3 {
+                            acc[ch] += inn[ch] - out[ch];
+                        }
+                    }
+                }
+                std::mem::swap(&mut small, &mut tmp);
+            }
+        }
+        // amplia e escreve dentro da forma arredondada
+        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        for y in c.y0..c.y1 {
+            let fy = (((y - e.y0) as f32 + 0.5) / F as f32 - 0.5).clamp(0.0, (sh - 1) as f32);
+            let (y0, ty) = (fy.floor() as usize, fy.fract());
+            let y1 = (y0 + 1).min(sh - 1);
+            for x in c.x0..c.x1 {
+                let cov = (0.5 - rr_sdf(x as f32 + 0.5, y as f32 + 0.5, r, radius)).clamp(0.0, 1.0);
+                if cov <= 0.0 {
+                    continue;
+                }
+                let fx = (((x - e.x0) as f32 + 0.5) / F as f32 - 0.5).clamp(0.0, (sw - 1) as f32);
+                let (x0, tx) = (fx.floor() as usize, fx.fract());
+                let x1 = (x0 + 1).min(sw - 1);
+                let s = |xx: usize, yy: usize| small[yy * sw + xx];
+                let (a, b, cc, d) = (s(x0, y0), s(x1, y0), s(x0, y1), s(x1, y1));
+                let mut col = [0u8; 3];
+                for ch in 0..3 {
+                    let top = a[ch] + (b[ch] - a[ch]) * tx;
+                    let bot = cc[ch] + (d[ch] - cc[ch]) * tx;
+                    col[ch] = (top + (bot - top) * ty).round().clamp(0.0, 255.0) as u8;
+                }
+                self.blend(x, y, Color::rgb(col[0], col[1], col[2]), (cov * 255.0) as u32);
+            }
+        }
+    }
+
