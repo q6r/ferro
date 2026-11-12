@@ -190,11 +190,15 @@ fn build(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox> {
             }
             let boxed = style.is_out_of_flow() || style.float != Float::None;
             if REPLACED.contains(&el.tag.as_str()) {
-                let atomic = LayoutBox::new(BoxKind::Atomic(node), style.clone(), Vec::new());
                 if boxed {
-                    // caixa posicionada/flutuante em volta do elemento substituído
+                    // caixa posicionada/flutuante em volta do elemento
+                    // substituído; as margens ficam só nela
+                    let mut inner = (*style).clone();
+                    inner.margin = [Len::Px(0.0); 4];
+                    let atomic = LayoutBox::new(BoxKind::Atomic(node), Rc::new(inner), Vec::new());
                     return vec![LayoutBox::new(BoxKind::Block(node), style, vec![atomic])];
                 }
+                let atomic = LayoutBox::new(BoxKind::Atomic(node), style.clone(), Vec::new());
                 return vec![atomic];
             }
             let mut children: Vec<LayoutBox> = Vec::new();
@@ -2238,7 +2242,8 @@ impl<'a> Ctx<'a> {
                         }
                     }
                 }
-                Item::Atomic { w, .. } => {
+                Item::Atomic { w, margin, .. } => {
+                    let w = w + margin[1] + margin[3];
                     if space_before && line > 0.0 {
                         line += space_w;
                         run = if space_breaks { 0.0 } else { run + space_w };
@@ -3071,7 +3076,7 @@ impl<'a> Ctx<'a> {
             match item {
                 Item::Text { text, style, inh } => lb.push_text(&text, &style, &inh),
                 Item::Break => lb.break_line(true),
-                Item::Atomic { w, h, paint, label, style, inh } => lb.push_box(w, h, paint, label, &style, &inh),
+                Item::Atomic { w, h, margin, paint, label, style, inh } => lb.push_box(w, h, margin, paint, label, &style, &inh),
                 Item::InlineStart(style, id) => lb.open_inline(id, style),
                 Item::InlineEnd(_, id) => lb.close_inline(id),
                 Item::InlineBlock(ib, inh) => {
@@ -3223,7 +3228,7 @@ impl<'a> Ctx<'a> {
                 }
             }
             FragKind::InlineBlock { .. } => {}
-            FragKind::Box { h, base, paint, label } => {
+            FragKind::Box { h, base, paint, label, .. } => {
                 let top = if f.valign == VAlign::Middle { baseline - f.mid - h / 2.0 } else { baseline - base };
                 let r = Rect { x, y: top, w: f.w, h: *h };
                 if let AtomicPaint::Image(image) = paint {
@@ -3452,10 +3457,18 @@ impl<'a> Ctx<'a> {
             own.elem = Some(n);
             own.no_hit = !s.pointer_events || !s.visible;
         }
+        // margens (auto vale 0 em linha; % é da largura do contêiner)
+        let m = |l: Len| match l {
+            Len::Px(v) => v,
+            Len::Percent(p) => p / 100.0 * avail,
+            Len::Auto => 0.0,
+        };
+        let margin = [m(s.margin[TOP]), m(s.margin[RIGHT]), m(s.margin[BOTTOM]), m(s.margin[LEFT])];
         let push = |out: &mut Vec<Item<'a>>, w: f32, h: f32, paint: AtomicPaint, label: Option<(String, Color)>| {
             out.push(Item::Atomic {
                 w,
                 h,
+                margin,
                 paint,
                 label,
                 style: s.clone(),
@@ -3611,6 +3624,8 @@ enum Item<'a> {
     Atomic {
         w: f32,
         h: f32,
+        /// Margens (topo, direita, baixo, esquerda), fora de `w` e `h`.
+        margin: [f32; 4],
         paint: AtomicPaint,
         label: Option<(String, Color)>,
         style: Rc<ComputedStyle>,
@@ -3652,6 +3667,9 @@ enum FragKind {
         /// Do topo da caixa até a linha de base (texto dos campos; a borda de
         /// baixo nas imagens).
         base: f32,
+        /// Margens de cima e de baixo (entram na altura da linha).
+        mt: f32,
+        mb: f32,
         paint: AtomicPaint,
         label: Option<(String, Color)>,
     },
@@ -4004,10 +4022,12 @@ impl<'a> LineBuilder<'a> {
         self.can_merge = true;
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn push_box(
         &mut self,
         w: f32,
         h: f32,
+        margin: [f32; 4],
         paint: AtomicPaint,
         label: Option<(String, Color)>,
         style: &Rc<ComputedStyle>,
@@ -4017,11 +4037,12 @@ impl<'a> LineBuilder<'a> {
         let wrap = !matches!(style.white_space, WhiteSpace::Pre | WhiteSpace::NoWrap)
             || (self.soft_break && sp > 0.0);
         self.soft_break = false;
-        if wrap && !self.cur.is_empty() && self.x + sp + w > self.avail {
+        let [mt, mr, mb, ml] = margin;
+        if wrap && !self.cur.is_empty() && self.x + sp + ml + w + mr > self.avail {
             self.break_line(false);
             sp = 0.0;
         }
-        self.x += sp;
+        self.x += sp + ml;
         self.pending_space = 0.0;
         self.after_space = false;
         // campos e botões alinham pela linha de base do texto de dentro (como
@@ -4042,11 +4063,11 @@ impl<'a> LineBuilder<'a> {
             font: 0,
             style: style.clone(),
             inh: inh.clone(),
-            kind: FragKind::Box { h, base, paint, label },
+            kind: FragKind::Box { h, base, mt, mb, paint, label },
             valign: style.vertical_align,
             mid: self.container.font_size * 0.3,
         });
-        self.x += w;
+        self.x += w + mr;
         self.can_merge = false;
     }
 
@@ -4076,9 +4097,9 @@ impl<'a> LineBuilder<'a> {
                     above = above.max(h / 2.0 + f.mid);
                     below = below.max(h / 2.0 - f.mid);
                 }
-                FragKind::Box { h, base, .. } => {
-                    above = above.max(*base);
-                    below = below.max(h - base);
+                FragKind::Box { h, base, mt, mb, .. } => {
+                    above = above.max(base + mt);
+                    below = below.max(h - base + mb);
                 }
                 FragKind::InlineBlock { h, base, .. } => {
                     above = above.max(*base);
