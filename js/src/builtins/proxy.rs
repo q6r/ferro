@@ -65,3 +65,34 @@ impl Vm {
         parts.ok_or_else(|| self.type_error(format!("Cannot perform '{op}' on a proxy that has been revoked")))
     }
 
+    /// A armadilha `name` do handler (None se não foi definida).
+    fn trap(&mut self, h: &ObjRef, name: &str) -> Result<Option<Value>, Value> {
+        let t = self.get_obj(h, &PropKey::str(name))?;
+        if t.is_nullish() {
+            return Ok(None);
+        }
+        if !t.is_callable() {
+            return Err(self.type_error(format!("'{name}' on proxy: trap is not a function")));
+        }
+        Ok(Some(t))
+    }
+
+    pub fn proxy_get(&mut self, o: &ObjRef, key: &PropKey, receiver: &Value) -> Result<Value, Value> {
+        let (t, h) = self.proxy_parts(o, "get")?;
+        match self.trap(&h, "get")? {
+            Some(f) => self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value(), receiver.clone()]),
+            None => self.get_with(&t, key, receiver),
+        }
+    }
+
+    pub fn proxy_set(&mut self, o: &ObjRef, key: PropKey, v: Value, receiver: &Value) -> Result<bool, Value> {
+        let (t, h) = self.proxy_parts(o, "set")?;
+        match self.trap(&h, "set")? {
+            Some(f) => {
+                let r = self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value(), v, receiver.clone()])?;
+                Ok(truthy(&r))
+            }
+            None => self.set_with(&t, key, v, receiver),
+        }
+    }
+
