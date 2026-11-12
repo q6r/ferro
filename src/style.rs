@@ -2831,3 +2831,57 @@ fn parse_transform(v: &str, u: &Units) -> Option<Vec<TransformFn>> {
     Some(out)
 }
 
+/// Lista de sombras: `[inset] x y [blur [spread]] [cor]`, separadas por vírgula.
+fn parse_shadows(v: &str, u: &Units, current: Color) -> Option<Vec<Shadow>> {
+    let v = v.trim();
+    if v == "none" || v.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for part in split_top_level_commas(v) {
+        let mut lens = Vec::new();
+        let mut color = None;
+        let mut inset = false;
+        for tok in split_values(part) {
+            if tok.eq_ignore_ascii_case("inset") {
+                inset = true;
+            } else if let Some(Len::Px(p)) = parse_len(&tok, u) {
+                lens.push(p);
+            } else if let Some(c) = parse_color(&tok, current) {
+                color = Some(c);
+            }
+        }
+        if inset || lens.len() < 2 {
+            continue;
+        }
+        out.push(Shadow {
+            x: lens[0],
+            y: lens[1],
+            blur: lens.get(2).copied().unwrap_or(0.0).max(0.0),
+            spread: lens.get(3).copied().unwrap_or(0.0),
+            color: color.unwrap_or(current),
+        });
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+/// Divide por vírgulas que não estão dentro de parênteses.
+fn split_top_level_commas(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
