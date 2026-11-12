@@ -344,3 +344,51 @@ impl Vm {
         Ok(Value::Object(promise))
     }
 
+    pub fn async_step(&mut self, co: &ObjRef, resume: Option<(Value, u8)>) {
+        let mut resume = resume;
+        loop {
+            let (frame, promise) = {
+                let mut b = co.borrow_mut();
+                let Kind::Async(d) = &mut b.kind else { return };
+                (d.frame.take(), d.promise.clone())
+            };
+            let Some(mut frame) = frame else { return };
+            if let Some((v, mode)) = resume.take() {
+                frame.stack.push(v);
+                frame.stack.push(Value::Number(mode as f64));
+            }
+            frame.suspended = false;
+            let r = self.run_frame(&mut frame);
+            match r {
+                Ok(v) if frame.suspended => {
+                    if let Kind::Async(d) = &mut co.borrow_mut().kind {
+                        d.frame = Some(frame);
+                    }
+                    match self.promise_resolve_value(v) {
+                        Ok(p) => {
+                            let on_ful = self.realm.native("", 1, async_fulfilled);
+                            let on_rej = self.realm.native("", 1, async_rejected);
+                            set_native_data(&on_ful, Value::Object(co.clone()));
+                            set_native_data(&on_rej, Value::Object(co.clone()));
+                            self.perform_then(&p, Value::Object(on_ful), Value::Object(on_rej), None);
+                            return;
+                        }
+                        Err(e) => {
+                            resume = Some((e, RESUME_THROW));
+                            continue;
+                        }
+                    }
+                }
+                Ok(v) => {
+                    self.resolve_promise(&promise, v);
+                    return;
+                }
+                Err(e) => {
+                    self.reject_promise(&promise, e);
+                    return;
+                }
+            }
+        }
+    }
+}
+
