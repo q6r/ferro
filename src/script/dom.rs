@@ -524,3 +524,61 @@ fn node_type(vm: &mut Vm, a: &mut CallArgs) -> R {
     })))
 }
 
+fn node_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(s(&read(vm, |h| match &h.page.doc.node(n).data {
+        NodeData::Element(e) if e.tag == FRAGMENT_TAG => "#document-fragment".to_string(),
+        NodeData::Element(e) => {
+            if in_svg(&h.page.doc, n) { e.tag.clone() } else { e.tag.to_ascii_uppercase() }
+        }
+        NodeData::Text(_) => "#text".into(),
+        NodeData::Comment(_) => "#comment".into(),
+        NodeData::Document => "#document".into(),
+        NodeData::Doctype(d) => d.split_whitespace().next().unwrap_or("html").to_string(),
+    })))
+}
+
+fn char_data(vm: &mut Vm, n: NodeId) -> Option<String> {
+    read(vm, |h| match &h.page.doc.node(n).data {
+        NodeData::Text(t) | NodeData::Comment(t) => Some(t.clone()),
+        _ => None,
+    })
+}
+
+fn node_value(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(char_data(vm, n).map_or(Value::Null, |t| s(&t)))
+}
+
+fn set_node_value(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    if char_data(vm, n).is_some() {
+        set_data_of(vm, n, &a.arg(0))?;
+    }
+    Ok(Value::Undefined)
+}
+
+fn set_data_of(vm: &mut Vm, n: NodeId, v: &Value) -> Result<(), Value> {
+    let text = if v.is_nullish() { String::new() } else { vm.to_rust_string(v)? };
+    let old = char_data(vm, n);
+    notify(vm, "characterData", n, &[], &[], None, old);
+    let parent = write(vm, |h| {
+        h.page.doc.set_data(n, &text);
+        h.dirty = true;
+        h.page.doc.node(n).parent
+    });
+    if let Some(p) = parent {
+        inserted(vm, &[], p);
+    }
+    Ok(())
+}
+
+fn text_content(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(read(vm, |h| match &h.page.doc.node(n).data {
+        NodeData::Document | NodeData::Doctype(_) => Value::Null,
+        NodeData::Text(t) | NodeData::Comment(t) => s(t),
+        NodeData::Element(_) => s(&h.page.doc.text_content(n)),
+    }))
+}
+
