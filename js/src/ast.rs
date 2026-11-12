@@ -140,3 +140,39 @@ pub enum BinOp {
     InstanceOf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LogOp {
+    And,
+    Or,
+    Nullish,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AssignOp {
+    Assign,
+    Op(BinOp),
+    Logical(LogOp),
+}
+
+#[derive(Debug, Clone)]
+pub enum ArrayElem {
+    Expr(Expr),
+    Spread(Expr),
+    Hole,
+}
+
+#[derive(Debug, Clone)]
+pub enum PropKind {
+    Init,
+    Get,
+    Set,
+    Spread,
+}
+
+#[derive(Debug, Clone)]
+pub struct Prop {
+    pub key: PropKeyExpr,
+    pub value: Expr,
+    pub kind: PropKind,
+}
+
