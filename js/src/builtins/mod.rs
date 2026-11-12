@@ -2,6 +2,7 @@
 
 pub mod array;
 pub mod async_generator;
+pub mod base64;
 pub mod bigint;
 pub mod collections;
 pub mod console;

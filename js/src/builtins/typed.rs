@@ -107,6 +107,8 @@ pub fn install(r: &Realm) {
         r.constant(proto, "BYTES_PER_ELEMENT", bpe);
         r.typed_ctors.borrow_mut().push(c);
     }
+    let u8_ctor = r.typed_ctors.borrow()[TaKind::U8.index()].clone();
+    super::base64::install(r, &u8_ctor, &r.typed_protos[TaKind::U8.index()]);
 
     // DataView
     let dvp = &r.data_view_proto;
