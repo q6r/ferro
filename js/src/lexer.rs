@@ -673,3 +673,56 @@ impl Lexer {
         }
     }
 
+    fn read_regex(&mut self) -> Result<Tok, LexError> {
+        self.pos += 1;
+        let mut pattern = String::new();
+        let mut in_class = false;
+        loop {
+            if self.pos >= self.src.len() || is_line_term(self.peek()) {
+                return Err(self.err("expressão regular sem fim"));
+            }
+            let c = self.peek();
+            self.pos += 1;
+            match c {
+                '\\' => {
+                    pattern.push(c);
+                    pattern.push(self.peek());
+                    self.pos += 1;
+                    continue;
+                }
+                '[' => in_class = true,
+                ']' => in_class = false,
+                '/' if !in_class => break,
+                _ => {}
+            }
+            pattern.push(c);
+        }
+        let mut flags = String::new();
+        while is_id_part(self.peek()) {
+            flags.push(self.peek());
+            self.pos += 1;
+        }
+        Ok(Tok::Regex {
+            pattern: pattern.into(),
+            flags: flags.into(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn toks(src: &str) -> Vec<Tok> {
+        let mut lx = Lexer::new(src);
+        let mut out = Vec::new();
+        loop {
+            let t = lx.next_token().unwrap();
+            if t.tok == Tok::Eof {
+                break;
+            }
+            out.push(t.tok);
+        }
+        out
+    }
+
