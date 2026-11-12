@@ -1040,3 +1040,41 @@ fn parse_font_face(block: &str) -> Option<FontFaceRule> {
     })
 }
 
+pub fn media_matches(query: &str, ctx: &MediaContext) -> bool {
+    let q = query.trim().to_ascii_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    split_top_level(&q, ',').iter().any(|part| single_media_matches(part.trim(), ctx))
+}
+
+fn single_media_matches(q: &str, ctx: &MediaContext) -> bool {
+    let (negate, q) = match q.strip_prefix("not ") {
+        Some(rest) => (true, rest.trim()),
+        None => (false, q.strip_prefix("only ").unwrap_or(q).trim()),
+    };
+    let mut result = true;
+    for cond in q.split(" and ") {
+        let cond = cond.trim();
+        let ok = match cond {
+            "" | "all" | "screen" => true,
+            "print" | "speech" | "tv" | "projection" | "handheld" => false,
+            _ if cond.starts_with('(') => feature_matches(cond.trim_start_matches('(').trim_end_matches(')'), ctx),
+            _ => false,
+        };
+        result &= ok;
+    }
+    result != negate
+}
+
+fn media_length(v: &str) -> Option<f32> {
+    let v = v.trim();
+    if let Some(n) = v.strip_suffix("px") {
+        n.trim().parse().ok()
+    } else if let Some(n) = v.strip_suffix("rem").or_else(|| v.strip_suffix("em")) {
+        n.trim().parse::<f32>().ok().map(|x| x * 16.0)
+    } else {
+        v.parse().ok()
+    }
+}
+
