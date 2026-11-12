@@ -41,6 +41,7 @@ pub fn install(r: &Realm) {
     r.method(proto, "__defineGetter__", 2, define_getter);
     r.method(proto, "__defineSetter__", 2, define_setter);
     r.method(proto, "__lookupGetter__", 1, lookup_getter);
+    r.method(proto, "__lookupSetter__", 1, lookup_setter);
     let get = r.native("get __proto__", 0, proto_get);
     let set = r.native("set __proto__", 1, proto_set);
     proto.borrow_mut().props.insert(
@@ -709,9 +710,14 @@ pub fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         Value::Null => return Ok(Value::str("[object Null]")),
         _ => {
             let o = vm.to_object(&a.this)?;
+            // IsArray e IsCallable olham através de proxies
+            let is_array = vm.is_array(&Value::Object(o.clone()))?;
+            let callable = o.is_callable();
             let builtin = {
                 let b = o.borrow();
                 match &b.kind {
+                    _ if is_array => "Array",
+                    _ if callable => "Function",
                     Kind::Array(_) => "Array",
                     Kind::Function(_) => "Function",
                     Kind::Error => "Error",
@@ -745,67 +751,84 @@ fn value_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn proto_get(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
-    Ok(o.proto().map(Value::Object).unwrap_or(Value::Null))
+    Ok(vm.get_prototype_of(&o)?.map(Value::Object).unwrap_or(Value::Null))
 }
 
 fn proto_set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    if let Value::Object(o) = &a.this {
-        let p = match a.arg(0) {
-            Value::Object(p) => Some(p),
-            Value::Null => None,
-            _ => return Ok(Value::Undefined),
-        };
-        set_proto_checked(vm, o, p)?;
+    if a.this.is_nullish() {
+        let d = vm.describe(&a.this);
+        return Err(vm.type_error(format!("Object.prototype.__proto__ called on null or undefined ({d})")));
+    }
+    let p = match a.arg(0) {
+        Value::Object(p) => Some(p),
+        Value::Null => None,
+        _ => return Ok(Value::Undefined),
+    };
+    if let Value::Object(o) = &a.this
+        && !set_proto_checked(vm, o, p)?
+    {
+        let d = vm.describe(&a.this);
+        return Err(vm.type_error(format!("{d} is not extensible")));
+    }
+    Ok(Value::Undefined)
+}
+
+/// __defineGetter__ / __defineSetter__ (Anexo B).
+fn define_accessor(vm: &mut Vm, a: &CallArgs, getter: bool) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let name = if getter { "__defineGetter__" } else { "__defineSetter__" };
+    let f = match a.arg(1) {
+        Value::Object(f) if f.is_callable() => f,
+        _ => return Err(vm.type_error(format!("Object.prototype.{name}: Expecting function"))),
+    };
+    let key = vm.to_property_key(&a.arg(0))?;
+    let mut d = Descriptor {
+        enumerable: Some(true),
+        configurable: Some(true),
+        ..Default::default()
+    };
+    if getter {
+        d.get = Some(Some(f));
+    } else {
+        d.set = Some(Some(f));
+    }
+    if !define_own_property(vm, &o, key.clone(), d)? {
+        return Err(vm.type_error(format!("Cannot redefine property: {}", crate::ops::key_display(&key))));
     }
     Ok(Value::Undefined)
 }
 
 fn define_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let o = this_obj(vm, a)?;
-    let key = vm.to_property_key(&a.arg(0))?;
-    let Value::Object(f) = a.arg(1) else {
-        return Err(vm.type_error("Object.prototype.__defineGetter__: Expecting function"));
-    };
-    let d = Descriptor {
-        get: Some(Some(f)),
-        enumerable: Some(true),
-        configurable: Some(true),
-        ..Default::default()
-    };
-    define_own_property(vm, &o, key, d)?;
-    Ok(Value::Undefined)
+    define_accessor(vm, a, true)
 }
 
 fn define_setter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let o = this_obj(vm, a)?;
-    let key = vm.to_property_key(&a.arg(0))?;
-    let Value::Object(f) = a.arg(1) else {
-        return Err(vm.type_error("Object.prototype.__defineSetter__: Expecting function"));
-    };
-    let d = Descriptor {
-        set: Some(Some(f)),
-        enumerable: Some(true),
-        configurable: Some(true),
-        ..Default::default()
-    };
-    define_own_property(vm, &o, key, d)?;
-    Ok(Value::Undefined)
+    define_accessor(vm, a, false)
 }
 
-fn lookup_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+/// __lookupGetter__ / __lookupSetter__: sobe a cadeia até achar a chave.
+fn lookup_accessor(vm: &mut Vm, a: &CallArgs, getter: bool) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
     let key = vm.to_property_key(&a.arg(0))?;
     let mut cur = Some(o);
     while let Some(c) = cur {
-        if let Some(p) = c.borrow().own(&key) {
+        if let Some(p) = vm.get_own_property(&c, &key)? {
             return Ok(match p.slot {
-                Slot::Accessor { get: Some(g), .. } => Value::Object(g),
+                Slot::Accessor { get, set } => (if getter { get } else { set }).map(Value::Object).unwrap_or_default(),
                 _ => Value::Undefined,
             });
         }
-        cur = c.proto();
+        cur = vm.get_prototype_of(&c)?;
     }
     Ok(Value::Undefined)
+}
+
+fn lookup_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    lookup_accessor(vm, a, true)
+}
+
+fn lookup_setter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    lookup_accessor(vm, a, false)
 }
 
 /// Nome de uma chave como texto JS (para mensagens e Function.name).
