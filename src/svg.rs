@@ -252,3 +252,19 @@ fn arc_to_cubics(
     }
 }
 
+/// Dados de <path d="...">, em coordenadas absolutas.
+/// Dados de caminho SVG (`d`) no formato compacto do canvas: 0 x y (move),
+/// 1 x y (linha), 2 c1x c1y c2x c2y x y (cúbica), 3 (fecha).
+pub fn path_commands(d: &str) -> Vec<f64> {
+    let mut out = Vec::new();
+    for s in parse_path(d) {
+        match s {
+            Seg::Move((x, y)) => out.extend([0.0, x as f64, y as f64]),
+            Seg::Line((x, y)) => out.extend([1.0, x as f64, y as f64]),
+            Seg::Cubic(a, b, c) => out.extend([2.0, a.0 as f64, a.1 as f64, b.0 as f64, b.1 as f64, c.0 as f64, c.1 as f64]),
+            Seg::Close => out.push(3.0),
+        }
+    }
+    out
+}
+
