@@ -785,3 +785,41 @@ impl App {
         }
     }
 
+    fn go_home(&mut self) {
+        if self.tab().kind() != Kind::NewTab {
+            self.navigate(self.active, Url::parse(NEW_TAB_URL).unwrap());
+        }
+    }
+
+    fn open_link(&mut self, href: &str, background: bool) {
+        let Some(frame) = &self.tab().frame else { return };
+        let Ok(url) = frame.base.join(href.trim()) else { return };
+        if !matches!(url.scheme(), "http" | "https" | "file" | "data") {
+            return;
+        }
+        if background {
+            self.new_tab(Some(url), false);
+        } else {
+            self.navigate(self.active, url);
+        }
+    }
+
+    fn remember(&mut self, url: &Url, title: &str) {
+        self.history.retain(|(u, _)| u != url);
+        self.history.insert(0, (url.clone(), title.to_string()));
+        self.history.truncate(300);
+    }
+
+    fn set_layout(&mut self, layout: LayoutMode) {
+        self.layout = layout;
+        save_config(self.theme, self.layout);
+        self.sync_viewport();
+        self.request_redraw();
+    }
+
+    fn toggle_panel(&mut self) {
+        self.panel_collapsed = !self.panel_collapsed;
+        self.sync_viewport();
+        self.request_redraw();
+    }
+
