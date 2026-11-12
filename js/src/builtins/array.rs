@@ -991,3 +991,45 @@ fn splice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(removed))
 }
 
+fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let mut parts = Vec::new();
+    for i in 0..len {
+        let v = get_i(vm, &o, i)?;
+        if v.is_nullish() {
+            parts.push(String::new());
+        } else {
+            let f = vm.get_str(&v, "toLocaleString")?;
+            let s = vm.call(&f, v, Vec::new())?;
+            parts.push(vm.to_rust_string(&s)?);
+        }
+    }
+    Ok(Value::str(&parts.join(",")))
+}
+
+fn to_reversed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let mut out = Vec::with_capacity(len);
+    for i in (0..len).rev() {
+        out.push(get_i(vm, &o, i)?);
+    }
+    Ok(vm.array_value(out))
+}
+
+fn to_sorted(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let cmp = a.arg(0);
+    if !cmp.is_undefined() && !cmp.is_callable() {
+        return Err(vm.type_error("The comparison function must be either a function or undefined"));
+    }
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let mut vals = Vec::with_capacity(len);
+    for i in 0..len {
+        vals.push(get_i(vm, &o, i)?);
+    }
+    let sorted = sort_values(vm, vals, &cmp)?;
+    Ok(vm.array_value(sorted))
+}
+
