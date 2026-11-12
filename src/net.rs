@@ -265,3 +265,63 @@ fn base64_decode(input: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+/// Bytes 0x80–0x9F do Windows-1252 (o resto coincide com Latin-1).
+const CP1252: [char; 32] = [
+    '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8d}', 'Ž', '\u{8f}', '\u{90}',
+    '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', '\u{9d}', 'ž', 'Ÿ',
+];
+
+fn charset_of(content_type: &str) -> Option<String> {
+    let lower = content_type.to_ascii_lowercase();
+    let pos = lower.find("charset=")?;
+    let cs: String = lower[pos + 8..]
+        .trim_start_matches(['"', '\''])
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if cs.is_empty() { None } else { Some(cs) }
+}
+
+/// Decodifica o corpo em texto: BOM → cabeçalho HTTP → <meta charset> → UTF-8.
+pub fn decode_text(body: &[u8], content_type: Option<&str>, sniff_meta: bool) -> String {
+    if let Some(rest) = body.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    let mut charset = content_type.and_then(charset_of);
+    if charset.is_none() && sniff_meta {
+        let head = String::from_utf8_lossy(&body[..body.len().min(4096)]);
+        charset = charset_of(&head);
+    }
+    match charset.as_deref() {
+        Some("iso-8859-1" | "latin1" | "windows-1252" | "cp1252" | "us-ascii" | "iso-8859-15" | "ascii") => body
+            .iter()
+            .map(|&b| match b {
+                0x80..=0x9F => CP1252[(b - 0x80) as usize],
+                _ => b as char,
+            })
+            .collect(),
+        _ => String::from_utf8_lossy(body).into_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_url() {
+        let (t, b) = decode_data_url("data:text/html;base64,PGgxPk9pPC9oMT4=").unwrap();
+        assert_eq!(t, "text/html");
+        assert_eq!(b, b"<h1>Oi</h1>");
+        let (_, b) = decode_data_url("data:,Ol%C3%A1").unwrap();
+        assert_eq!(String::from_utf8(b).unwrap(), "Olá");
+    }
+
+    #[test]
+    fn latin1() {
+        let s = decode_text(b"S\xe3o Paulo \x93ok\x94", Some("text/html; charset=ISO-8859-1"), false);
+        assert_eq!(s, "São Paulo “ok”");
+        let s = decode_text(b"<meta charset=\"windows-1252\">a\xe7\xe3o", None, true);
+        assert!(s.ends_with("ação"));
+    }
+}
