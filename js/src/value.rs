@@ -774,6 +774,8 @@ pub enum Kind {
     DisposableStack(Box<crate::builtins::disposable::StackData>),
     /// Descarte assíncrono em andamento (fora enquanto roda).
     DisposeJob(Option<Box<crate::builtins::disposable::DisposeJob>>),
+    /// Objeto de JSON.rawJSON.
+    RawJson,
 }
 
 pub struct Object {

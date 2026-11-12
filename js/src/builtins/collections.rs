@@ -124,6 +124,19 @@ fn fill_from(vm: &mut Vm, a: &CallArgs, o: &ObjRef, adder_name: &str, pairs: boo
     }
     let original = matches!((&adder, super::native_data(&a.callee)), (Value::Object(x), Value::Object(y)) if x.ptr_eq(&y));
     let rec = vm.get_iterator(&iterable)?;
+    // Set com o add original sobre um array comum: nada roda no meio, copia direto
+    if original && !pairs {
+        let it = match &rec.borrow().kind {
+            Kind::IterRecord { iter: Value::Object(i), next: Value::Object(n), .. } if n.ptr_eq(&vm.realm.array_iter_next) => Some(i.clone()),
+            _ => None,
+        };
+        if let Some(rest) = it.and_then(|i| super::array::array_iter_rest(&i)) {
+            for k in rest {
+                add_direct(vm, o, k, Value::Undefined, false)?;
+            }
+            return Ok(());
+        }
+    }
     while let Some(item) = vm.iter_step(&rec)? {
         let r = (|| -> Result<(), Value> {
             let (k, v) = if pairs {

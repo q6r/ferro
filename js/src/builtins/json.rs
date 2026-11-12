@@ -12,6 +12,8 @@ pub fn install(r: &Realm) {
     r.tag(&json, "JSON");
     r.method(&json, "parse", 2, parse);
     r.method(&json, "stringify", 3, stringify);
+    r.method(&json, "rawJSON", 1, raw_json);
+    r.method(&json, "isRawJSON", 1, is_raw_json);
     r.global_value("JSON", Value::Object(json));
 }
 
@@ -20,6 +22,24 @@ pub fn install(r: &Realm) {
 struct JsonParser<'a> {
     s: &'a [u16],
     pos: usize,
+    /// Montar os registros de análise (só quando há reviver).
+    track: bool,
+}
+
+/// JSON Parse Record: o valor como saiu do texto e, para primitivos, o
+/// trecho de origem; para arrays e objetos, os registros dos filhos.
+enum Rec {
+    Prim(Value, usize, usize),
+    Arr(Value, Vec<Rec>),
+    Obj(Value, Vec<(JsStr, Rec)>),
+}
+
+impl Rec {
+    fn value(&self) -> &Value {
+        match self {
+            Rec::Prim(v, ..) | Rec::Arr(v, _) | Rec::Obj(v, _) => v,
+        }
+    }
 }
 
 impl JsonParser<'_> {
@@ -69,20 +89,24 @@ impl JsonParser<'_> {
         )
     }
 
-    fn value(&mut self, vm: &mut Vm, depth: u32) -> Result<Value, String> {
+    /// Um valor e (se `track`) o seu registro de análise.
+    fn value(&mut self, vm: &mut Vm, depth: u32) -> Result<(Value, Option<Rec>), String> {
         if depth > 5000 {
             return Err("JSON nesting too deep".into());
         }
         self.ws();
+        let start = self.pos;
         let Some(&c) = self.s.get(self.pos) else { return Err(self.err()) };
-        match c {
+        let prim = match c {
             0x7B => {
                 self.pos += 1;
                 let o = vm.new_object();
+                let mut entries = Vec::new();
                 self.ws();
                 if self.s.get(self.pos) == Some(&0x7D) {
                     self.pos += 1;
-                    return Ok(Value::Object(o));
+                    let rec = self.track.then(|| Rec::Obj(Value::Object(o.clone()), entries));
+                    return Ok((Value::Object(o), rec));
                 }
                 let mut first = true;
                 loop {
@@ -101,14 +125,18 @@ impl JsonParser<'_> {
                         return Err(self.err_at("Expected ':' after property name"));
                     }
                     self.pos += 1;
-                    let v = self.value(vm, depth + 1)?;
+                    let (v, rec) = self.value(vm, depth + 1)?;
+                    if let Some(rec) = rec {
+                        entries.push((k.clone(), rec));
+                    }
                     vm.define_data(&o, PropKey::Str(k), v);
                     self.ws();
                     match self.s.get(self.pos) {
                         Some(0x2C) => self.pos += 1,
                         Some(0x7D) => {
                             self.pos += 1;
-                            return Ok(Value::Object(o));
+                            let rec = self.track.then(|| Rec::Obj(Value::Object(o.clone()), entries));
+                            return Ok((Value::Object(o), rec));
                         }
                         _ => return Err(self.err_at("Expected ',' or '}' after property value")),
                     }
@@ -117,31 +145,35 @@ impl JsonParser<'_> {
             0x5B => {
                 self.pos += 1;
                 let mut items = Vec::new();
+                let mut recs = Vec::new();
                 self.ws();
-                if self.s.get(self.pos) == Some(&0x5D) {
-                    self.pos += 1;
-                    return Ok(vm.array_value(items));
-                }
-                loop {
-                    items.push(self.value(vm, depth + 1)?);
-                    self.ws();
-                    match self.s.get(self.pos) {
-                        Some(0x2C) => self.pos += 1,
-                        Some(0x5D) => {
-                            self.pos += 1;
-                            return Ok(vm.array_value(items));
+                if self.s.get(self.pos) != Some(&0x5D) {
+                    loop {
+                        let (v, rec) = self.value(vm, depth + 1)?;
+                        items.push(v);
+                        recs.extend(rec);
+                        self.ws();
+                        match self.s.get(self.pos) {
+                            Some(0x2C) => self.pos += 1,
+                            Some(0x5D) => break,
+                            _ => return Err(self.err_at("Expected ',' or ']' after array element")),
                         }
-                        _ => return Err(self.err_at("Expected ',' or ']' after array element")),
                     }
                 }
+                self.pos += 1;
+                let arr = vm.array_value(items);
+                let rec = self.track.then(|| Rec::Arr(arr.clone(), recs));
+                return Ok((arr, rec));
             }
-            0x22 => Ok(Value::String(self.string()?)),
-            0x74 => self.word("true", Value::Bool(true)),
-            0x66 => self.word("false", Value::Bool(false)),
-            0x6E => self.word("null", Value::Null),
-            0x2D | 0x30..=0x39 => self.number(),
-            _ => Err(self.err()),
-        }
+            0x22 => Value::String(self.string()?),
+            0x74 => self.word("true", Value::Bool(true))?,
+            0x66 => self.word("false", Value::Bool(false))?,
+            0x6E => self.word("null", Value::Null)?,
+            0x2D | 0x30..=0x39 => self.number()?,
+            _ => return Err(self.err()),
+        };
+        let rec = self.track.then(|| Rec::Prim(prim.clone(), start, self.pos));
+        Ok((prim, rec))
     }
 
     fn word(&mut self, w: &str, v: Value) -> Result<Value, String> {
@@ -243,11 +275,11 @@ impl JsonParser<'_> {
     }
 }
 
-fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let text = vm.to_string(&a.arg(0))?;
-    let mut p = JsonParser { s: text.units(), pos: 0 };
-    let v = match p.value(vm, 0) {
-        Ok(v) => v,
+/// Analisa um texto JSON inteiro (com ou sem registros de análise).
+fn parse_text(vm: &mut Vm, text: &[u16], track: bool) -> Result<(Value, Option<Rec>), Value> {
+    let mut p = JsonParser { s: text, pos: 0, track };
+    let r = match p.value(vm, 0) {
+        Ok(r) => r,
         Err(e) => return Err(vm.syntax_error(e)),
     };
     p.ws();
@@ -255,34 +287,101 @@ fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         let e = p.err_at("Unexpected non-whitespace character after JSON");
         return Err(vm.syntax_error(e));
     }
+    Ok(r)
+}
+
+fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let text = vm.to_string(&a.arg(0))?;
     let reviver = a.arg(1);
-    if reviver.is_callable() {
+    let track = reviver.is_callable();
+    let (v, rec) = parse_text(vm, text.units(), track)?;
+    if track {
         let root = vm.new_object();
         vm.define_data(&root, PropKey::str(""), v);
-        return revive(vm, &root, PropKey::str(""), &reviver);
+        return internalize(vm, &root, PropKey::str(""), &reviver, rec.as_ref(), text.units());
     }
     Ok(v)
 }
 
-fn revive(vm: &mut Vm, holder: &ObjRef, key: PropKey, reviver: &Value) -> Result<Value, Value> {
-    let val = vm.get_obj(holder, &key)?;
+/// InternalizeJSONProperty: aplica o reviver de baixo para cima, passando o
+/// trecho de origem (`context.source`) dos valores primitivos intactos.
+fn internalize(vm: &mut Vm, holder: &ObjRef, name: PropKey, reviver: &Value, rec: Option<&Rec>, text: &[u16]) -> Result<Value, Value> {
+    let val = vm.get_obj(holder, &name)?;
+    let context = vm.new_object();
+    let rec = rec.filter(|r| crate::vm::same_value(r.value(), &val));
+    let (elems, entries): (&[Rec], &[(JsStr, Rec)]) = match rec {
+        Some(Rec::Prim(_, start, end)) => {
+            if !matches!(val, Value::Object(_)) {
+                let src = JsStr::from_slice(&text[*start..*end]);
+                vm.define_data(&context, PropKey::str("source"), Value::String(src));
+            }
+            (&[], &[])
+        }
+        Some(Rec::Arr(_, els)) => (els, &[]),
+        Some(Rec::Obj(_, ents)) => (&[], ents),
+        None => (&[], &[]),
+    };
     if let Value::Object(o) = &val {
-        let keys: Vec<PropKey> = if matches!(o.borrow().kind, Kind::Array(_)) {
+        let keys: Vec<(PropKey, Option<&Rec>)> = if vm.is_array(&val)? {
             let len = vm.length_of(o)?;
-            (0..len).map(index_key).collect()
+            (0..len).map(|i| (index_key(i), elems.get(i))).collect()
         } else {
             super::object::enumerable_keys(vm, o)?
+                .into_iter()
+                .map(|k| {
+                    // chave repetida no texto: vale a última
+                    let r = match &k {
+                        PropKey::Str(ks) => entries.iter().rev().find(|(e, _)| e == ks).map(|(_, r)| r),
+                        _ => None,
+                    };
+                    (k, r)
+                })
+                .collect()
         };
-        for k in keys {
-            let nv = revive(vm, o, k.clone(), reviver)?;
+        for (k, r) in keys {
+            let nv = internalize(vm, o, k.clone(), reviver, r, text)?;
             if nv.is_undefined() {
-                vm.delete_prop(o, &k);
+                vm.delete_value(&val, &k, false)?;
             } else {
-                vm.define_data(o, k, nv);
+                super::object::define_own_property(vm, o, k, super::object::Descriptor::data(nv, true))?;
             }
         }
     }
-    vm.call(reviver, Value::Object(holder.clone()), vec![key.to_value(), val])
+    vm.call(reviver, Value::Object(holder.clone()), vec![name.to_value(), val, Value::Object(context)])
+}
+
+/// JSON.rawJSON: um objeto congelado e sem protótipo que o stringify
+/// escreve como o texto dado (só primitivos JSON).
+fn raw_json(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let text = vm.to_string(&a.arg(0))?;
+    let u = text.units();
+    let bad_edge = |c: u16| matches!(c, 0x09 | 0x0A | 0x0D | 0x20);
+    if u.is_empty() || bad_edge(u[0]) || bad_edge(u[u.len() - 1]) {
+        return Err(vm.syntax_error("Invalid value for JSON.rawJSON"));
+    }
+    if matches!(u[0], 0x7B | 0x5B) {
+        return Err(vm.syntax_error("Invalid value for JSON.rawJSON"));
+    }
+    parse_text(vm, u, false)?;
+    let o = ObjRef::new(Object::new(None, Kind::RawJson));
+    o.borrow_mut().props.insert(
+        PropKey::str("rawJSON"),
+        Property {
+            slot: Slot::Data {
+                value: Value::String(text),
+                writable: false,
+            },
+            enumerable: true,
+            configurable: false,
+        },
+    );
+    o.borrow_mut().extensible = false;
+    o.borrow_mut().frozen = true;
+    Ok(Value::Object(o))
+}
+
+fn is_raw_json(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(&a.arg(0), Value::Object(o) if matches!(o.borrow().kind, Kind::RawJson))))
 }
 
 // -------------------------------------------------------------- stringify
@@ -290,7 +389,7 @@ fn revive(vm: &mut Vm, holder: &ObjRef, key: PropKey, reviver: &Value) -> Result
 struct Ctx {
     replacer: Option<Value>,
     allow: Option<Vec<PropKey>>,
-    gap: String,
+    gap: Vec<u16>,
     stack: Vec<usize>,
 }
 
@@ -322,9 +421,10 @@ pub fn quote(s: &JsStr, out: &mut Vec<u16>) {
     out.push(0x22);
 }
 
-fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent: &str) -> Result<Option<Vec<u16>>, Value> {
+/// SerializeJSONProperty.
+fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent: &[u16]) -> Result<Option<Vec<u16>>, Value> {
     let mut v = vm.get_obj(holder, key)?;
-    if matches!(v, Value::Object(_)) {
+    if matches!(v, Value::Object(_) | Value::BigInt(_)) {
         let to_json = vm.get_str(&v, "toJSON")?;
         if to_json.is_callable() {
             v = vm.call(&to_json, v, vec![key.to_value()])?;
@@ -334,21 +434,35 @@ fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent:
         let r = r.clone();
         v = vm.call(&r, Value::Object(holder.clone()), vec![key.to_value(), v])?;
     }
-    // objetos embrulhando primitivos
+    // objetos embrulhando primitivos (e JSON.rawJSON)
     if let Value::Object(o) = &v {
-        let prim = match &o.borrow().kind {
-            Kind::Number(_) => Some(1),
-            Kind::String(_) => Some(2),
-            Kind::Boolean(b) => {
-                let b = *b;
-                return Ok(Some(if b { "true" } else { "false" }.encode_utf16().collect()));
-            }
-            _ => None,
+        enum W {
+            Raw,
+            Num,
+            Str,
+            Bool(bool),
+            Big(std::rc::Rc<crate::bigint::BigInt>),
+            No,
+        }
+        let w = match &o.borrow().kind {
+            Kind::RawJson => W::Raw,
+            Kind::Number(_) => W::Num,
+            Kind::String(_) => W::Str,
+            Kind::Boolean(b) => W::Bool(*b),
+            Kind::BigIntBox(b) => W::Big(b.clone()),
+            _ => W::No,
         };
-        match prim {
-            Some(1) => v = Value::Number(vm.to_number(&v)?),
-            Some(2) => v = Value::String(vm.to_string(&v)?),
-            _ => {}
+        match w {
+            W::Raw => {
+                let raw = vm.get_str(&v, "rawJSON")?;
+                let s = vm.to_string(&raw)?;
+                return Ok(Some(s.units().to_vec()));
+            }
+            W::Num => v = Value::Number(vm.to_number(&v)?),
+            W::Str => v = Value::String(vm.to_string(&v)?),
+            W::Bool(b) => v = Value::Bool(b),
+            W::Big(b) => v = Value::BigInt(b),
+            W::No => {}
         }
     }
     if let Value::BigInt(_) = v {
@@ -375,8 +489,9 @@ fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent:
                 return Err(vm.type_error("Converting circular structure to JSON"));
             }
             ctx.stack.push(id);
-            let inner = format!("{indent}{}", ctx.gap);
-            let is_array = matches!(o.borrow().kind, Kind::Array(_));
+            let mut inner = indent.to_vec();
+            inner.extend_from_slice(&ctx.gap);
+            let is_array = vm.is_array(&v)?;
             let mut parts: Vec<Vec<u16>> = Vec::new();
             if is_array {
                 let len = vm.length_of(o)?;
@@ -416,15 +531,16 @@ fn serialize(vm: &mut Vm, ctx: &mut Ctx, holder: &ObjRef, key: &PropKey, indent:
                         out.extend(p);
                     }
                 } else {
-                    let sep: Vec<u16> = format!(",\n{inner}").encode_utf16().collect();
-                    out.extend(format!("\n{inner}").encode_utf16());
                     for (i, p) in parts.into_iter().enumerate() {
                         if i > 0 {
-                            out.extend_from_slice(&sep);
+                            out.push(0x2C);
                         }
+                        out.push(0x0A);
+                        out.extend_from_slice(&inner);
                         out.extend(p);
                     }
-                    out.extend(format!("\n{indent}").encode_utf16());
+                    out.push(0x0A);
+                    out.extend_from_slice(indent);
                 }
             }
             out.push(close);
@@ -438,23 +554,24 @@ fn stringify(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let mut ctx = Ctx {
         replacer: None,
         allow: None,
-        gap: String::new(),
+        gap: Vec::new(),
         stack: Vec::new(),
     };
     let r = a.arg(1);
     if r.is_callable() {
         ctx.replacer = Some(r);
     } else if let Value::Object(ro) = &r
-        && matches!(ro.borrow().kind, Kind::Array(_))
+        && vm.is_array(&r)?
     {
+        // lista de propriedades: strings e números (ou seus embrulhos), sem repetir
         let mut list: Vec<PropKey> = Vec::new();
-        for item in vm.iterate_to_vec(&r)? {
+        let len = vm.length_of(ro)?;
+        for i in 0..len {
+            let item = vm.get_obj(ro, &index_key(i))?;
             let k = match &item {
-                Value::String(_) | Value::Number(_) => Some(vm.to_property_key(&item)?),
-                Value::Object(o) if matches!(o.borrow().kind, Kind::Number(_) | Kind::String(_)) => {
-                    let s = vm.to_string(&item)?;
-                    Some(PropKey::Str(s))
-                }
+                Value::String(s) => Some(PropKey::Str(s.clone())),
+                Value::Number(_) => Some(PropKey::Str(vm.to_string(&item)?)),
+                Value::Object(o) if matches!(o.borrow().kind, Kind::Number(_) | Kind::String(_)) => Some(PropKey::Str(vm.to_string(&item)?)),
                 _ => None,
             };
             if let Some(k) = k
@@ -467,23 +584,28 @@ fn stringify(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     }
     let mut space = a.arg(2);
     if let Value::Object(o) = &space {
-        let k = match &o.borrow().kind {
-            Kind::Number(n) => Some(Value::Number(*n)),
-            Kind::String(s) => Some(Value::String(s.clone())),
-            _ => None,
+        let kind = match &o.borrow().kind {
+            Kind::Number(_) => 1,
+            Kind::String(_) => 2,
+            _ => 0,
         };
-        if let Some(k) = k {
-            space = k;
+        match kind {
+            1 => space = Value::Number(vm.to_number(&space)?),
+            2 => space = Value::String(vm.to_string(&space)?),
+            _ => {}
         }
     }
     ctx.gap = match &space {
-        Value::Number(n) => " ".repeat(n.clamp(0.0, 10.0) as usize),
-        Value::String(s) => s.to_rust().chars().take(10).collect(),
-        _ => String::new(),
+        Value::Number(n) => {
+            let n = crate::conv::to_integer(*n).clamp(0.0, 10.0) as usize;
+            vec![0x20; n]
+        }
+        Value::String(s) => s.units()[..s.len().min(10)].to_vec(),
+        _ => Vec::new(),
     };
     let root = vm.new_object();
     vm.define_data(&root, PropKey::str(""), a.arg(0));
-    match serialize(vm, &mut ctx, &root, &PropKey::str(""), "")? {
+    match serialize(vm, &mut ctx, &root, &PropKey::str(""), &[])? {
         Some(s) => Ok(Value::String(JsStr::from_units(s))),
         None => Ok(Value::Undefined),
     }

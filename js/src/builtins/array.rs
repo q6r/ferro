@@ -204,6 +204,25 @@ fn from_finish(vm: &mut Vm, target: Option<Value>, out: Vec<Value>, len: usize) 
     }
 }
 
+/// O que falta de um iterador de valores de array comum (e o encerra).
+pub fn array_iter_rest(it: &ObjRef) -> Option<Vec<Value>> {
+    let mut b = it.borrow_mut();
+    let Kind::ArrayIter { target: Value::Object(t), index, kind: IterKind::Values } = &mut b.kind else { return None };
+    let tb = t.0.try_borrow().ok()?;
+    let Kind::Array(v) = &tb.kind else { return None };
+    let rest = v
+        .get(*index..)
+        .unwrap_or(&[])
+        .iter()
+        .map(|x| match x {
+            Value::Empty => Value::Undefined,
+            x => x.clone(),
+        })
+        .collect();
+    *index = usize::MAX;
+    Some(rest)
+}
+
 fn of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let len = a.args.len();
     let target = from_target(vm, a, Some(vec![Value::Number(len as f64)]))?;
@@ -236,6 +255,15 @@ fn from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
             (Value::Object(_), Value::Object(n)) => n.ptr_eq(&vm.realm.array_iter_next),
             _ => false,
         };
+        // sem mapfn nada roda no meio: copia o resto do array de uma vez
+        if fast
+            && !mapping
+            && target.is_none()
+            && let Value::Object(io) = &rec.iter
+            && let Some(rest) = array_iter_rest(io)
+        {
+            return Ok(vm.array_value(rest));
+        }
         let mut out = Vec::new();
         let mut k = 0usize;
         loop {
