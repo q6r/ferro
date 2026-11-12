@@ -1326,3 +1326,49 @@ impl Vm {
         )
     }
 
+    pub fn for_in_iterator(&mut self, v: &Value) -> Result<ObjRef, Value> {
+        let mut keys = Vec::new();
+        let target = if v.is_nullish() {
+            None
+        } else {
+            let o = self.to_object(v)?;
+            let mut seen: HashSet<PropKey> = HashSet::new();
+            let mut cur = Some(o.clone());
+            while let Some(c) = cur {
+                let ks = self.own_keys(&c)?;
+                for k in ks {
+                    if let PropKey::Str(s) = &k
+                        && seen.insert(k.clone())
+                        && self.is_enumerable_own(&c, &k)?
+                    {
+                        keys.push(s.clone());
+                    }
+                }
+                cur = self.get_prototype_of(&c)?;
+            }
+            Some(o)
+        };
+        Ok(ObjRef::new(Object::new(None, Kind::ForIn { keys, index: 0, target })))
+    }
+
+    pub fn for_in_next(&mut self, it: &ObjRef) -> Option<JsStr> {
+        loop {
+            let (key, target) = {
+                let mut b = it.borrow_mut();
+                let Kind::ForIn { keys, index, target } = &mut b.kind else { return None };
+                if *index >= keys.len() {
+                    return None;
+                }
+                *index += 1;
+                (keys[*index - 1].clone(), target.clone())
+            };
+            // propriedades apagadas durante o laço são puladas
+            if let Some(t) = &target
+                && !self.has_property(t, &PropKey::Str(key.clone())).unwrap_or(true)
+            {
+                continue;
+            }
+            return Some(key);
+        }
+    }
+
