@@ -255,3 +255,34 @@ impl Vm {
         )))
     }
 
+    /// Chama next(); para iteradores síncronos, devolve uma promessa do resultado
+    /// com o valor já esperado (CreateAsyncFromSyncIterator).
+    pub fn async_iter_next(&mut self, rec: &ObjRef) -> Result<Value, Value> {
+        let (iter, next, wrapped) = match &rec.borrow().kind {
+            Kind::IterRecord { iter, next, sync_wrapped, .. } => (iter.clone(), next.clone(), *sync_wrapped),
+            _ => return Ok(Value::Undefined),
+        };
+        let res = self.call(&next, iter, Vec::new())?;
+        if !wrapped {
+            return Ok(res);
+        }
+        if !matches!(res, Value::Object(_)) {
+            let d = self.describe(&res);
+            return Err(self.type_error(format!("Iterator result {d} is not an object")));
+        }
+        let done = crate::vm::truthy(&self.get_str(&res, "done")?);
+        let value = self.get_str(&res, "value")?;
+        if done {
+            return Ok(iter_result(self, value, true));
+        }
+        let p = self.promise_resolve_value(value)?;
+        let cap = self.new_capability(&Value::Undefined)?;
+        let wrap = self.realm.native("", 1, wrap_value);
+        self.perform_then(&p, Value::Object(wrap), Value::Undefined, Some(cap.clone()));
+        Ok(cap.promise)
+    }
+}
+
+fn wrap_value(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(iter_result(vm, a.arg(0), false))
+}
