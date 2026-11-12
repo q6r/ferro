@@ -174,3 +174,71 @@ fn prop_by_name(name: &str, value: Option<&str>) -> Option<Prop> {
     })
 }
 
+fn script(v: &str) -> Option<Prop> {
+    Some(Prop::Script(match v {
+        "Latin" | "Latn" => LATIN,
+        "Greek" | "Grek" => GREEK,
+        "Cyrillic" | "Cyrl" => CYRILLIC,
+        "Han" | "Hani" => HAN,
+        "Hiragana" | "Hira" => HIRAGANA,
+        "Katakana" | "Kana" => KATAKANA,
+        "Arabic" | "Arab" => ARABIC,
+        "Hebrew" | "Hebr" => HEBREW,
+        "Hangul" | "Hang" => HANGUL,
+        "Thai" => THAI,
+        "Devanagari" | "Deva" => DEVANAGARI,
+        _ => return None,
+    }))
+}
+
+const SPACE_RANGES: &[(u32, u32)] = &[
+    (0x09, 0x0D),
+    (0x20, 0x20),
+    (0xA0, 0xA0),
+    (0x1680, 0x1680),
+    (0x2000, 0x200A),
+    (0x2028, 0x2029),
+    (0x202F, 0x202F),
+    (0x205F, 0x205F),
+    (0x3000, 0x3000),
+    (0xFEFF, 0xFEFF),
+];
+const DIGIT_RANGES: &[(u32, u32)] = &[(0x30, 0x39)];
+const WORD_RANGES: &[(u32, u32)] = &[(0x30, 0x39), (0x41, 0x5A), (0x5F, 0x5F), (0x61, 0x7A)];
+
+impl ClassSet {
+    fn add(&mut self, a: u32, b: u32) {
+        self.ranges.push((a.min(b), a.max(b)));
+    }
+
+    fn add_all(&mut self, rs: &[(u32, u32)]) {
+        self.ranges.extend_from_slice(rs);
+    }
+
+    /// Complemento de uma lista de faixas (para \D, \W, \S dentro de classes).
+    fn add_complement(&mut self, rs: &[(u32, u32)]) {
+        let mut prev = 0u32;
+        for &(a, b) in rs {
+            if a > prev {
+                self.ranges.push((prev, a - 1));
+            }
+            prev = b + 1;
+        }
+        self.ranges.push((prev, 0x10FFFF));
+    }
+
+    fn normalize(&mut self) {
+        self.ranges.sort();
+        let mut out: Vec<(u32, u32)> = Vec::with_capacity(self.ranges.len());
+        for &(a, b) in &self.ranges {
+            if let Some(last) = out.last_mut()
+                && a <= last.1.saturating_add(1)
+            {
+                last.1 = last.1.max(b);
+                continue;
+            }
+            out.push((a, b));
+        }
+        self.ranges = out;
+    }
+
