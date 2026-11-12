@@ -5,6 +5,7 @@
 pub mod alloc;
 pub mod canvas;
 pub mod cookies;
+pub mod cors;
 pub mod css;
 pub mod dados;
 pub mod dom;

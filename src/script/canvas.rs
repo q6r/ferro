@@ -94,6 +94,99 @@ fn source_image(vm: &mut Vm, v: &Value) -> Result<Option<Arc<ImageData>>, Value>
     Ok(read(vm, |h| image_of_node(h, n)))
 }
 
+/// A fonte pode ir para o canvas sem sujá-lo? (mesma origem, `data:`/`blob:`,
+/// ou `<img crossorigin>` que o outro site liberou)
+fn source_clean(vm: &mut Vm, v: &Value) -> Result<bool, Value> {
+    let v = match node_of(v) {
+        Some(_) => v.clone(),
+        None => {
+            if !matches!(v, Value::Object(_)) {
+                return Ok(true);
+            }
+            let s = get(vm, v, "_source")?;
+            if let Value::Number(id) = s {
+                return Ok(read(vm, |h| !h.bitmap_tainted.contains(&(id as u32))));
+            }
+            s
+        }
+    };
+    let Some(n) = node_of(&v) else { return Ok(true) };
+    Ok(read(vm, |h| node_clean(h, n)))
+}
+
+fn node_clean(h: &Host, n: NodeId) -> bool {
+    let Some(el) = h.page.doc.element(n) else { return true };
+    let origin = super::web::page_origin(h);
+    let resolve = |src: &str| h.page.base.join(src.trim()).ok();
+    let same = |u: &url::Url| !crate::cors::is_cross(&origin, u);
+    match el.tag.as_str() {
+        "canvas" => !h.canvas_tainted.contains(&n),
+        "video" | "audio" => {
+            // src do elemento ou do primeiro <source>; MSE (blob:) é da página
+            let src = el.attr("src").filter(|s| !s.is_empty()).map(str::to_string).or_else(|| {
+                h.page.doc.node(n).children.iter().find_map(|&c| {
+                    let e = h.page.doc.element(c)?;
+                    if e.tag == "source" { e.attr("src").map(str::to_string) } else { None }
+                })
+            });
+            src.and_then(|s| resolve(&s)).is_none_or(|u| same(&u))
+        }
+        _ => {
+            let src = el.attr("currentSrc").or(el.attr("src")).unwrap_or("");
+            let Some(u) = resolve(src).filter(|_| !src.trim().is_empty()) else { return true };
+            same(&u) || (el.attr("crossorigin").is_some() && h.cors_images.contains(&u))
+        }
+    }
+}
+
+/// Estilo de preenchimento com padrão de imagem de outro site?
+fn style_clean(vm: &mut Vm, v: &Value) -> Result<bool, Value> {
+    if !matches!(v, Value::Object(_)) {
+        return Ok(true);
+    }
+    let ty = get(vm, v, "_type")?;
+    if !matches!(&ty, Value::String(s) if s.to_rust() == "pattern") {
+        return Ok(true);
+    }
+    let src = get(vm, v, "_img")?;
+    source_clean(vm, &src)
+}
+
+fn taint_unless(vm: &mut Vm, n: NodeId, clean: bool) {
+    if !clean {
+        write(vm, |h| h.canvas_tainted.insert(n));
+    }
+}
+
+/// `imgInfo(img)` → [largura natural, altura natural, completa].
+fn img_info(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let (w, h, done) = read(vm, |h| {
+        if let Some(i) = h.images.nodes.get(&n) {
+            return (i.width, i.height, true);
+        }
+        let Some(e) = h.page.doc.element(n) else { return (0, 0, true) };
+        let src = e.attr("src").unwrap_or("").trim();
+        if src.is_empty() {
+            return (0, 0, true);
+        }
+        let Ok(u) = h.page.base.join(src) else { return (0, 0, true) };
+        match h.image_cache.get(&u) {
+            Some(Some(i)) => (i.width, i.height, true),
+            Some(None) => (0, 0, true),
+            // baixando (sem recursos, nunca chega: conta como pronta)
+            None => (0, 0, h.no_resources),
+        }
+    });
+    Ok(vm.array_value(vec![Value::Number(w as f64), Value::Number(h as f64), Value::Bool(done)]))
+}
+
+/// `cvTainted(el)`: o canvas já recebeu imagem de outro site?
+fn tainted(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    Ok(Value::Bool(read(vm, |h| h.canvas_tainted.contains(&n))))
+}
+
 pub(crate) fn image_of_node(h: &Host, n: NodeId) -> Option<Arc<ImageData>> {
     let el = h.page.doc.element(n)?;
     match el.tag.as_str() {
@@ -196,6 +289,8 @@ fn fill(vm: &mut Vm, a: &mut CallArgs) -> R {
     let m = matrix(vm, &a.arg(4))?;
     let alpha = num(vm, a, 5)?;
     let op = text(vm, a, 6)?;
+    let clean = style_clean(vm, &a.arg(3))?;
+    taint_unless(vm, n, clean);
     if let Some(p) = paint(vm, &a.arg(3), m, alpha, &op)? {
         with_bitmap(vm, n, |b| b.fill_path(&path, evenodd, &p));
     }
@@ -224,6 +319,8 @@ fn stroke(vm: &mut Vm, a: &mut CallArgs) -> R {
     let dash = array_nums(vm, &a.arg(10))?;
     let dash_offset = num(vm, a, 11)?;
     let st = StrokeStyle { width, cap, join, miter_limit, dash, dash_offset };
+    let clean = style_clean(vm, &a.arg(2))?;
+    taint_unless(vm, n, clean);
     if let Some(p) = paint(vm, &a.arg(2), m, alpha, &op)? {
         with_bitmap(vm, n, |b| b.stroke_path(&path, &st, &p));
     }
@@ -279,6 +376,8 @@ fn source_size(vm: &mut Vm, a: &mut CallArgs) -> R {
 fn image(vm: &mut Vm, a: &mut CallArgs) -> R {
     let n = el(vm, a)?;
     let Some(img) = source_image(vm, &a.arg(1))? else { return Ok(Value::Bool(false)) };
+    let clean = source_clean(vm, &a.arg(1))?;
+    taint_unless(vm, n, clean);
     let mut v = [0.0f32; 8];
     for (i, x) in v.iter_mut().enumerate() {
         *x = num(vm, a, 2 + i)?;
@@ -382,6 +481,8 @@ fn draw_text(vm: &mut Vm, a: &mut CallArgs) -> R {
     let alpha = num(vm, a, 9)?;
     let op = text(vm, a, 10)?;
     let max_w = vm.to_number(&a.arg(11))? as f32;
+    let clean = style_clean(vm, &a.arg(7))?;
+    taint_unless(vm, n, clean);
     let Some(p) = paint(vm, &a.arg(7), m, alpha, &op)? else { return Ok(Value::Undefined) };
     let fonts = read(vm, |h| h.fonts.clone());
     let (id, mut size) = parse_font(&fonts, &font);
@@ -504,6 +605,7 @@ fn base64(bytes: &[u8]) -> String {
 /// `bitmapNew(fonte)`: guarda uma cópia da imagem (createImageBitmap). Devolve
 /// [id, largura, altura] ou null.
 fn bitmap_new(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let clean = source_clean(vm, &a.arg(0))?;
     let img = match source_image(vm, &a.arg(0))? {
         Some(i) => Some(i),
         None => {
@@ -529,6 +631,9 @@ fn bitmap_new(vm: &mut Vm, a: &mut CallArgs) -> R {
         hb.bitmap_seq += 1;
         let id = hb.bitmap_seq;
         hb.bitmaps.insert(id, img);
+        if !clean {
+            hb.bitmap_tainted.insert(id);
+        }
         id
     });
     Ok(vm.array_value(vec![Value::Number(id as f64), Value::Number(w as f64), Value::Number(h as f64)]))
@@ -615,6 +720,8 @@ pub(crate) fn install(vm: &Vm, n: &ObjRef) {
         ("cvMeasure", 2, measure),
         ("cvText", 12, draw_text),
         ("cvGetData", 5, get_data),
+        ("cvTainted", 1, tainted),
+        ("imgInfo", 1, img_info),
         ("cvPutData", 10, put_data),
         ("cvDataURL", 1, data_url),
         ("bitmapNew", 1, bitmap_new),

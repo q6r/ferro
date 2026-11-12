@@ -746,11 +746,17 @@ const IMG = HTMLImageElement.prototype;
 reflectAll(IMG, [['src', 'src', 'url'], 'alt', 'srcset', 'sizes', ['crossOrigin', 'crossorigin'], 'loading',
   'decoding', ['useMap', 'usemap'], ['isMap', 'ismap', 'bool'], ['referrerPolicy', 'referrerpolicy'],
   ['fetchPriority', 'fetchpriority'], 'name', 'align', 'border']);
-reflect(IMG, 'width', 'width', 'int', 0);
-reflect(IMG, 'height', 'height', 'int', 0);
-accessor(IMG, 'naturalWidth', function () { return this.width; });
-accessor(IMG, 'naturalHeight', function () { return this.height; });
-accessor(IMG, 'complete', () => true);
+// width/height: o atributo, ou o tamanho natural quando não há atributo
+for (const [k, i] of [['width', 0], ['height', 1]]) {
+  accessor(IMG, k, function () {
+    const a = this.getAttribute(k);
+    const v = a === null ? NaN : parseInt(a, 10);
+    return v >= 0 ? v : N.imgInfo(this)[i];
+  }, function (v) { this.setAttribute(k, String(v >>> 0)); });
+}
+accessor(IMG, 'naturalWidth', function () { return N.imgInfo(this)[0]; });
+accessor(IMG, 'naturalHeight', function () { return N.imgInfo(this)[1]; });
+accessor(IMG, 'complete', function () { return N.imgInfo(this)[2]; });
 accessor(IMG, 'currentSrc', function () { return this.src; });
 hidden(IMG, 'decode', function () { return Promise.resolve(); });
 
@@ -1573,6 +1579,7 @@ class CanvasRenderingContext2D {
     if (!w || !h) throw new DOMException(`The source ${w ? 'height' : 'width'} is 0.`, 'IndexSizeError');
     if (w < 0) { x += w; w = -w; }
     if (h < 0) { y += h; h = -h; }
+    if (N.cvTainted(this._el)) throw new DOMException("Failed to execute 'getImageData' on 'CanvasRenderingContext2D': The canvas has been tainted by cross-origin data.", 'SecurityError');
     return new ImageData(N.cvGetData(this._el, x, y, w, h), w, h);
   }
   putImageData(img, dx, dy, x = 0, y = 0, w = img.width, h = img.height) {
@@ -1652,9 +1659,11 @@ methods(CANVAS, {
   },
   toDataURL() {
     if (!CTX2D.get(this)) this.getContext('2d');
+    if (N.cvTainted(this)) throw new DOMException("Failed to execute 'toDataURL' on 'HTMLCanvasElement': Tainted canvases may not be exported.", 'SecurityError');
     return N.cvDataURL(this);
   },
   toBlob(cb, type) {
+    if (N.cvTainted(this)) throw new DOMException("Failed to execute 'toBlob' on 'HTMLCanvasElement': Tainted canvases may not be exported.", 'SecurityError');
     const url = this.toDataURL(type);
     setTimeout(() => {
       if (url === 'data:,') return cb(null);
@@ -2957,10 +2966,16 @@ hidden(G, 'Response', Response);
 function fromNative(r, url) {
   const res = new Response(null, { status: r.status, headers: r.headers });
   res._bytes = r.body || new Uint8Array(0);
-  res.url = r.url || url;
-  res.redirected = !!r.url && r.url !== url;
-  res.type = 'basic';
+  res.type = r.type || 'basic';
+  // resposta opaca (no-cors de outro site): nada dela fica visível
+  res.url = res.type === 'opaque' ? '' : r.url || url;
+  res.redirected = res.type !== 'opaque' && !!r.url && r.url !== url;
+  if (res.type === 'opaque') res.statusText = '';
   return res;
+}
+// bloqueio de CORS: o motivo vai para o console, como no Chrome
+function corsError(r) {
+  if (r.error && r.error.startsWith('Access to ')) console.error(r.error);
 }
 hidden(G, 'fetch', function fetch(input, init) {
   return new Promise((resolve, reject) => {
@@ -2978,12 +2993,12 @@ hidden(G, 'fetch', function fetch(input, init) {
     req.signal.addEventListener('abort', () => {
       if (!finished) { finished = true; reject(req.signal.reason); }
     });
-    N.fetch(req.method, req.url, [...req.headers], bytes, req.credentials !== 'omit', (r) => {
+    N.fetch(req.method, req.url, [...req.headers], bytes, req.credentials, (r) => {
       if (finished) return;
       finished = true;
-      if (r.error) reject(new TypeError('Failed to fetch'));
+      if (r.error) { corsError(r); reject(new TypeError('Failed to fetch')); }
       else resolve(fromNative(r, req.url));
-    });
+    }, req.mode, 'fetch');
   });
 });
 
@@ -3034,6 +3049,7 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
     if (ct && !headers.some(([k]) => k.toLowerCase() === 'content-type')) headers.push(['Content-Type', ct]);
     const done = (r) => {
       if (r.error) {
+        corsError(r);
         this._state(4);
         this._fire('error');
         this._fire('loadend');
@@ -3053,13 +3069,13 @@ class XMLHttpRequest extends XMLHttpRequestEventTarget {
     };
     this._fire('loadstart');
     if (!this._async) {
-      done(N.fetchSync(this._method, this._url, headers, bytes, true));
+      done(N.fetchSync(this._method, this._url, headers, bytes, this.withCredentials ? 'include' : 'same-origin', null, 'cors', 'XMLHttpRequest'));
       return;
     }
     const seq = this._seq;
-    N.fetch(this._method, this._url, headers, bytes, true, (r) => {
+    N.fetch(this._method, this._url, headers, bytes, this.withCredentials ? 'include' : 'same-origin', (r) => {
       if (seq === this._seq) done(r);
-    });
+    }, 'cors', 'XMLHttpRequest');
     if (this.timeout > 0) {
       setTimeout(() => {
         if (seq === this._seq && this.readyState !== 4) {

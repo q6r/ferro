@@ -67,8 +67,9 @@ pub(crate) enum Done {
     /// `<script src>` inserido por um script.
     Script { node: NodeId, text: Option<String> },
     /// `fetch`/XMLHttpRequest.
-    Fetch { id: u32, res: Result<net::Response, String> },
-    Image { url: Url, img: Option<Arc<ImageData>> },
+    Fetch { id: u32, res: Result<(net::Response, crate::cors::Kind), String> },
+    /// `cors`: imagem de outro site pedida com `crossorigin` e liberada.
+    Image { url: Url, img: Option<Arc<ImageData>>, cors: bool },
     Bg { url: String, img: Option<Arc<ImageData>> },
     Font,
     Sheet { url: Url, text: Option<String> },
@@ -168,6 +169,12 @@ pub struct Host {
     last_canvas_snap: Option<Instant>,
     /// ImageBitmap (createImageBitmap): cópias por id.
     pub(crate) bitmaps: HashMap<u32, Arc<ImageData>>,
+    /// Canvas "sujos" por imagem de outro site (getImageData/toDataURL dão erro).
+    pub(crate) canvas_tainted: HashSet<NodeId>,
+    /// ImageBitmaps feitos de imagem de outro site.
+    pub(crate) bitmap_tainted: HashSet<u32>,
+    /// Imagens de outro site liberadas pelo CORS (`<img crossorigin>`).
+    pub(crate) cors_images: HashSet<Url>,
     /// Quadros (`<iframe>`) desta página, pelo nó.
     pub(crate) frames: HashMap<NodeId, frames::Child>,
     /// Quadros baixando (nó → endereço).
@@ -370,6 +377,9 @@ impl Session {
             canvas_snaps: HashMap::new(),
             last_canvas_snap: None,
             bitmaps: HashMap::new(),
+            canvas_tainted: HashSet::new(),
+            bitmap_tainted: HashSet::new(),
+            cors_images: HashSet::new(),
             bitmap_seq: 0,
             frames: HashMap::new(),
             frame_loading: HashMap::new(),
@@ -939,10 +949,13 @@ impl Session {
                     self.js.vm.run_microtasks();
                 }
             }
-            Done::Image { url, img } => {
+            Done::Image { url, img, cors } => {
                 let ok = img.is_some();
                 let waiters = {
                     let mut hb = self.host.borrow_mut();
+                    if cors {
+                        hb.cors_images.insert(url.clone());
+                    }
                     hb.image_cache.insert(url.clone(), img);
                     hb.repaint = true;
                     hb.img_waiters.remove(&url).unwrap_or_default()
@@ -1479,14 +1492,19 @@ fn recollect_styles(h: &Rc<RefCell<Host>>) {
 /// Pede uma imagem (para desenhar e/ou para o `load` de um `<img>`).
 pub(crate) fn request_image(hb: &mut Host, url: Url, waiter: Option<NodeId>) {
     if let Some(n) = waiter {
-        hb.img_waiters.entry(url.clone()).or_default().push(n);
+        // o mesmo <img> esperando a mesma imagem: um `load` só
+        let list = hb.img_waiters.entry(url.clone()).or_default();
+        if list.contains(&n) {
+            return;
+        }
+        list.push(n);
     }
     if hb.image_cache.contains_key(&url) {
         // já está pronta: o `load` sai na próxima volta do laço
         if waiter.is_some() {
             let img = hb.image_cache.get(&url).cloned().flatten();
             hb.in_flight += 1;
-            hb.pool.submit(Box::new(move || Done::Image { url, img }));
+            hb.pool.submit(Box::new(move || Done::Image { url, img, cors: false }));
         }
         return;
     }
@@ -1494,15 +1512,26 @@ pub(crate) fn request_image(hb: &mut Host, url: Url, waiter: Option<NodeId>) {
         return;
     }
     let net = hb.net.clone();
+    // <img crossorigin> de outro site: pede com Origin e só aceita se o site
+    // liberar (aí ela pode ir para um canvas sem sujá-lo)
+    let origin = web::page_origin(hb);
+    let cors = waiter
+        .and_then(|n| hb.page.doc.element(n))
+        .and_then(|e| e.attr("crossorigin").map(|v| v.eq_ignore_ascii_case("use-credentials")))
+        .filter(|_| crate::cors::is_cross(&origin, &url));
     hb.in_flight += 1;
     hb.pool.submit(Box::new(move || {
-        let img = net
-            .fetch(&url)
+        let res = match cors {
+            Some(include) => crate::cors::fetch_image(&net, &url, &origin, include),
+            None => net.fetch(&url),
+        };
+        let ok = res.is_ok();
+        let img = res
             .ok()
             .filter(|r| r.status < 400)
             .and_then(|r| engine::decode_image(&r.body))
             .map(Arc::new);
-        Done::Image { url, img }
+        Done::Image { url, img, cors: cors.is_some() && ok }
     }));
 }
 
@@ -1572,12 +1601,13 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
                 hb.images.nodes.insert(n, img);
             }
             Some(None) => {}
-            None => missing.push(u),
+            None => missing.push((n, u)),
         }
     }
     if !hb.no_resources {
-        for u in missing {
-            request_image(&mut hb, u, None);
+        // pedida junto com o <img>: vale o crossorigin e sai o evento load/error
+        for (n, u) in missing {
+            request_image(&mut hb, u, Some(n));
         }
     }
     let fonts = hb.fonts.clone();

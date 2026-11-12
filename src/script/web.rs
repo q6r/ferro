@@ -10,7 +10,7 @@ use ferro_js::{Value, Vm};
 use url::Url;
 
 use super::{Done, Host, host, node_of};
-use crate::net;
+use crate::{cors, net};
 
 type R = Result<Value, Value>;
 
@@ -142,10 +142,11 @@ fn atob(vm: &mut Vm, a: &mut CallArgs) -> R {
 // -------------------------------------------------------------------- rede
 
 /// Objeto com o resultado de uma requisição (o prelúdio monta o Response).
-pub(crate) fn response_value(vm: &mut Vm, res: Result<net::Response, String>) -> Value {
+pub(crate) fn response_value(vm: &mut Vm, res: Result<(net::Response, cors::Kind), String>) -> Value {
     let o = vm.new_object();
     match res {
-        Ok(r) => {
+        Ok((r, kind)) => {
+            set(vm, &o, "type", s(kind.name()));
             set(vm, &o, "status", Value::Number(r.status as f64));
             set(vm, &o, "url", s(r.url.as_str()));
             let headers: Vec<Value> = r
@@ -167,8 +168,20 @@ pub(crate) fn response_value(vm: &mut Vm, res: Result<net::Response, String>) ->
     Value::Object(o)
 }
 
-/// Monta a requisição a partir de (método, url, [[nome, valor]...], corpo).
-fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<net::Request, Value> {
+/// Origem da página para o CORS e o canvas: a do endereço; `about:blank` e
+/// `srcdoc` herdam a do quadro de fora; o resto (file:, data:) é opaca.
+pub(crate) fn page_origin(h: &Host) -> String {
+    let u = &h.page.url;
+    match u.scheme() {
+        "http" | "https" => u.origin().ascii_serialization(),
+        "about" => h.parent_origin.clone().unwrap_or_else(|| "null".into()),
+        _ => "null".into(),
+    }
+}
+
+/// Monta o pedido da página a partir de
+/// (método, url, [[nome, valor]...], corpo, credentials, _, mode, api).
+fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<cors::PageRequest, Value> {
     let method = arg_string(vm, a, 0)?;
     let url_s = arg_string(vm, a, 1)?;
     let base = read(vm, |h| h.page.base.clone());
@@ -183,10 +196,14 @@ fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<net::Request, Value> {
             if pair.len() >= 2 {
                 let k = vm.to_rust_string(&pair[0])?;
                 let v = vm.to_rust_string(&pair[1])?;
-                headers.push((k, v));
+                // Cookie, Host, Origin, Sec-*...: quem decide é o navegador
+                if !cors::forbidden_header(&k) {
+                    headers.push((k, v));
+                }
             }
         }
     }
+    let author_headers: Vec<String> = headers.iter().map(|(k, _)| k.clone()).collect();
     if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("accept")) {
         headers.push(("Accept".into(), "*/*".into()));
     }
@@ -197,25 +214,59 @@ fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<net::Request, Value> {
             None => Some(vm.to_rust_string(&v)?.into_bytes()),
         },
     };
-    // Referer e Origin, como um navegador manda
-    let page = read(vm, |h| h.page.url.clone());
+    // Referer (política padrão: endereço inteiro no mesmo site, só a origem
+    // para outro site, nada de https para http) e Origin
+    let (page, origin) = read(vm, |h| (h.page.url.clone(), page_origin(h)));
     if matches!(page.scheme(), "http" | "https") {
-        headers.push(("Referer".into(), page.to_string()));
+        let mut r = page.clone();
+        r.set_fragment(None);
+        if !cors::is_cross(&origin, &url) {
+            headers.push(("Referer".into(), r.to_string()));
+        } else if !(page.scheme() == "https" && url.scheme() == "http") {
+            headers.push(("Referer".into(), format!("{origin}/")));
+        }
         if method != "GET" && method != "HEAD" {
-            headers.push(("Origin".into(), page.origin().ascii_serialization()));
+            headers.push(("Origin".into(), origin.clone()));
         }
     }
-    let cookies = a.arg(4).is_undefined() || ferro_js::vm::truthy(&a.arg(4));
-    Ok(net::Request {
-        method,
-        url,
-        headers,
-        body,
-        cookies,
+    // credentials: texto ("omit", "same-origin", "include"); booleano = antigo
+    let credentials = match a.arg(4) {
+        Value::Undefined => cors::Credentials::SameOrigin,
+        Value::Bool(b) => {
+            if b {
+                cors::Credentials::SameOrigin
+            } else {
+                cors::Credentials::Omit
+            }
+        }
+        v => cors::Credentials::parse(&vm.to_rust_string(&v)?),
+    };
+    let mode = match a.arg(6) {
+        Value::Undefined | Value::Null => cors::Mode::Cors,
+        v => cors::Mode::parse(&vm.to_rust_string(&v)?),
+    };
+    let api = match a.arg(7) {
+        Value::Undefined | Value::Null => "fetch",
+        v if vm.to_rust_string(&v)? == "XMLHttpRequest" => "XMLHttpRequest",
+        _ => "fetch",
+    };
+    Ok(cors::PageRequest {
+        req: net::Request {
+            method,
+            url,
+            headers,
+            body,
+            cookies: true,
+        },
+        origin,
+        mode,
+        credentials,
+        author_headers,
+        api,
     })
 }
 
-/// `__native.fetch(método, url, cabeçalhos, corpo, comCookies, callback)`.
+/// `__native.fetch(método, url, cabeçalhos, corpo, credentials, callback, mode, api)`.
 fn fetch(vm: &mut Vm, a: &mut CallArgs) -> R {
     let req = request_from_args(vm, a)?;
     let cb = a.arg(5);
@@ -225,7 +276,7 @@ fn fetch(vm: &mut Vm, a: &mut CallArgs) -> R {
         h.fetch_waiters.insert(id, cb);
         let net = h.net.clone();
         h.in_flight += 1;
-        h.pool.submit(Box::new(move || Done::Fetch { id, res: net.request(&req) }));
+        h.pool.submit(Box::new(move || Done::Fetch { id, res: cors::fetch(&net, req) }));
     });
     Ok(Value::Undefined)
 }
@@ -234,7 +285,7 @@ fn fetch(vm: &mut Vm, a: &mut CallArgs) -> R {
 fn fetch_sync(vm: &mut Vm, a: &mut CallArgs) -> R {
     let req = request_from_args(vm, a)?;
     let net = read(vm, |h| h.net.clone());
-    let res = net.request(&req);
+    let res = cors::fetch(&net, req);
     Ok(response_value(vm, res))
 }
 
@@ -910,8 +961,8 @@ pub(crate) fn install(vm: &mut Vm) {
     for (name, len, f) in [
         ("utf8Encode", 1, utf8_encode as ferro_js::value::NativeFn),
         ("utf8Decode", 1, utf8_decode),
-        ("fetch", 6, fetch),
-        ("fetchSync", 4, fetch_sync),
+        ("fetch", 8, fetch),
+        ("fetchSync", 8, fetch_sync),
         ("urlParse", 2, url_parse),
         ("urlSet", 3, url_set),
         ("formDecode", 1, form_decode),
