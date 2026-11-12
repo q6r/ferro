@@ -167,3 +167,51 @@ pub(crate) fn response_value(vm: &mut Vm, res: Result<net::Response, String>) ->
     Value::Object(o)
 }
 
+/// Monta a requisição a partir de (método, url, [[nome, valor]...], corpo).
+fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<net::Request, Value> {
+    let method = arg_string(vm, a, 0)?;
+    let url_s = arg_string(vm, a, 1)?;
+    let base = read(vm, |h| h.page.base.clone());
+    let url = base
+        .join(&url_s)
+        .map_err(|_| vm.type_error(format!("Failed to fetch: invalid URL '{url_s}'")))?;
+    let mut headers = Vec::new();
+    if let Value::Object(list) = a.arg(2) {
+        let items = vm.iterate_to_vec(&Value::Object(list))?;
+        for it in items {
+            let pair = vm.iterate_to_vec(&it)?;
+            if pair.len() >= 2 {
+                let k = vm.to_rust_string(&pair[0])?;
+                let v = vm.to_rust_string(&pair[1])?;
+                headers.push((k, v));
+            }
+        }
+    }
+    if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("accept")) {
+        headers.push(("Accept".into(), "*/*".into()));
+    }
+    let body = match a.arg(3) {
+        Value::Undefined | Value::Null => None,
+        v => match bytes_of(&v) {
+            Some(b) => Some(b),
+            None => Some(vm.to_rust_string(&v)?.into_bytes()),
+        },
+    };
+    // Referer e Origin, como um navegador manda
+    let page = read(vm, |h| h.page.url.clone());
+    if matches!(page.scheme(), "http" | "https") {
+        headers.push(("Referer".into(), page.to_string()));
+        if method != "GET" && method != "HEAD" {
+            headers.push(("Origin".into(), page.origin().ascii_serialization()));
+        }
+    }
+    let cookies = a.arg(4).is_undefined() || ferro_js::vm::truthy(&a.arg(4));
+    Ok(net::Request {
+        method,
+        url,
+        headers,
+        body,
+        cookies,
+    })
+}
+
