@@ -1769,3 +1769,56 @@ class SourceBuffer extends EventTarget {
     if (!N.mediaSupports(String(type))) throw new DOMException(`Failed to execute 'changeType' on 'SourceBuffer': The type provided ('${type}') is not supported.`, 'NotSupportedError');
   }
 }
+defineHandlers(SourceBuffer.prototype, ['updatestart', 'update', 'updateend', 'error', 'abort']);
+hidden(G, 'SourceBuffer', SourceBuffer);
+class SourceBufferList extends EventTarget {}
+hidden(G, 'SourceBufferList', SourceBufferList);
+
+class MediaSource extends EventTarget {
+  constructor() {
+    super();
+    MS.set(this, { id: N.msNew(), sbs: [], readyState: 'closed', el: null });
+  }
+  static isTypeSupported(t) { return N.mediaSupports(String(t)); }
+  static get canConstructInDedicatedWorker() { return false; }
+  get readyState() { return MS.get(this).readyState; }
+  get duration() { return MS.get(this).readyState === 'closed' ? NaN : N.msDuration(MS.get(this).id); }
+  set duration(v) {
+    const m = MS.get(this);
+    if (m.readyState !== 'open') throw new DOMException("Failed to set the 'duration' property on 'MediaSource': The MediaSource's readyState is not 'open'.", 'InvalidStateError');
+    N.msDuration(m.id, Number(v));
+    if (m.el) later(() => fireTrusted(m.el, new Event('durationchange')));
+  }
+  get sourceBuffers() {
+    const list = Object.assign(new SourceBufferList(), MS.get(this).sbs);
+    Object.defineProperty(list, 'length', { value: MS.get(this).sbs.length });
+    return list;
+  }
+  get activeSourceBuffers() { return this.sourceBuffers; }
+  addSourceBuffer(type) {
+    const m = MS.get(this);
+    if (m.readyState !== 'open') throw new DOMException("Failed to execute 'addSourceBuffer' on 'MediaSource': The MediaSource's readyState is not 'open'.", 'InvalidStateError');
+    const r = N.sbNew(m.id, String(type));
+    if (typeof r === 'string') throw new DOMException(r, 'NotSupportedError');
+    const sb = Object.create(SourceBuffer.prototype);
+    SB.set(sb, { id: r, ms: this, updating: false, mode: 'segments', offset: 0, winStart: 0, winEnd: Infinity, removed: false });
+    m.sbs.push(sb);
+    return sb;
+  }
+  removeSourceBuffer(sb) {
+    const m = MS.get(this);
+    const i = m.sbs.indexOf(sb);
+    if (i < 0) throw new DOMException("Failed to execute 'removeSourceBuffer' on 'MediaSource': The SourceBuffer provided is not contained in this MediaSource.", 'NotFoundError');
+    m.sbs.splice(i, 1);
+    SB.get(sb).removed = true;
+  }
+  endOfStream(error) {
+    const m = MS.get(this);
+    if (m.readyState !== 'open') throw new DOMException("Failed to execute 'endOfStream' on 'MediaSource': The MediaSource's readyState is not 'open'.", 'InvalidStateError');
+    m.readyState = 'ended';
+    if (!error) N.msEnd(m.id);
+    later(() => fireTrusted(this, new Event('sourceended')));
+  }
+  setLiveSeekableRange() {}
+  clearLiveSeekableRange() {}
+}
