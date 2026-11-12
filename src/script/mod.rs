@@ -996,3 +996,70 @@ impl Session {
         }
     }
 
+    /// Ação padrão de um clique não cancelado.
+    fn default_click(&mut self, target: NodeId) -> Option<Url> {
+        let mut hb = self.host.borrow_mut();
+        let mut n = Some(target);
+        while let Some(id) = n {
+            let doc = &hb.page.doc;
+            if let Some(el) = doc.element(id) {
+                match el.tag.as_str() {
+                    "a" | "area" => {
+                        if let Some(href) = el.attr("href") {
+                            let href = href.trim();
+                            if href.to_ascii_lowercase().starts_with("javascript:") {
+                                let code = net::percent_decode(&href[11..]);
+                                let code = String::from_utf8_lossy(&code).into_owned();
+                                drop(hb);
+                                if let Err(e) = self.js.vm.eval_script(&code, "javascript:") {
+                                    self.js.vm.report_uncaught(&e);
+                                }
+                                self.js.vm.run_microtasks();
+                                return self.host.borrow_mut().navigate.take();
+                            }
+                            return hb.page.base.join(href).ok();
+                        }
+                    }
+                    "input" => {
+                        let ty = el.attr("type").unwrap_or("").to_ascii_lowercase();
+                        if ty == "checkbox" {
+                            if el.attr("checked").is_some() {
+                                hb.page.doc.remove_attr(id, "checked");
+                            } else {
+                                hb.page.doc.set_attr(id, "checked", "");
+                            }
+                            hb.dirty = true;
+                            return None;
+                        }
+                        if ty == "radio" {
+                            hb.page.doc.set_attr(id, "checked", "");
+                            hb.dirty = true;
+                            return None;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            n = hb.page.doc.node(id).parent;
+        }
+        None
+    }
+
+    /// O elemento por cima de tudo sob o ponto (coordenadas do documento):
+    /// a última área de mouse pintada ali.
+    pub fn hit(&self, x: f32, y: f32) -> Option<NodeId> {
+        let hb = self.host.borrow();
+        let info = hb.layout.as_ref()?;
+        let doc = &hb.page.doc;
+        let sy = hb.scroll_y;
+        info.hits
+            .iter()
+            .rev()
+            .find(|(n, r, fixed)| {
+                // os fixos estão em coordenadas da janela
+                let py = if *fixed { y - sy } else { y };
+                r.contains(x, py) && *n < doc.nodes.len() && doc.is_connected(*n)
+            })
+            .map(|(n, _, _)| *n)
+    }
+
