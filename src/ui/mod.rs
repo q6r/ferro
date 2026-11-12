@@ -1164,3 +1164,35 @@ impl App {
         self.hits.iter().rev().find(|(r, _)| r.contains(x, y)).map(|(_, h)| *h)
     }
 
+    /// Ponto da janela em coordenadas do documento (px CSS), se cair na página.
+    fn page_point(&self, x: f32, y: f32) -> Option<(f32, f32)> {
+        let c = self.geo().content;
+        if self.palette_open || !c.contains(x, y) {
+            return None;
+        }
+        let tab = self.tab();
+        if tab.kind() != Kind::Web || tab.error.is_some() {
+            return None;
+        }
+        tab.frame.as_ref()?;
+        let px = (x - c.x) / self.zoom;
+        let py = (y - c.y) / self.zoom + self.effective_scroll(self.active);
+        Some((px, py))
+    }
+
+    fn link_at(&self, x: f32, y: f32) -> Option<String> {
+        let (px, py) = self.page_point(x, y)?;
+        let frame = self.tab().frame.as_ref()?;
+        // os links fixos (cabeçalhos) estão por cima e não rolam
+        let sy = py - self.effective_scroll(self.active);
+        if let Some((_, h)) = frame.fixed_links.iter().rev().find(|(r, _)| r.contains(px, sy)) {
+            return Some(h.clone());
+        }
+        frame
+            .links
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(px, py))
+            .map(|(_, h)| h.clone())
+    }
+
