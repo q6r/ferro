@@ -1190,3 +1190,42 @@ class CanvasPattern {
 hidden(G, 'CanvasGradient', CanvasGradient);
 hidden(G, 'CanvasPattern', CanvasPattern);
 
+class ImageData {
+  constructor(a, b, c) {
+    let data, w, h;
+    if (a instanceof Uint8ClampedArray) {
+      data = a; w = b >>> 0; h = c === undefined ? a.length / 4 / w : c >>> 0;
+      if (!w || a.length !== w * h * 4) throw new DOMException('The input data length is not equal to (4 * width * height).', 'IndexSizeError');
+    } else {
+      w = a >>> 0; h = b >>> 0;
+      if (!w || !h) throw new DOMException('The source width is 0.', 'IndexSizeError');
+      data = new Uint8ClampedArray(w * h * 4);
+    }
+    Object.defineProperty(this, 'data', { value: data, enumerable: true });
+    Object.defineProperty(this, 'width', { value: w, enumerable: true });
+    Object.defineProperty(this, 'height', { value: h, enumerable: true });
+    this.colorSpace = 'srgb';
+  }
+}
+hidden(G, 'ImageData', ImageData);
+
+class TextMetrics {}
+hidden(G, 'TextMetrics', TextMetrics);
+
+class ImageBitmap {
+  constructor(id, w, h) { this._source = id; this.width = w; this.height = h; }
+  close() { if (this._source) N.bitmapClose(this._source); this._source = 0; this.width = this.height = 0; }
+}
+hidden(G, 'ImageBitmap', ImageBitmap);
+hidden(G, 'createImageBitmap', async function createImageBitmap(src) {
+  let r = null;
+  if (src instanceof Blob) r = N.bitmapDecode(await src.bytes());
+  else if (src instanceof ImageBitmap) r = [src._source, src.width, src.height];
+  else {
+    if (src && src.localName === 'img' && !src.complete && src.decode) await src.decode().catch(() => {});
+    r = N.bitmapNew(src && src._el ? src._el : src);
+  }
+  if (!r) throw new DOMException('The source image could not be decoded.', 'InvalidStateError');
+  return new ImageBitmap(r[0], r[1], r[2]);
+});
+
