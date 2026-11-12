@@ -2468,3 +2468,77 @@ const PERF = Object.assign(new EventTarget(), {
     domContentLoadedEventStart: T0, domContentLoadedEventEnd: T0, domComplete: T0, loadEventStart: T0, loadEventEnd: T0 },
   navigation: { type: 0, redirectCount: 0 },
 });
+hidden(G, 'performance', PERF);
+class PerformanceObserver {
+  constructor(cb) { this.cb = cb; }
+  observe() {} disconnect() {} takeRecords() { return []; }
+  static get supportedEntryTypes() { return ['mark', 'measure']; }
+}
+hidden(G, 'PerformanceObserver', PerformanceObserver);
+
+// ---------------------------------------------------- armazenamento
+class Storage {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+function makeStorage(session) {
+  const api = Object.create(Storage.prototype);
+  const proto = {
+    getItem: (k) => N.storageGet(session, String(k)),
+    setItem: (k, v) => N.storageSet(session, String(k), String(v)),
+    removeItem: (k) => N.storageRemove(session, String(k)),
+    clear: () => N.storageClear(session),
+    key: (i) => N.storageKeys(session)[i] ?? null,
+  };
+  return new Proxy(api, {
+    get(t, k) {
+      if (k === 'length') return N.storageKeys(session).length;
+      if (typeof k === 'symbol') return t[k];
+      if (Object.prototype.hasOwnProperty.call(proto, k)) return proto[k];
+      if (k in Storage.prototype || k in Object.prototype) return t[k];
+      const v = N.storageGet(session, k);
+      return v === null ? undefined : v;
+    },
+    set(t, k, v) { if (typeof k === 'string') N.storageSet(session, k, String(v)); return true; },
+    has(t, k) { return typeof k === 'string' && (k in proto || N.storageGet(session, k) !== null); },
+    deleteProperty(t, k) { N.storageRemove(session, String(k)); return true; },
+    ownKeys() { return N.storageKeys(session); },
+    getOwnPropertyDescriptor(t, k) {
+      const v = typeof k === 'string' ? N.storageGet(session, k) : null;
+      return v === null ? undefined : { value: v, writable: true, enumerable: true, configurable: true };
+    },
+  });
+}
+hidden(G, 'Storage', Storage);
+const LOCAL = makeStorage(false);
+const SESSION = makeStorage(true);
+Object.defineProperty(G, 'localStorage', { get: () => LOCAL, configurable: true, enumerable: true });
+Object.defineProperty(G, 'sessionStorage', { get: () => SESSION, configurable: true, enumerable: true });
+
+// ------------------------------------------------- structuredClone
+function clone(v, seen) {
+  if (typeof v !== 'object' || v === null) {
+    if (typeof v === 'function' || typeof v === 'symbol')
+      throw new DOMException(`${String(v)} could not be cloned.`, 'DataCloneError');
+    return v;
+  }
+  if (seen.has(v)) return seen.get(v);
+  let out;
+  if (Array.isArray(v)) {
+    out = [];
+    seen.set(v, out);
+    for (let i = 0; i < v.length; i++) out[i] = clone(v[i], seen);
+    return out;
+  }
+  if (v instanceof Date) return new Date(v.getTime());
+  if (v instanceof RegExp) return new RegExp(v.source, v.flags);
+  if (v instanceof Map) { out = new Map(); seen.set(v, out); for (const [a, b] of v) out.set(clone(a, seen), clone(b, seen)); return out; }
+  if (v instanceof Set) { out = new Set(); seen.set(v, out); for (const a of v) out.add(clone(a, seen)); return out; }
+  if (v instanceof ArrayBuffer) return v.slice(0);
+  if (ArrayBuffer.isView(v)) return v.slice ? v.slice() : new DataView(v.buffer.slice(0));
+  if (v instanceof Error) { const e = new v.constructor(v.message); seen.set(v, e); return e; }
+  if (v instanceof Node) throw new DOMException(`${Object.prototype.toString.call(v)} could not be cloned.`, 'DataCloneError');
+  out = {};
+  seen.set(v, out);
+  for (const k of Object.keys(v)) out[k] = clone(v[k], seen);
+  return out;
+}
