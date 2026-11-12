@@ -236,3 +236,84 @@ fn build(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox> {
     }
 }
 
+/// Caixa de ::before / ::after com o texto de `content`.
+fn pseudo_box(doc: &Document, el: &crate::dom::ElementData, node: NodeId, s: Rc<ComputedStyle>) -> Option<LayoutBox> {
+    let _ = doc;
+    let parts = s.content.clone()?;
+    let text: String = parts
+        .iter()
+        .map(|p| match p {
+            ContentPart::Text(t) => t.clone(),
+            ContentPart::Attr(a) => el.attr(a).unwrap_or("").to_string(),
+            ContentPart::OpenQuote => "“".to_string(),
+            ContentPart::CloseQuote => "”".to_string(),
+        })
+        .collect();
+    let mut children = Vec::new();
+    if !text.is_empty() {
+        let mut t = LayoutBox::new(BoxKind::Text(node), s.clone(), Vec::new());
+        t.text = Some(Rc::from(text.as_str()));
+        t.generated = true;
+        children.push(t);
+    }
+    let kind = if s.is_out_of_flow() || s.float != Float::None || s.display.is_block_level() {
+        BoxKind::Block(node)
+    } else if s.display.is_inline_block() {
+        BoxKind::InlineBlock(node)
+    } else {
+        BoxKind::Inline(node)
+    };
+    let mut b = LayoutBox::new(kind, s, children);
+    b.generated = true;
+    Some(b)
+}
+
+fn anonymous_style(parent: &ComputedStyle) -> Rc<ComputedStyle> {
+    let mut s = ComputedStyle::inherit_from(parent);
+    s.display = Display::Block;
+    Rc::new(s)
+}
+
+fn only_whitespace(doc: &Document, run: &[LayoutBox]) -> bool {
+    run.iter().all(|c| match c.kind {
+        BoxKind::Text(n) => {
+            matches!(c.style.white_space, WhiteSpace::Normal | WhiteSpace::NoWrap)
+                && match &c.text {
+                    Some(t) => t.chars().all(is_collapsible),
+                    None => doc.text_content(n).chars().all(is_collapsible),
+                }
+        }
+        _ => false,
+    })
+}
+
+/// Se um bloco tem filhos de bloco e em linha misturados, agrupa os em linha
+/// (e os floats e posicionados entre eles) em blocos anônimos (CSS 2.1 §9.2.1.1).
+fn wrap_inline_children(doc: &Document, b: &mut LayoutBox) {
+    if !has_inflow_blocks(b) {
+        return;
+    }
+    let anon = anonymous_style(&b.style);
+    let mut out = Vec::new();
+    let mut run: Vec<LayoutBox> = Vec::new();
+    let flush = |run: &mut Vec<LayoutBox>, out: &mut Vec<LayoutBox>| {
+        if run.is_empty() {
+            return;
+        }
+        let children = std::mem::take(run);
+        if !only_whitespace(doc, &children) {
+            out.push(LayoutBox::new(BoxKind::Anonymous, anon.clone(), children));
+        }
+    };
+    for child in std::mem::take(&mut b.children) {
+        if child.is_inflow_block() {
+            flush(&mut run, &mut out);
+            out.push(child);
+        } else {
+            run.push(child);
+        }
+    }
+    flush(&mut run, &mut out);
+    b.children = out;
+}
+
