@@ -318,3 +318,83 @@ math1!(m_round, |x: f64| {
     if r == 0.0 && x < 0.0 { -0.0 } else if x.fract().abs() == 0.5 && x < 0.0 { x.ceil() } else { r }
 });
 
+fn m_atan2(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let y = vm.to_number(&a.arg(0))?;
+    let x = vm.to_number(&a.arg(1))?;
+    Ok(Value::Number(y.atan2(x)))
+}
+
+fn m_pow(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let x = vm.to_number(&a.arg(0))?;
+    let y = vm.to_number(&a.arg(1))?;
+    Ok(Value::Number(crate::vm::js_pow(x, y)))
+}
+
+fn m_imul(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let x = conv::to_int32(vm.to_number(&a.arg(0))?);
+    let y = conv::to_int32(vm.to_number(&a.arg(1))?);
+    Ok(Value::Number(x.wrapping_mul(y) as f64))
+}
+
+fn m_hypot(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut sum = 0.0f64;
+    let mut inf = false;
+    let mut nan = false;
+    for v in a.args.clone() {
+        let n = vm.to_number(&v)?;
+        if n.is_infinite() {
+            inf = true;
+        }
+        if n.is_nan() {
+            nan = true;
+        }
+        sum += n * n;
+    }
+    Ok(Value::Number(if inf {
+        f64::INFINITY
+    } else if nan {
+        f64::NAN
+    } else {
+        sum.sqrt()
+    }))
+}
+
+fn m_max(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut r = f64::NEG_INFINITY;
+    for v in a.args.clone() {
+        let n = vm.to_number(&v)?;
+        if n.is_nan() || r.is_nan() {
+            r = f64::NAN;
+        } else if n > r || (n == 0.0 && r == 0.0 && !n.is_sign_negative()) {
+            r = n;
+        }
+    }
+    Ok(Value::Number(r))
+}
+
+fn m_min(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut r = f64::INFINITY;
+    for v in a.args.clone() {
+        let n = vm.to_number(&v)?;
+        if n.is_nan() || r.is_nan() {
+            r = f64::NAN;
+        } else if n < r || (n == 0.0 && r == 0.0 && n.is_sign_negative()) {
+            r = n;
+        }
+    }
+    Ok(Value::Number(r))
+}
+
+fn m_random(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    // xorshift64*
+    let mut x = vm.rng;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    vm.rng = x;
+    let r = x.wrapping_mul(0x2545F4914F6CDD1D);
+    Ok(Value::Number((r >> 11) as f64 / (1u64 << 53) as f64))
+}
+
+#[allow(dead_code)]
+fn unused(_: JsStr) {}
