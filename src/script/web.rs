@@ -756,3 +756,52 @@ fn css_props(st: &crate::style::ComputedStyle, rect: Option<crate::layout::Rect>
     v
 }
 
+/// `__native.openSelect(select, rótulos, desabilitadas, escolhida)`.
+fn open_select(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::Undefined) };
+    let list = |vm: &mut Vm, v: &Value| -> Result<Vec<Value>, Value> {
+        let lv = vm.get(v, &PropKey::str("length"))?;
+        let len = vm.to_number(&lv)? as usize;
+        (0..len.min(2000)).map(|i| vm.get_index(v, &Value::Number(i as f64))).collect()
+    };
+    let labels = list(vm, &a.arg(1))?.iter().map(|v| vm.to_rust_string(v)).collect::<Result<Vec<_>, _>>()?;
+    let disabled = list(vm, &a.arg(2))?.iter().map(ferro_js::vm::truthy).collect();
+    let selected = vm.to_number(&a.arg(3))? as i32;
+    write(vm, |h| h.select_popup = Some((n, labels, disabled, selected)));
+    Ok(Value::Undefined)
+}
+
+/// `__native.framePost(iframe, json, origem)`: mensagem para o quadro.
+fn frame_post(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::Undefined) };
+    let data = arg_string(vm, a, 1)?;
+    let target = arg_string(vm, a, 2)?;
+    write(vm, |h| {
+        let origin = h.page.url.origin().ascii_serialization();
+        if let Some(c) = h.frames.get(&n) {
+            c.session.host.borrow_mut().inbox.push((data, origin, target));
+        }
+    });
+    Ok(Value::Undefined)
+}
+
+/// `__native.frameUrl(iframe)`: endereço atual do quadro ("about:blank" se não há).
+fn frame_url(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::str("about:blank")) };
+    let u = read(vm, |h| h.frames.get(&n).map(|c| c.url.to_string()));
+    Ok(Value::str(&u.unwrap_or_else(|| "about:blank".into())))
+}
+
+/// `__native.parentPost(json, origem)`: mensagem do quadro para a página-mãe.
+fn parent_post(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let data = arg_string(vm, a, 0)?;
+    let target = arg_string(vm, a, 1)?;
+    write(vm, |h| {
+        if h.parent_origin.is_some() {
+            let origin = h.page.url.origin().ascii_serialization();
+            h.outbox.push((data, origin, target));
+        }
+    });
+    Ok(Value::Undefined)
+}
+
