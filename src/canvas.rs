@@ -833,3 +833,54 @@ impl Bitmap {
         }
     }
 
+    /// Pinta a cobertura de um texto já rasterizado (glifos em `glyphs`:
+    /// posição do canto e cobertura).
+    pub fn draw_mask(&mut self, x0: i32, y0: i32, w: usize, h: usize, mask: &[u8], paint: &Paint) {
+        for row in 0..h {
+            let y = y0 + row as i32;
+            if y < 0 || y >= self.h as i32 {
+                continue;
+            }
+            for col in 0..w {
+                let x = x0 + col as i32;
+                if x < 0 || x >= self.w as i32 {
+                    continue;
+                }
+                let c = mask[row * w + col];
+                if c == 0 {
+                    continue;
+                }
+                let mut src = paint.color_at(x as f32 + 0.5, y as f32 + 0.5);
+                src[3] *= paint.alpha;
+                self.blend(x as usize, y as usize, src, c as f32 / 255.0, paint.op);
+            }
+        }
+    }
+
+    /// `getImageData`: RGBA não pré-multiplicado (fora da imagem = transparente).
+    pub fn get_image_data(&self, x: i32, y: i32, w: usize, h: usize) -> Vec<u8> {
+        let mut out = vec![0u8; w * h * 4];
+        for row in 0..h {
+            let py = y + row as i32;
+            if py < 0 || py >= self.h as i32 {
+                continue;
+            }
+            for col in 0..w {
+                let px = x + col as i32;
+                if px < 0 || px >= self.w as i32 {
+                    continue;
+                }
+                let i = (py as usize * self.w + px as usize) * 4;
+                let o = (row * w + col) * 4;
+                let a = self.px[i + 3];
+                out[o + 3] = a;
+                if a > 0 {
+                    for k in 0..3 {
+                        out[o + k] = ((self.px[i + k] as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8;
+                    }
+                }
+            }
+        }
+        out
+    }
+
