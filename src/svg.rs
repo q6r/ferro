@@ -422,3 +422,165 @@ fn round_rect(x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32) -> Vec<Seg> {
     ]
 }
 
+/// Lê um documento SVG.
+pub fn parse(src: &str) -> Option<Svg> {
+    let mut svg: Option<Svg> = None;
+    let mut stack: Vec<State> = Vec::new();
+    let mut skip_depth = 0usize; // dentro de <defs>, <clipPath>...
+    let root = State {
+        fill: Paint::Color(Color::BLACK),
+        stroke: Paint::None,
+        stroke_width: 1.0,
+        evenodd: false,
+        opacity: 1.0,
+        matrix: Matrix::ID,
+    };
+
+    for tok in html::tokenize(src) {
+        match tok {
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => {
+                let attr = |n: &str| attrs.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str());
+                if skip_depth > 0 {
+                    if !self_closing {
+                        skip_depth += 1;
+                    }
+                    continue;
+                }
+                if matches!(
+                    name.as_str(),
+                    "defs" | "clippath" | "mask" | "symbol" | "lineargradient" | "radialgradient" | "pattern"
+                        | "filter" | "style" | "title" | "desc" | "metadata"
+                ) {
+                    if !self_closing {
+                        skip_depth = 1;
+                    }
+                    continue;
+                }
+                let parent = stack.last().copied().unwrap_or(root);
+                let mut st = parent;
+                // atributos de apresentação, depois o atributo style
+                let mut props: Vec<(String, String)> = attrs.clone();
+                if let Some(s) = attr("style") {
+                    for d in css::parse_declarations(s) {
+                        props.push((d.name, d.value));
+                    }
+                }
+                for (k, v) in &props {
+                    match k.as_str() {
+                        "fill" => {
+                            if let Some(p) = parse_paint(v) {
+                                st.fill = p
+                            }
+                        }
+                        "stroke" => {
+                            if let Some(p) = parse_paint(v) {
+                                st.stroke = p
+                            }
+                        }
+                        "stroke-width" => {
+                            if let Some(w) = num(Some(v)) {
+                                st.stroke_width = w
+                            }
+                        }
+                        "fill-rule" => st.evenodd = v.trim() == "evenodd",
+                        "opacity" => st.opacity *= num(Some(v)).unwrap_or(1.0),
+                        "transform" => st.matrix = parent.matrix.mul(parse_transform(v)),
+                        _ => {}
+                    }
+                }
+
+                let n = |k: &str| num(attr(k));
+                let segs = match name.as_str() {
+                    "svg" => {
+                        if svg.is_none() {
+                            let vb = attr("viewbox").map(numbers).filter(|v| v.len() == 4);
+                            let w = n("width").or(vb.as_ref().map(|v| v[2])).unwrap_or(24.0);
+                            let h = n("height").or(vb.as_ref().map(|v| v[3])).unwrap_or(24.0);
+                            let view_box = vb.map_or((0.0, 0.0, w, h), |v| (v[0], v[1], v[2], v[3]));
+                            svg = Some(Svg {
+                                view_box,
+                                width: w,
+                                height: h,
+                                shapes: Vec::new(),
+                            });
+                        }
+                        None
+                    }
+                    "path" => attr("d").map(parse_path),
+                    "rect" => {
+                        let (w, h) = (n("width").unwrap_or(0.0), n("height").unwrap_or(0.0));
+                        let rx = n("rx").or(n("ry")).unwrap_or(0.0);
+                        let ry = n("ry").or(n("rx")).unwrap_or(0.0);
+                        Some(round_rect(n("x").unwrap_or(0.0), n("y").unwrap_or(0.0), w, h, rx, ry))
+                    }
+                    "circle" => {
+                        let r = n("r").unwrap_or(0.0);
+                        Some(ellipse(n("cx").unwrap_or(0.0), n("cy").unwrap_or(0.0), r, r))
+                    }
+                    "ellipse" => Some(ellipse(
+                        n("cx").unwrap_or(0.0),
+                        n("cy").unwrap_or(0.0),
+                        n("rx").unwrap_or(0.0),
+                        n("ry").unwrap_or(0.0),
+                    )),
+                    "line" => Some(vec![
+                        Seg::Move((n("x1").unwrap_or(0.0), n("y1").unwrap_or(0.0))),
+                        Seg::Line((n("x2").unwrap_or(0.0), n("y2").unwrap_or(0.0))),
+                    ]),
+                    "polyline" | "polygon" => attr("points").map(|p| {
+                        let v = numbers(p);
+                        let mut segs: Vec<Seg> = v
+                            .chunks_exact(2)
+                            .enumerate()
+                            .map(|(i, c)| if i == 0 { Seg::Move((c[0], c[1])) } else { Seg::Line((c[0], c[1])) })
+                            .collect();
+                        if name == "polygon" {
+                            segs.push(Seg::Close);
+                        }
+                        segs
+                    }),
+                    _ => None,
+                };
+                if let (Some(segs), Some(svg)) = (segs, svg.as_mut()) {
+                    let m = st.matrix;
+                    let segs = segs
+                        .into_iter()
+                        .map(|s| match s {
+                            Seg::Move(p) => Seg::Move(m.apply(p)),
+                            Seg::Line(p) => Seg::Line(m.apply(p)),
+                            Seg::Cubic(a, b, c) => Seg::Cubic(m.apply(a), m.apply(b), m.apply(c)),
+                            Seg::Close => Seg::Close,
+                        })
+                        .collect();
+                    // linhas não têm preenchimento
+                    let fill = if matches!(name.as_str(), "line" | "polyline") { Paint::None } else { st.fill };
+                    svg.shapes.push(Shape {
+                        segs,
+                        fill,
+                        stroke: st.stroke,
+                        stroke_width: st.stroke_width * m.scale(),
+                        evenodd: st.evenodd,
+                        opacity: st.opacity,
+                    });
+                }
+                if !self_closing {
+                    stack.push(st);
+                }
+            }
+            Token::EndTag { .. } => {
+                if skip_depth > 0 {
+                    skip_depth -= 1;
+                } else {
+                    stack.pop();
+                }
+            }
+            _ => {}
+        }
+    }
+    svg
+}
+
