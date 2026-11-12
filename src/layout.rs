@@ -3717,3 +3717,70 @@ impl<'a> LineBuilder<'a> {
         lb
     }
 
+    /// Acha a faixa livre (entre floats) para a linha que começa em `top`.
+    fn place_line(&mut self) {
+        self.gap = 0.0;
+        for _ in 0..64 {
+            let ly = self.oy + self.top + self.gap;
+            let (mut l, mut r) = (0.0f32, self.width);
+            let mut next: Option<f32> = None;
+            for f in &self.floats {
+                if f.rect.y < ly + self.strut && f.rect.y + f.rect.h > ly {
+                    if f.left {
+                        l = l.max(f.rect.x + f.rect.w - self.ox);
+                    } else {
+                        r = r.min(f.rect.x - self.ox);
+                    }
+                    let b = f.rect.y + f.rect.h;
+                    next = Some(next.map_or(b, |n: f32| n.min(b)));
+                }
+            }
+            let avail = r - l;
+            match next {
+                // não cabe quase nada ao lado do float: desce até ele acabar
+                Some(n) if avail < self.width.min(60.0) && n > ly => {
+                    self.gap = n - (self.oy + self.top);
+                }
+                _ => {
+                    self.inset = l.max(0.0);
+                    self.avail = avail.max(0.0);
+                    return;
+                }
+            }
+        }
+    }
+
+    fn open_inline(&mut self, id: usize, style: Rc<ComputedStyle>) {
+        // o espaço antes do elemento fica do lado de fora da caixa
+        if self.pending_space > 0.0 && !self.cur.is_empty() {
+            self.x += self.pending_space;
+        }
+        self.pending_space = 0.0;
+        self.x += px(style.margin[LEFT]);
+        let start = self.x;
+        self.x += style.border(LEFT) + px(style.padding[LEFT]);
+        self.open.push(OpenInline {
+            id,
+            style,
+            start,
+            first: true,
+        });
+        self.can_merge = false;
+    }
+
+    fn close_inline(&mut self, id: usize) {
+        let Some(pos) = self.open.iter().rposition(|o| o.id == id) else { return };
+        let o = self.open.remove(pos);
+        self.x += o.style.border(RIGHT) + px(o.style.padding[RIGHT]);
+        self.line_segs.push(Seg {
+            id,
+            style: o.style.clone(),
+            x0: o.start,
+            x1: self.x,
+            first: o.first,
+            last: true,
+        });
+        self.x += px(o.style.margin[RIGHT]);
+        self.can_merge = false;
+    }
+
