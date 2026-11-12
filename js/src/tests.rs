@@ -309,3 +309,53 @@ fn inspect_estilo_node() {
     );
 }
 
+#[test]
+fn programa_maior() {
+    // um "mini app": fila de tarefas, ordenação e agregação
+    check(
+        r#"
+        const tarefas = [
+            { id: 1, titulo: "Comprar pão", prioridade: 2, feita: false, tags: ["casa"] },
+            { id: 2, titulo: "Estudar Rust", prioridade: 1, feita: true, tags: ["estudo", "rust"] },
+            { id: 3, titulo: "Correr", prioridade: 3, feita: false, tags: ["saude"] },
+            { id: 4, titulo: "Ler", prioridade: 1, feita: false, tags: ["estudo"] },
+        ];
+        const porTag = tarefas.reduce((acc, t) => {
+            for (const tag of t.tags) (acc[tag] ??= []).push(t.id);
+            return acc;
+        }, {});
+        console.log(porTag);
+        const pendentes = tarefas.filter(t => !t.feita).sort((a, b) => a.prioridade - b.prioridade || a.titulo.localeCompare(b.titulo));
+        console.log(pendentes.map(({ titulo, prioridade }) => `${prioridade}:${titulo}`).join(" | "));
+        class Fila {
+            #itens = [];
+            entra(x) { this.#itens.push(x); return this; }
+            sai() { return this.#itens.shift(); }
+            get tamanho() { return this.#itens.length; }
+        }
+        const f = new Fila().entra("a").entra("b");
+        console.log(f.sai(), f.tamanho);
+        "#,
+        "{ casa: [ 1 ], estudo: [ 2, 4 ], rust: [ 2 ], saude: [ 3 ] }
+1:Ler | 2:Comprar pão | 3:Correr
+a 1",
+    );
+}
+
+#[test]
+fn geradores_promessas_async() {
+    check(
+        r#"
+        function* g() { const x = yield 1; yield x * 2; }
+        const it = g(); console.log(it.next().value, it.next(21).value, it.next().done);
+        async function f() { await null; return "async"; }
+        f().then(v => console.log(v));
+        Promise.all([1, Promise.resolve(2)]).then(v => console.log(v));
+        setTimeout(() => console.log("timer"), 1);
+        (async () => { for await (const x of (async function* () { yield "ag1"; yield "ag2"; })()) console.log(x); })();
+        console.log("sync");
+        "#,
+        "1 42 true\nsync\nasync\n[ 1, 2 ]\nag1\nag2\ntimer",
+    );
+}
+
