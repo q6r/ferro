@@ -2634,3 +2634,73 @@ class URLSearchParams {
   get size() { return URLS.get(this).list.length; }
   toString() { return URLS.get(this).list.map(([k, v]) => N.formEncode(k) + '=' + N.formEncode(v)).join('&'); }
 }
+function parseQuery(q, list) {
+  if (q.startsWith('?')) q = q.slice(1);
+  for (const part of q.split('&')) {
+    if (!part) continue;
+    const i = part.indexOf('=');
+    const k = i < 0 ? part : part.slice(0, i);
+    const v = i < 0 ? '' : part.slice(i + 1);
+    list.push([N.formDecode(k), N.formDecode(v)]);
+  }
+}
+function syncURL(params) {
+  const s = URLS.get(params);
+  if (!s.owner) return;
+  const q = params.toString();
+  URL_DATA.get(s.owner).parts = N.urlParse(N.urlSet(s.owner.href, 'search', q));
+}
+const URL_DATA = new WeakMap();
+class URL {
+  constructor(url, base) {
+    if (arguments.length === 0) throw new TypeError("Failed to construct 'URL': 1 argument required, but only 0 present.");
+    const b = base === undefined ? undefined : String(base);
+    const parts = N.urlParse(String(url), b);
+    if (!parts) throw new TypeError(`Failed to construct 'URL': Invalid URL`);
+    URL_DATA.set(this, { parts, params: null });
+  }
+  static canParse(u, b) { return !!N.urlParse(String(u), b === undefined ? undefined : String(b)); }
+  static parse(u, b) { try { return new URL(u, b); } catch (e) { return null; } }
+  static createObjectURL(blob) {
+    const id = G.crypto.randomUUID();
+    BLOBS.set(id, blob);
+    return `blob:${G.origin}/${id}`;
+  }
+  static revokeObjectURL(u) { BLOBS.delete(String(u).split('/').pop()); }
+  get searchParams() {
+    const d = URL_DATA.get(this);
+    if (!d.params) {
+      d.params = new URLSearchParams(d.parts.search);
+      URLS.get(d.params).owner = this;
+    }
+    return d.params;
+  }
+  toString() { return this.href; }
+  toJSON() { return this.href; }
+}
+const BLOBS = new Map();
+for (const part of ['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'origin']) {
+  accessor(URL.prototype, part, function () { return URL_DATA.get(this).parts[part]; }, part === 'origin' ? undefined : function (v) {
+    const d = URL_DATA.get(this);
+    const href = part === 'href' ? String(v) : N.urlSet(d.parts.href, part, String(v));
+    const p = N.urlParse(href);
+    if (!p) { if (part === 'href') throw new TypeError(`Failed to set the 'href' property on 'URL': Invalid URL`); return; }
+    d.parts = p;
+    if (d.params && (part === 'search' || part === 'href')) {
+      URLS.get(d.params).list = [];
+      parseQuery(p.search, URLS.get(d.params).list);
+    }
+  });
+}
+hidden(G, 'URL', URL);
+hidden(G, 'webkitURL', URL);
+hidden(G, 'URLSearchParams', URLSearchParams);
+
+// ------------------------------------------------- Blob, File, FormData
+const BLOB = new WeakMap();
+function toBytes(part) {
+  if (part instanceof Blob) return BLOB.get(part).bytes;
+  if (part instanceof ArrayBuffer) return new Uint8Array(part.slice(0));
+  if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength));
+  return N.utf8Encode(String(part));
+}
