@@ -180,3 +180,28 @@ impl VideoPipe {
     }
 }
 
+/// Áudio compartilhado com a callback da placa de som.
+struct AudioShared {
+    /// PCM intercalado na taxa e canais da trilha.
+    pcm: Mutex<VecDeque<f32>>,
+    playing: AtomicBool,
+    /// Volume (f32 em bits).
+    volume: AtomicU32,
+    rate: AtomicU32,
+    channels: AtomicU32,
+}
+
+struct AudioPipe {
+    tx: mpsc::Sender<Cmd>,
+    shared: Arc<AudioShared>,
+    stop: Arc<AtomicBool>,
+    _stream: Option<cpal::Stream>,
+}
+
+impl Drop for AudioPipe {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+impl AudioPipe {
