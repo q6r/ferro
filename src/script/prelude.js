@@ -2704,3 +2704,55 @@ function toBytes(part) {
   if (ArrayBuffer.isView(part)) return new Uint8Array(part.buffer.slice(part.byteOffset, part.byteOffset + part.byteLength));
   return N.utf8Encode(String(part));
 }
+class Blob {
+  constructor(parts = [], opts = {}) {
+    const chunks = [...parts].map(toBytes);
+    const size = chunks.reduce((n, c) => n + c.length, 0);
+    const bytes = new Uint8Array(size);
+    let o = 0;
+    for (const c of chunks) { bytes.set(c, o); o += c.length; }
+    BLOB.set(this, { bytes, type: String(opts.type || '').toLowerCase() });
+  }
+  get size() { return BLOB.get(this).bytes.length; }
+  get type() { return BLOB.get(this).type; }
+  text() { return Promise.resolve(N.utf8Decode(BLOB.get(this).bytes)); }
+  arrayBuffer() { const b = BLOB.get(this).bytes; return Promise.resolve(b.buffer.slice(b.byteOffset, b.byteOffset + b.length)); }
+  bytes() { return Promise.resolve(BLOB.get(this).bytes.slice()); }
+  slice(start = 0, end, type = '') {
+    const b = BLOB.get(this).bytes;
+    return new Blob([b.slice(start, end === undefined ? b.length : end)], { type });
+  }
+  stream() { throw new TypeError('Blob.stream() ainda não é suportado.'); }
+}
+class File extends Blob {
+  constructor(parts, name, opts = {}) {
+    super(parts, opts);
+    this.name = String(name);
+    this.lastModified = opts.lastModified ?? Date.now();
+  }
+}
+hidden(G, 'Blob', Blob);
+hidden(G, 'File', File);
+class FormData {
+  constructor(form, submitter) {
+    this._list = [];
+    if (form) for (const [k, v] of formEntries(form, submitter)) this._list.push([k, v]);
+  }
+  append(k, v, name) { this._list.push([String(k), v instanceof Blob ? v : String(v), name]); }
+  delete(k) { this._list = this._list.filter(([a]) => a !== String(k)); }
+  get(k) { const e = this._list.find(([a]) => a === String(k)); return e ? e[1] : null; }
+  getAll(k) { return this._list.filter(([a]) => a === String(k)).map((e) => e[1]); }
+  has(k) { return this._list.some(([a]) => a === String(k)); }
+  set(k, v, name) {
+    k = String(k);
+    const i = this._list.findIndex(([a]) => a === k);
+    const entry = [k, v instanceof Blob ? v : String(v), name];
+    if (i < 0) this._list.push(entry);
+    else { this._list[i] = entry; this._list = this._list.filter(([a], j) => a !== k || j === i); }
+  }
+  forEach(cb, t) { for (const [k, v] of this._list) cb.call(t, v, k, this); }
+  keys() { return this._list.map((e) => e[0]).values(); }
+  values() { return this._list.map((e) => e[1]).values(); }
+  entries() { return this._list.map((e) => [e[0], e[1]]).values(); }
+  [Symbol.iterator]() { return this.entries(); }
+}
