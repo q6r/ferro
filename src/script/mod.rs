@@ -1408,3 +1408,65 @@ pub(crate) fn exec_script(vm: &mut Vm, n: NodeId, text: &str, name: &str) {
     h.borrow_mut().current_script = prev;
 }
 
+/// Coleta de novo as folhas de estilo (depois que `<style>`/`<link>` mudaram).
+fn recollect_styles(h: &Rc<RefCell<Host>>) {
+    let mut hb = h.borrow_mut();
+    hb.styles_dirty = false;
+    let mut out = Vec::new();
+    let mut fetch = Vec::new();
+    {
+        let doc = &hb.page.doc;
+        let mut all = doc.descendants(Document::ROOT);
+        for (&host, &root) in &doc.shadow_roots {
+            if doc.is_connected(host) {
+                all.extend(doc.descendants(root));
+            }
+        }
+        for n in all {
+            let Some(el) = doc.element(n) else { continue };
+            let media = el.attr("media").map(str::to_string);
+            match el.tag.as_str() {
+                "style" => out.push(engine::StyleSource {
+                    text: engine::absolutize_css_urls(&doc.text_content(n), &hb.page.base),
+                    media,
+                }),
+                "link" => {
+                    let rel = el.attr("rel").unwrap_or("").to_ascii_lowercase();
+                    let rels: Vec<&str> = rel.split_whitespace().collect();
+                    if rels.contains(&"stylesheet")
+                        && !rels.contains(&"alternate")
+                        && el.attr("disabled").is_none()
+                        && let Some(u) = el.attr("href").and_then(|h| hb.page.base.join(h.trim()).ok())
+                    {
+                        match hb.sheet_cache.get(&u) {
+                            Some(Some(text)) => out.push(engine::StyleSource {
+                                text: engine::absolutize_css_urls(text, &u),
+                                media,
+                            }),
+                            Some(None) => {}
+                            None => fetch.push(u),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    hb.page.css = out;
+    hb.dyn_rules = None;
+    for u in fetch {
+        if !hb.requested.insert(format!("css {u}")) {
+            continue;
+        }
+        let net = hb.net.clone();
+        hb.in_flight += 1;
+        hb.pool.submit(Box::new(move || {
+            let text = match net.fetch(&u) {
+                Ok(r) if r.status < 400 => Some(net::decode_text(&r.body, r.content_type.as_deref(), false)),
+                _ => None,
+            };
+            Done::Sheet { url: u, text }
+        }));
+    }
+}
+
