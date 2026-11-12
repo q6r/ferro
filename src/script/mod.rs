@@ -1470,3 +1470,84 @@ fn recollect_styles(h: &Rc<RefCell<Host>>) {
     }
 }
 
+/// Pede uma imagem (para desenhar e/ou para o `load` de um `<img>`).
+pub(crate) fn request_image(hb: &mut Host, url: Url, waiter: Option<NodeId>) {
+    if let Some(n) = waiter {
+        hb.img_waiters.entry(url.clone()).or_default().push(n);
+    }
+    if hb.image_cache.contains_key(&url) {
+        // já está pronta: o `load` sai na próxima volta do laço
+        if waiter.is_some() {
+            let img = hb.image_cache.get(&url).cloned().flatten();
+            hb.in_flight += 1;
+            hb.pool.submit(Box::new(move || Done::Image { url, img }));
+        }
+        return;
+    }
+    if !hb.requested.insert(format!("img {url}")) {
+        return;
+    }
+    let net = hb.net.clone();
+    hb.in_flight += 1;
+    hb.pool.submit(Box::new(move || {
+        let img = net
+            .fetch(&url)
+            .ok()
+            .filter(|r| r.status < 400)
+            .and_then(|r| engine::decode_image(&r.body))
+            .map(Arc::new);
+        Done::Image { url, img }
+    }));
+}
+
+/// Cadeia de um nó até a raiz pela árvore achatada (o nó primeiro).
+fn flat_chain(doc: &Document, n: NodeId) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    let mut cur = Some(n);
+    while let Some(c) = cur {
+        out.push(c);
+        cur = doc.flat_parent(c);
+    }
+    out
+}
+
+/// Onde estão o mouse e o foco, para os seletores `:hover`, `:focus`...
+fn dynamic_state(hb: &Host) -> crate::css::DynState {
+    let doc = &hb.page.doc;
+    let live = |n: &NodeId| *n < doc.nodes.len() && doc.is_connected(*n);
+    let hover = hb.hover.filter(live).map(|n| flat_chain(doc, n)).unwrap_or_default();
+    let focus = hb.focused.filter(live);
+    let text_field = focus.is_some_and(|f| {
+        doc.element(f).is_some_and(|e| {
+            e.tag == "textarea"
+                || e.attr("contenteditable").is_some()
+                || (e.tag == "input"
+                    && !matches!(
+                        e.attr("type").unwrap_or("").to_ascii_lowercase().as_str(),
+                        "button" | "submit" | "reset" | "checkbox" | "radio" | "image" | "file" | "color" | "range"
+                    ))
+        })
+    });
+    crate::css::DynState {
+        hover,
+        active: Vec::new(),
+        focus,
+        focus_visible: focus.is_some() && (hb.keyboard_focus || text_field),
+        focus_within: focus.map(|f| flat_chain(doc, f)).unwrap_or_default(),
+        fullscreen: hb.fullscreen.filter(live),
+    }
+}
+
+/// Baixa um script do HTML numa thread do conjunto.
+fn request_parser_script(hb: &mut Host, u: Url) {
+    let net = hb.net.clone();
+    hb.in_flight += 1;
+    hb.pool.submit(Box::new(move || {
+        let text = match net.fetch(&u) {
+            Ok(r) if r.status < 400 => Some(net::decode_text(&r.body, r.content_type.as_deref(), false)),
+            _ => None,
+        };
+        Done::ParserScript { url: u, text }
+    }));
+}
+
