@@ -500,3 +500,47 @@ function writeStyle(decl, m) {
 const UNITLESS = new Set(['opacity', 'z-index', 'flex', 'flex-grow', 'flex-shrink', 'order', 'line-height',
   'font-weight', 'zoom', 'orphans', 'widows', 'column-count', 'fill-opacity', 'stroke-opacity', 'tab-size',
   'animation-iteration-count', 'grid-row', 'grid-column', 'stroke-width', 'aspect-ratio']);
+methods(CSSStyleDeclaration.prototype, {
+  getPropertyValue(name) {
+    name = String(name);
+    if (!name.startsWith('--')) name = name.toLowerCase();
+    const v = styleMap(this).get(name);
+    return v ? v.value : '';
+  },
+  getPropertyPriority(name) {
+    const v = styleMap(this).get(String(name).toLowerCase());
+    return v ? v.important : '';
+  },
+  setProperty(name, value, priority) {
+    name = String(name);
+    if (!name.startsWith('--')) name = name.toLowerCase();
+    if (value === null || value === undefined || String(value) === '') { this.removeProperty(name); return; }
+    value = String(value);
+    // número sem unidade só vale para algumas propriedades (e para 0)
+    if (/^-?\d+(\.\d+)?$/.test(value) && value !== '0' && !UNITLESS.has(name) && !name.startsWith('--')) return;
+    const m = styleMap(this);
+    m.delete(name);
+    m.set(name, { value, important: priority === 'important' ? 'important' : '' });
+    writeStyle(this, m);
+  },
+  removeProperty(name) {
+    name = String(name);
+    if (!name.startsWith('--')) name = name.toLowerCase();
+    const m = styleMap(this);
+    const old = m.get(name);
+    if (!old) return '';
+    m.delete(name);
+    writeStyle(this, m);
+    return old.value;
+  },
+  item(i) { return [...styleMap(this).keys()][i] ?? ''; },
+  [Symbol.iterator]() { return styleMap(this).keys(); },
+});
+accessor(CSSStyleDeclaration.prototype, 'length', function () { return styleMap(this).size; });
+accessor(CSSStyleDeclaration.prototype, 'cssText', function () {
+  return STYLE.get(this).computed ? '' : serializeStyle(styleMap(this));
+}, function (v) {
+  const s = STYLE.get(this);
+  if (!s.computed) s.el.setAttribute('style', serializeStyle(parseStyle(String(v))));
+});
+accessor(CSSStyleDeclaration.prototype, 'parentRule', () => null);
