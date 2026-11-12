@@ -3506,3 +3506,72 @@ impl<'a> Ctx<'a> {
 
 // ------------------------------------------------------ quebra de linhas
 
+enum Item<'a> {
+    Text {
+        text: String,
+        style: Rc<ComputedStyle>,
+        inh: Inherited,
+    },
+    Break,
+    Atomic {
+        w: f32,
+        h: f32,
+        paint: AtomicPaint,
+        label: Option<(String, Color)>,
+        style: Rc<ComputedStyle>,
+        inh: Inherited,
+    },
+    /// Marca a posição de um elemento com id dentro do texto.
+    Anchor(String),
+    /// Caixa absoluta/fixa no meio do texto (só a posição estática importa).
+    OutOfFlow(&'a LayoutBox, Inherited),
+    /// Float no meio do texto.
+    Float(&'a LayoutBox, Inherited),
+    /// inline-block no meio do texto.
+    InlineBlock(&'a LayoutBox, Inherited),
+    /// Começo e fim de um elemento em linha com fundo/borda/padding (id único).
+    InlineStart(Rc<ComputedStyle>, usize),
+    InlineEnd(Rc<ComputedStyle>, usize),
+}
+
+#[derive(Clone)]
+enum AtomicPaint {
+    Image(Arc<ImageData>),
+    /// `<video>`: o quadro vem na hora de pintar.
+    Video(NodeId),
+    /// `<canvas>`: a imagem vem na hora de pintar (esticada na caixa).
+    Canvas(NodeId),
+    Invisible,
+    Placeholder,
+    Control,
+    Button,
+    Check(bool),
+}
+
+enum FragKind {
+    Text(String),
+    Box {
+        h: f32,
+        paint: AtomicPaint,
+        label: Option<(String, Color)>,
+    },
+    /// inline-block montado: altura, linha de base (do topo) e índice no `held`.
+    InlineBlock {
+        h: f32,
+        base: f32,
+        hold: usize,
+    },
+}
+
+struct Frag {
+    x: f32,
+    w: f32,
+    font: FontId,
+    style: Rc<ComputedStyle>,
+    inh: Inherited,
+    kind: FragKind,
+    valign: VAlign,
+    /// Meia altura-x do contêiner (para vertical-align: middle).
+    mid: f32,
+}
+
