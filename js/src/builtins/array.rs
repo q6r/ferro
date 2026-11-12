@@ -585,3 +585,55 @@ fn last_index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 thread_local! {
+    /// Arrays sendo convertidos em texto agora (evita recursão infinita).
+    static JOINING: RefCell<HashSet<usize>> = RefCell::new(HashSet::new());
+}
+
+pub fn join_values(vm: &mut Vm, o: &ObjRef, sep: &JsStr) -> Result<JsStr, Value> {
+    let id = o.id();
+    if JOINING.with(|j| j.borrow().contains(&id)) {
+        return Ok(JsStr::empty());
+    }
+    JOINING.with(|j| j.borrow_mut().insert(id));
+    let result = (|| {
+        let len = vm.length_of(o)?;
+        let mut out: Vec<u16> = Vec::new();
+        for i in 0..len {
+            if i > 0 {
+                out.extend_from_slice(sep.units());
+            }
+            let v = get_i(vm, o, i)?;
+            if !v.is_nullish() {
+                let s = vm.to_string(&v)?;
+                out.extend_from_slice(s.units());
+            }
+        }
+        Ok(JsStr::from_units(out))
+    })();
+    JOINING.with(|j| j.borrow_mut().remove(&id));
+    result
+}
+
+fn join(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let sep = if a.arg(0).is_undefined() { JsStr::new(",") } else { vm.to_string(&a.arg(0))? };
+    Ok(Value::String(join_values(vm, &o, &sep)?))
+}
+
+fn map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let f = callback(vm, a, "map")?;
+    let len = vm.length_of(&o)?;
+    let this_arg = a.arg(1);
+    let mut out = Vec::with_capacity(len.min(1 << 20));
+    for i in 0..len {
+        if has_i(vm, &o, i) {
+            let v = get_i(vm, &o, i)?;
+            out.push(vm.call(&f, this_arg.clone(), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?);
+        } else {
+            out.push(Value::Empty);
+        }
+    }
+    Ok(vm.array_value(out))
+}
+
