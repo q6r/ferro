@@ -136,3 +136,121 @@ fn main() {
     // desenrola cada pilha lendo da cópia
     static mut SNAP_BASE: u64 = 0;
     static mut SNAP_PTR: *const u8 = std::ptr::null();
+    static mut SNAP_LEN: usize = 0;
+    unsafe extern "system" fn read_mem(_p: HANDLE, addr: u64, out: *mut core::ffi::c_void, n: u32, got: *mut u32) -> windows_sys::core::BOOL {
+        unsafe {
+            let (base, ptr, len) = (SNAP_BASE, SNAP_PTR, SNAP_LEN);
+            let n = n as usize;
+            if addr >= base && addr + n as u64 <= base + len as u64 {
+                std::ptr::copy_nonoverlapping(ptr.add((addr - base) as usize), out as *mut u8, n);
+            } else {
+                // código e tabelas de desenrolar: lê com segurança (endereço pode ser inválido)
+                let mut read = 0usize;
+                let ok = ReadProcessMemory(GetCurrentProcess(), addr as *const core::ffi::c_void, out, n, &mut read);
+                if !got.is_null() {
+                    *got = read as u32;
+                }
+                return ok;
+            }
+            if !got.is_null() {
+                *got = n as u32;
+            }
+            1
+        }
+    }
+    let mut stacks: Vec<Vec<u64>> = Vec::new();
+    for (mut ctx, rsp, buf) in snaps {
+        unsafe {
+            SNAP_BASE = rsp;
+            SNAP_PTR = buf.as_ptr();
+            SNAP_LEN = buf.len();
+            let mut frame: STACKFRAME64 = std::mem::zeroed();
+            frame.AddrPC.Offset = ctx.Rip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = ctx.Rbp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = ctx.Rsp;
+            frame.AddrStack.Mode = AddrModeFlat;
+            let mut stack = vec![ctx.Rip];
+            for _ in 0..48 {
+                let ok = StackWalk64(
+                    IMAGE_FILE_MACHINE_AMD64 as u32,
+                    process,
+                    h,
+                    &mut frame,
+                    &mut ctx as *mut CONTEXT as *mut core::ffi::c_void,
+                    Some(read_mem),
+                    Some(SymFunctionTableAccess64),
+                    Some(SymGetModuleBase64),
+                    None,
+                );
+                if ok == 0 || frame.AddrPC.Offset == 0 {
+                    break;
+                }
+                if frame.AddrStack.Offset < rsp || frame.AddrStack.Offset >= rsp + buf.len() as u64 {
+                    break;
+                }
+                if stack.last() != Some(&frame.AddrPC.Offset) {
+                    stack.push(frame.AddrPC.Offset);
+                }
+            }
+            stacks.push(stack);
+        }
+    }
+    let elapsed = worker.join().unwrap();
+
+    // endereço → nome da função
+    let mut names: HashMap<u64, String> = HashMap::new();
+    let mut name_of = |addr: u64| -> String {
+        names
+            .entry(addr)
+            .or_insert_with(|| unsafe {
+                const MAX: usize = 512;
+                let mut buf = vec![0u8; std::mem::size_of::<SYMBOL_INFO>() + MAX];
+                let sym = buf.as_mut_ptr() as *mut SYMBOL_INFO;
+                (*sym).SizeOfStruct = std::mem::size_of::<SYMBOL_INFO>() as u32;
+                (*sym).MaxNameLen = MAX as u32;
+                let mut disp = 0u64;
+                if SymFromAddr(process, addr, &mut disp, sym) != 0 {
+                    let len = (*sym).NameLen as usize;
+                    let ptr = (*sym).Name.as_ptr() as *const u8;
+                    String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
+                } else {
+                    format!("{addr:#x}")
+                }
+            })
+            .clone()
+    };
+    let mut own: HashMap<String, usize> = HashMap::new();
+    let mut incl: HashMap<String, usize> = HashMap::new();
+    // FERRO_PERFIL_FOCO=nome: só as amostras que passam por essa função
+    if let Ok(foco) = std::env::var("FERRO_PERFIL_FOCO") {
+        stacks.retain(|st| st.iter().any(|&a| name_of(a).contains(foco.as_str())));
+    }
+    let lines: usize = std::env::var("FERRO_PERFIL_N").ok().and_then(|v| v.parse().ok()).unwrap_or(35);
+    for st in &stacks {
+        if let Some(&leaf) = st.first() {
+            *own.entry(name_of(leaf)).or_default() += 1;
+        }
+        let mut seen = HashSet::new();
+        for &a in st {
+            let n = name_of(a);
+            if seen.insert(n.clone()) {
+                *incl.entry(n).or_default() += 1;
+            }
+        }
+    }
+    let total = stacks.len().max(1) as f64;
+    println!("{} amostras em {:.0} ms", stacks.len(), elapsed.as_secs_f64() * 1000.0);
+    let show = |title: &str, m: &HashMap<String, usize>, n: usize| {
+        let mut v: Vec<_> = m.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        println!("\n== {title}");
+        for (name, c) in v.into_iter().take(n) {
+            let short: String = name.chars().take(110).collect();
+            println!("{:6.1}%  {short}", *c as f64 * 100.0 / total);
+        }
+    };
+    show("tempo próprio", &own, lines);
+    show("tempo inclusivo", &incl, lines);
+}
