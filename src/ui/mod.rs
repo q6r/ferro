@@ -1004,3 +1004,90 @@ impl App {
         }
     }
 
+    fn refresh_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.suggestion = 0;
+        let text = self.omni.text.trim().to_string();
+        let host_of = |u: &Url| u.host_str().unwrap_or("").trim_start_matches("www.").to_string();
+
+        if text.is_empty() || !self.palette_edited {
+            // estado vazio: abas abertas e recentes
+            for (i, t) in self.tabs.iter().enumerate() {
+                if i == self.active || self.suggestions.len() >= 5 {
+                    continue;
+                }
+                self.suggestions.push(Suggestion {
+                    icon: t.icon(),
+                    text: t.title(),
+                    detail: host_of(t.url()),
+                    hint: "Ir para a aba",
+                    group: "Abas abertas",
+                    action: Action::Tab(i),
+                });
+            }
+            for (u, title) in self.history.iter().take(5) {
+                self.suggestions.push(Suggestion {
+                    icon: Icon::Clock,
+                    text: if title.is_empty() { u.to_string() } else { title.clone() },
+                    detail: host_of(u),
+                    hint: "",
+                    group: "Recentes",
+                    action: Action::Open(u.clone()),
+                });
+            }
+            return;
+        }
+
+        if looks_like_url(&text)
+            && let Some(u) = resolve_url(&text)
+        {
+            self.suggestions.push(Suggestion {
+                icon: Icon::Globe,
+                text: u.to_string(),
+                detail: String::new(),
+                hint: "Abrir",
+                group: "",
+                action: Action::Open(u),
+            });
+        }
+        self.suggestions.push(Suggestion {
+            icon: Icon::Search,
+            text: text.clone(),
+            detail: "DuckDuckGo".into(),
+            hint: "Pesquisar",
+            group: "",
+            action: Action::Open(search_url(&text)),
+        });
+        let q = text.to_lowercase();
+        for (i, t) in self.tabs.iter().enumerate() {
+            if i != self.active
+                && (t.title().to_lowercase().contains(&q) || t.url().as_str().to_lowercase().contains(&q))
+                && self.suggestions.len() < 8
+            {
+                self.suggestions.push(Suggestion {
+                    icon: t.icon(),
+                    text: t.title(),
+                    detail: host_of(t.url()),
+                    hint: "Ir para a aba",
+                    group: "Abas abertas",
+                    action: Action::Tab(i),
+                });
+            }
+        }
+        for (u, title) in &self.history {
+            if self.suggestions.len() >= 8 {
+                break;
+            }
+            if u.as_str().to_lowercase().contains(&q) || title.to_lowercase().contains(&q) {
+                self.suggestions.push(Suggestion {
+                    icon: Icon::Clock,
+                    text: if title.is_empty() { u.to_string() } else { title.clone() },
+                    detail: host_of(u),
+                    hint: "",
+                    group: "Histórico",
+                    action: Action::Open(u.clone()),
+                });
+            }
+        }
+    }
+
