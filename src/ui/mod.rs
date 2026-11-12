@@ -532,3 +532,72 @@ impl App {
         self.layout == LayoutMode::Sidebar && !self.panel_collapsed && w >= 860.0
     }
 
+    fn geo(&self) -> Geo {
+        let (w, h) = self.logical_size();
+        // tela cheia: só a página, sem moldura
+        if self.fullscreen.is_some() {
+            let all = rect(0.0, 0.0, w.max(1.0), h.max(1.0));
+            return Geo {
+                rail: None,
+                panel: None,
+                tabs_row: None,
+                bar: rect(0.0, -100.0, 0.0, 0.0),
+                capsule: rect(0.0, -100.0, 0.0, 0.0),
+                content: all,
+            };
+        }
+        let (rail, panel, tabs_row, bar, content) = match self.layout {
+            LayoutMode::Sidebar => {
+                let rail = rect(6.0, 6.0, 58.0, h - 12.0);
+                let show = self.panel_visible(w);
+                let col = if show { 312.0 } else { 70.0 };
+                let panel = show.then(|| rect(70.0, 0.0, 236.0, h));
+                let bar = rect(col, 6.0, w - col - 8.0, 44.0);
+                let content = rect(col, 54.0, w - col - 8.0, h - 62.0);
+                (Some(rail), panel, None, bar, content)
+            }
+            LayoutMode::Capsules => {
+                let tabs = rect(0.0, 6.0, w, 36.0);
+                let bar = rect(8.0, 46.0, w - 16.0, 44.0);
+                let content = rect(8.0, 94.0, w - 16.0, h - 102.0);
+                (None, None, Some(tabs), bar, content)
+            }
+        };
+        let nav_w = 116.0;
+        let cap_w = (bar.w - 2.0 * nav_w).clamp(160.0, 660.0);
+        let cap_x = (bar.x + bar.w / 2.0 - cap_w / 2.0).max(bar.x + nav_w);
+        let cap_w = cap_w.min(bar.x + bar.w - cap_x - 4.0);
+        Geo {
+            rail,
+            panel,
+            tabs_row,
+            bar,
+            capsule: rect(cap_x, bar.y + 4.0, cap_w, 36.0),
+            content: rect(content.x, content.y, content.w.max(1.0), content.h.max(1.0)),
+        }
+    }
+
+    /// Área da página em px CSS (descontando a interface e o zoom).
+    fn viewport_css(&self) -> (f32, f32) {
+        let c = self.geo().content;
+        ((c.w / self.zoom).max(1.0), (c.h / self.zoom).max(1.0))
+    }
+
+    fn sync_viewport(&self) {
+        if !self.tabs.is_empty() {
+            let (vw, vh) = self.viewport_css();
+            self.tabs[self.active].engine.resize(vw, vh);
+        }
+    }
+
+    fn max_scroll(&self, i: usize) -> f32 {
+        let vh = self.viewport_css().1;
+        self.tabs[i].frame.as_ref().map_or(0.0, |f| (f.height - vh).max(0.0))
+    }
+
+    fn effective_scroll(&self, i: usize) -> f32 {
+        self.tabs[i].scroll.clamp(0.0, self.max_scroll(i))
+    }
+
+    // ----------------------------------------------------------- abas
+
