@@ -70,6 +70,7 @@ pub fn install(r: &Realm) {
         ("expm1", 1, m_expm1),
         ("floor", 1, m_floor),
         ("fround", 1, m_fround),
+        ("f16round", 1, m_f16round),
         ("hypot", 2, m_hypot),
         ("imul", 2, m_imul),
         ("log", 1, m_log),
@@ -298,6 +299,7 @@ math1!(m_exp, f64::exp);
 math1!(m_expm1, f64::exp_m1);
 math1!(m_floor, f64::floor);
 math1!(m_fround, |x: f64| x as f32 as f64);
+math1!(m_f16round, |x: f64| crate::conv::f16_to_f64(crate::conv::f64_to_f16(x)));
 math1!(m_log, f64::ln);
 math1!(m_log1p, f64::ln_1p);
 math1!(m_log10, f64::log10);

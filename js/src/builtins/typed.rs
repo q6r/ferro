@@ -122,6 +122,7 @@ pub fn install(r: &Realm) {
         ("getUint16", "setUint16", dv_get_u16, dv_set_u16),
         ("getInt32", "setInt32", dv_get_i32, dv_set_i32),
         ("getUint32", "setUint32", dv_get_u32, dv_set_u32),
+        ("getFloat16", "setFloat16", dv_get_f16, dv_set_f16),
         ("getFloat32", "setFloat32", dv_get_f32, dv_set_f32),
         ("getFloat64", "setFloat64", dv_get_f64, dv_set_f64),
         ("getBigInt64", "setBigInt64", dv_get_bi64, dv_set_bi64),
@@ -1490,6 +1491,7 @@ dv_methods!(dv_get_i16, dv_set_i16, TaKind::I16, "getInt16", "setInt16");
 dv_methods!(dv_get_u16, dv_set_u16, TaKind::U16, "getUint16", "setUint16");
 dv_methods!(dv_get_i32, dv_set_i32, TaKind::I32, "getInt32", "setInt32");
 dv_methods!(dv_get_u32, dv_set_u32, TaKind::U32, "getUint32", "setUint32");
+dv_methods!(dv_get_f16, dv_set_f16, TaKind::F16, "getFloat16", "setFloat16");
 dv_methods!(dv_get_f32, dv_set_f32, TaKind::F32, "getFloat32", "setFloat32");
 dv_methods!(dv_get_f64, dv_set_f64, TaKind::F64, "getFloat64", "setFloat64");
 dv_methods!(dv_get_bi64, dv_set_bi64, TaKind::BI64, "getBigInt64", "setBigInt64");

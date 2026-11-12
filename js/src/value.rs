@@ -610,6 +610,7 @@ pub enum TaKind {
     U16,
     I32,
     U32,
+    F16,
     F32,
     F64,
     BI64,
@@ -617,7 +618,7 @@ pub enum TaKind {
 }
 
 impl TaKind {
-    pub const ALL: [TaKind; 11] = [
+    pub const ALL: [TaKind; 12] = [
         TaKind::I8,
         TaKind::U8,
         TaKind::U8C,
@@ -625,6 +626,7 @@ impl TaKind {
         TaKind::U16,
         TaKind::I32,
         TaKind::U32,
+        TaKind::F16,
         TaKind::F32,
         TaKind::F64,
         TaKind::BI64,
@@ -634,7 +636,7 @@ impl TaKind {
     pub fn size(self) -> usize {
         match self {
             TaKind::I8 | TaKind::U8 | TaKind::U8C => 1,
-            TaKind::I16 | TaKind::U16 => 2,
+            TaKind::I16 | TaKind::U16 | TaKind::F16 => 2,
             TaKind::I32 | TaKind::U32 | TaKind::F32 => 4,
             TaKind::F64 | TaKind::BI64 | TaKind::BU64 => 8,
         }
@@ -649,6 +651,7 @@ impl TaKind {
             TaKind::U16 => "Uint16Array",
             TaKind::I32 => "Int32Array",
             TaKind::U32 => "Uint32Array",
+            TaKind::F16 => "Float16Array",
             TaKind::F32 => "Float32Array",
             TaKind::F64 => "Float64Array",
             TaKind::BI64 => "BigInt64Array",
@@ -676,6 +679,7 @@ impl TaKind {
             TaKind::U16 => Value::Number(u16::from_le_bytes([arr[0], arr[1]]) as f64),
             TaKind::I32 => Value::Number(i32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
             TaKind::U32 => Value::Number(u32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::F16 => Value::Number(crate::conv::f16_to_f64(u16::from_le_bytes([arr[0], arr[1]]))),
             TaKind::F32 => Value::Number(f32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
             TaKind::F64 => Value::Number(f64::from_le_bytes(arr)),
             TaKind::BI64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_i64(i64::from_le_bytes(arr)))),
@@ -694,6 +698,7 @@ impl TaKind {
                 out[0] = c.round_ties_even() as u8;
             }
             TaKind::I16 | TaKind::U16 => out[..2].copy_from_slice(&(to_int32(n) as u16).to_le_bytes()),
+            TaKind::F16 => out[..2].copy_from_slice(&crate::conv::f64_to_f16(n).to_le_bytes()),
             TaKind::I32 | TaKind::U32 => out[..4].copy_from_slice(&(to_int32(n) as u32).to_le_bytes()),
             TaKind::F32 => out[..4].copy_from_slice(&(n as f32).to_le_bytes()),
             TaKind::F64 => out.copy_from_slice(&n.to_le_bytes()),
