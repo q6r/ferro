@@ -916,3 +916,51 @@ struct TableGrid<'a> {
     ncols: usize,
 }
 
+fn table_grid<'a>(doc: &Document, b: &'a LayoutBox) -> TableGrid<'a> {
+    let mut g = TableGrid {
+        captions: Vec::new(),
+        rows: Vec::new(),
+        ncols: 0,
+    };
+    let cells_of = |r: &'a LayoutBox| -> Vec<(&'a LayoutBox, usize)> {
+        r.children
+            .iter()
+            .filter(|c| c.style.display == Display::TableCell && c.is_block_level())
+            .map(|c| (c, colspan(doc, c)))
+            .collect()
+    };
+    let mut loose: Vec<(&'a LayoutBox, usize)> = Vec::new();
+    let push_row = |g: &mut TableGrid<'a>, tr: Option<&'a LayoutBox>, cells: Vec<(&'a LayoutBox, usize)>| {
+        if !cells.is_empty() {
+            g.ncols = g.ncols.max(cells.iter().map(|c| c.1).sum());
+            g.rows.push((tr, cells));
+        }
+    };
+    for c in &b.children {
+        match c.style.display {
+            Display::TableCaption => g.captions.push(c),
+            Display::TableRowGroup => {
+                for r in &c.children {
+                    match r.style.display {
+                        Display::TableRow => push_row(&mut g, Some(r), cells_of(r)),
+                        Display::TableCell => push_row(&mut g, None, vec![(r, colspan(doc, r))]),
+                        _ => {}
+                    }
+                }
+            }
+            Display::TableRow => {
+                if !loose.is_empty() {
+                    push_row(&mut g, None, std::mem::take(&mut loose));
+                }
+                push_row(&mut g, Some(c), cells_of(c));
+            }
+            Display::TableCell => loose.push((c, colspan(doc, c))),
+            _ => {}
+        }
+    }
+    if !loose.is_empty() {
+        push_row(&mut g, None, loose);
+    }
+    g
+}
+
