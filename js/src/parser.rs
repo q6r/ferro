@@ -87,3 +87,57 @@ fn bin_prec(t: &Tok, no_in: bool) -> Option<(u8, BinOrLog)> {
     })
 }
 
+#[derive(Clone, Copy)]
+enum BinOrLog {
+    Bin(BinOp),
+    Log(LogOp),
+}
+
+fn assign_op(p: &str) -> Option<AssignOp> {
+    Some(match p {
+        "=" => AssignOp::Assign,
+        "+=" => AssignOp::Op(BinOp::Add),
+        "-=" => AssignOp::Op(BinOp::Sub),
+        "*=" => AssignOp::Op(BinOp::Mul),
+        "/=" => AssignOp::Op(BinOp::Div),
+        "%=" => AssignOp::Op(BinOp::Mod),
+        "**=" => AssignOp::Op(BinOp::Exp),
+        "<<=" => AssignOp::Op(BinOp::Shl),
+        ">>=" => AssignOp::Op(BinOp::Shr),
+        ">>>=" => AssignOp::Op(BinOp::UShr),
+        "&=" => AssignOp::Op(BinOp::BitAnd),
+        "|=" => AssignOp::Op(BinOp::BitOr),
+        "^=" => AssignOp::Op(BinOp::BitXor),
+        "&&=" => AssignOp::Logical(LogOp::And),
+        "||=" => AssignOp::Logical(LogOp::Or),
+        "??=" => AssignOp::Logical(LogOp::Nullish),
+        _ => return None,
+    })
+}
+
+pub fn parse_program(src: &str) -> PResult<Program> {
+    let mut p = Parser::new(src)?;
+    let body = p.parse_body_until_eof()?;
+    Ok(Program { body, strict: p.strict, imports: Default::default() })
+}
+
+/// Um módulo ES: instruções, `import` e `export` (sempre estrito, com
+/// `await` no topo).
+pub fn parse_module(src: &str) -> PResult<Vec<ModuleItem>> {
+    let mut p = Parser::new(src)?;
+    p.strict = true;
+    p.module = true;
+    p.ctx.in_async = true;
+    let mut items = Vec::new();
+    while p.tok.tok != Tok::Eof {
+        if p.is_kw("import") && !matches!(p.peek()?.tok, Tok::Punct("(") | Tok::Punct(".")) {
+            items.push(ModuleItem::Import(p.parse_import()?));
+        } else if p.is_kw("export") {
+            items.push(ModuleItem::Export(p.parse_export()?));
+        } else {
+            items.push(ModuleItem::Stmt(p.parse_statement()?));
+        }
+    }
+    Ok(items)
+}
+
