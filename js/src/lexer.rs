@@ -726,3 +726,39 @@ mod tests {
         out
     }
 
+    #[test]
+    fn numeros_e_pontuacao() {
+        assert_eq!(
+            toks("x = 0x1F + 1_000 + .5 + 1e3 >>>= a?.b ?? c"),
+            vec![
+                Tok::Ident("x".into()),
+                Tok::Punct("="),
+                Tok::Num(31.0),
+                Tok::Punct("+"),
+                Tok::Num(1000.0),
+                Tok::Punct("+"),
+                Tok::Num(0.5),
+                Tok::Punct("+"),
+                Tok::Num(1000.0),
+                Tok::Punct(">>>="),
+                Tok::Ident("a".into()),
+                Tok::Punct("?."),
+                Tok::Ident("b".into()),
+                Tok::Punct("??"),
+                Tok::Ident("c".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn strings_e_regex() {
+        let t = toks(r#"'a\nb' "çA" /ab+c/gi"#);
+        assert_eq!(t[0], Tok::Str(vec![97, 10, 98].into()));
+        assert_eq!(t[1], Tok::Str(vec![0xE7, 0x41].into()));
+        // depois de uma string, "/" é divisão; depois de "=", começa uma regex
+        assert_eq!(t[2], Tok::Punct("/"));
+        assert_eq!(toks("x = /ab+c/gi")[2], Tok::Regex { pattern: "ab+c".into(), flags: "gi".into() });
+        // depois de identificador, "/" é divisão
+        assert_eq!(toks("a / b")[1], Tok::Punct("/"));
+    }
+}
