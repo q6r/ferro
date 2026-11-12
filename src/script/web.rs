@@ -215,3 +215,75 @@ fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<net::Request, Value> {
     })
 }
 
+/// `__native.fetch(método, url, cabeçalhos, corpo, comCookies, callback)`.
+fn fetch(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let req = request_from_args(vm, a)?;
+    let cb = a.arg(5);
+    write(vm, |h| {
+        h.fetch_seq += 1;
+        let id = h.fetch_seq;
+        h.fetch_waiters.insert(id, cb);
+        let net = h.net.clone();
+        h.in_flight += 1;
+        h.pool.submit(Box::new(move || Done::Fetch { id, res: net.request(&req) }));
+    });
+    Ok(Value::Undefined)
+}
+
+/// XMLHttpRequest síncrono (ainda usado por sites antigos).
+fn fetch_sync(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let req = request_from_args(vm, a)?;
+    let net = read(vm, |h| h.net.clone());
+    let res = net.request(&req);
+    Ok(response_value(vm, res))
+}
+
+// ------------------------------------------------------------------- URL
+
+fn url_object(vm: &mut Vm, u: &Url) -> Value {
+    let o = vm.new_object();
+    let port = u.port().map(|p| p.to_string()).unwrap_or_default();
+    let host = match u.host_str() {
+        Some(h) if !port.is_empty() => format!("{h}:{port}"),
+        Some(h) => h.to_string(),
+        None => String::new(),
+    };
+    let search = u.query().filter(|q| !q.is_empty()).map(|q| format!("?{q}")).unwrap_or_default();
+    let hash = u.fragment().filter(|f| !f.is_empty()).map(|f| format!("#{f}")).unwrap_or_default();
+    let origin = u.origin().ascii_serialization();
+    for (k, v) in [
+        ("href", u.as_str().to_string()),
+        ("protocol", format!("{}:", u.scheme())),
+        ("username", u.username().to_string()),
+        ("password", u.password().unwrap_or("").to_string()),
+        ("host", host),
+        ("hostname", u.host_str().unwrap_or("").to_string()),
+        ("port", port),
+        ("pathname", u.path().to_string()),
+        ("search", search),
+        ("hash", hash),
+        ("origin", origin),
+    ] {
+        set(vm, &o, k, s(&v));
+    }
+    Value::Object(o)
+}
+
+/// `__native.urlParse(entrada, base?)` → partes da URL ou null.
+fn url_parse(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let input = arg_string(vm, a, 0)?;
+    let parsed = if a.arg(1).is_undefined() || a.arg(1).is_nullish() {
+        Url::parse(input.trim())
+    } else {
+        let base = arg_string(vm, a, 1)?;
+        match Url::parse(base.trim()) {
+            Ok(b) => b.join(input.trim()),
+            Err(e) => Err(e),
+        }
+    };
+    match parsed {
+        Ok(u) => Ok(url_object(vm, &u)),
+        Err(_) => Ok(Value::Null),
+    }
+}
+
