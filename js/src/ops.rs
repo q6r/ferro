@@ -762,3 +762,68 @@ impl Vm {
         self.set_own(r, key, v)
     }
 
+    /// Grava uma propriedade própria de dados (criando se preciso).
+    pub fn set_own(&mut self, obj: &ObjRef, key: PropKey, v: Value) -> Result<bool, Value> {
+        if matches!(obj.borrow().kind, Kind::TypedArray(_))
+            && let Some(i) = key.as_index()
+        {
+            self.typed_set(obj, i as usize, &v)?;
+            return Ok(true);
+        }
+        {
+            let mut b = obj.borrow_mut();
+            let frozen = b.frozen;
+            let ext = b.extensible;
+            if let Kind::Array(vec) = &mut b.kind {
+                if let Some(i) = key.as_index() {
+                    let i = i as usize;
+                    if frozen {
+                        return Ok(false);
+                    }
+                    if i < vec.len() {
+                        if matches!(vec[i], Value::Empty) && !ext {
+                            return Ok(false);
+                        }
+                        vec[i] = v;
+                        return Ok(true);
+                    }
+                    if !ext {
+                        return Ok(false);
+                    }
+                    if i < vec.len() + 1_000_000 {
+                        vec.resize(i, Value::Empty);
+                        vec.push(v);
+                        return Ok(true);
+                    }
+                } else if let PropKey::Str(s) = &key
+                    && s.eq_str("length")
+                {
+                    drop(b);
+                    return self.set_array_length(obj, &v);
+                }
+            }
+            match b.props.get_mut(&key) {
+                Some(p) => {
+                    return Ok(match &mut p.slot {
+                        Slot::Data { value, writable } => {
+                            if *writable {
+                                *value = v;
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        Slot::Accessor { .. } => false,
+                    });
+                }
+                None => {
+                    if !b.extensible {
+                        return Ok(false);
+                    }
+                    b.props.insert(key, Property::data(v));
+                    Ok(true)
+                }
+            }
+        }
+    }
+
