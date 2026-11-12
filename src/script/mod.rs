@@ -1551,3 +1551,88 @@ fn request_parser_script(hb: &mut Host, u: Url) {
     }));
 }
 
+pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
+    if h.borrow().styles_dirty {
+        recollect_styles(h);
+    }
+    let mut hb = h.borrow_mut();
+    // imagens dos <img> que já estão no cache
+    let sources = engine::image_sources(&hb.page.doc, &hb.page.base);
+    let mut missing = Vec::new();
+    for (n, u) in sources {
+        match hb.image_cache.get(&u) {
+            Some(Some(img)) => {
+                let img = img.clone();
+                hb.images.nodes.insert(n, img);
+            }
+            Some(None) => {}
+            None => missing.push(u),
+        }
+    }
+    if !hb.no_resources {
+        for u in missing {
+            request_image(&mut hb, u, None);
+        }
+    }
+    let fonts = hb.fonts.clone();
+    crate::layout::set_focus(hb.focused.filter(|&f| hb.page.doc.is_connected(f)));
+    crate::css::set_dynamic_state(dynamic_state(&hb));
+    crate::layout::set_scroll_offsets(hb.scroll_offsets.clone());
+    let (mut page, styles) = engine::render_styled(&hb.page, &hb.images, &fonts, hb.width, hb.height);
+    if hb.no_resources {
+        page.missing_urls.clear();
+        page.missing_fonts.clear();
+    }
+    // fundos e fontes web que faltam
+    for u in std::mem::take(&mut page.missing_urls) {
+        if hb.images.urls.contains_key(&u) || !hb.requested.insert(format!("bg {u}")) {
+            continue;
+        }
+        let net = hb.net.clone();
+        hb.in_flight += 1;
+        hb.pool.submit(Box::new(move || {
+            let img = Url::parse(&u)
+                .ok()
+                .and_then(|url| net.fetch(&url).ok())
+                .filter(|r| r.status < 400)
+                .and_then(|r| engine::decode_image(&r.body))
+                .map(Arc::new);
+            Done::Bg { url: u, img }
+        }));
+    }
+    for face in std::mem::take(&mut page.missing_fonts) {
+        if !hb.requested.insert(format!("font {}", face.sources[0])) {
+            continue;
+        }
+        let net = hb.net.clone();
+        hb.in_flight += 1;
+        hb.pool.submit(Box::new(move || {
+            for src in &face.sources {
+                if fonts::web_font_tried(src) {
+                    break;
+                }
+                let Ok(url) = Url::parse(src) else { continue };
+                let Ok(res) = net.fetch(&url) else { continue };
+                if res.status < 400
+                    && res.body.len() < 4 * 1024 * 1024
+                    && fonts::register_web_font(src, &face.family, face.weight, face.italic, &res.body)
+                {
+                    break;
+                }
+            }
+            Done::Font
+        }));
+    }
+    hb.layout = Some(LayoutInfo {
+        boxes: page.boxes.clone(),
+        hits: std::mem::take(&mut page.hits),
+        fixed: std::mem::take(&mut page.fixed_nodes),
+        height: page.height,
+        styles,
+        scrollers: page.scrollers.clone(),
+    });
+    hb.dirty = false;
+    hb.repaint = false;
+    page
+}
+
