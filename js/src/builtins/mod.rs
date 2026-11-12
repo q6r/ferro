@@ -320,3 +320,61 @@ impl Default for Realm {
     }
 }
 
+pub fn native_fn(function_proto: &ObjRef, name: &str, len: u32, f: NativeFn, ctor: bool) -> ObjRef {
+    let o = ObjRef::new(Object::new(
+        Some(function_proto.clone()),
+        Kind::Function(Func::Native(Native {
+            f,
+            ctor,
+            data: Value::Undefined,
+        })),
+    ));
+    {
+        let mut b = o.borrow_mut();
+        b.props.insert(PropKey::str("length"), crate::ops::readonly(Value::Number(len as f64)));
+        b.props.insert(PropKey::str("name"), crate::ops::readonly(Value::str(name)));
+    }
+    o
+}
+
+// ---------------------------------------------------- auxiliares comuns
+
+/// Dados guardados numa função nativa (ex.: alvo de um Proxy, resolve de Promise).
+pub fn native_data(f: &ObjRef) -> Value {
+    match &f.borrow().kind {
+        Kind::Function(Func::Native(n)) => n.data.clone(),
+        _ => Value::Undefined,
+    }
+}
+
+pub fn set_native_data(f: &ObjRef, v: Value) {
+    if let Kind::Function(Func::Native(n)) = &mut f.borrow_mut().kind {
+        n.data = v;
+    }
+}
+
+pub fn arg_num(vm: &mut Vm, a: &CallArgs, i: usize) -> Result<f64, Value> {
+    vm.to_number(&a.arg(i))
+}
+
+pub fn arg_str(vm: &mut Vm, a: &CallArgs, i: usize) -> Result<JsStr, Value> {
+    vm.to_string(&a.arg(i))
+}
+
+/// `this` convertido para objeto.
+pub fn this_obj(vm: &mut Vm, a: &CallArgs) -> Result<ObjRef, Value> {
+    vm.to_object(&a.this)
+}
+
+/// Converte um índice relativo (aceita negativos e undefined = padrão).
+pub fn rel_index(vm: &mut Vm, v: &Value, len: usize, default: usize) -> Result<usize, Value> {
+    if v.is_undefined() {
+        return Ok(default);
+    }
+    let n = vm.to_integer(v)?;
+    Ok(crate::conv::relative_index(n, len))
+}
+
+pub fn obj_value(o: ObjRef) -> Value {
+    Value::Object(o)
+}
