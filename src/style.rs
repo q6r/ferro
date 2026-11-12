@@ -1367,3 +1367,657 @@ impl Cascade<'_> {
         }
     }
 
+    fn apply(&self, s: &mut ComputedStyle, parent: &ComputedStyle, d: &Declaration) {
+        let value = if d.value.contains("var(") {
+            match substitute_vars(&d.value, &s.custom, 0) {
+                Some(v) => v,
+                None => return,
+            }
+        } else {
+            d.value.clone()
+        };
+        let v = value.trim();
+        let lower = v.to_ascii_lowercase();
+        match lower.as_str() {
+            "inherit" => return copy_property(s, parent, &d.name),
+            "initial" | "unset" | "revert" | "revert-layer" => {
+                let base = if lower == "initial" || !is_inherited(&d.name) {
+                    ComputedStyle::initial()
+                } else {
+                    parent.clone()
+                };
+                return copy_property(s, &base, &d.name);
+            }
+            _ => {}
+        }
+        let u = Units {
+            em: if d.name == "font-size" || d.name == "font" { parent.font_size } else { s.font_size },
+            rem: self.root_font,
+            vw: self.media.width,
+            vh: self.media.height,
+        };
+        let v = lower.as_str();
+        let len = |v: &str| parse_len(v, &u);
+        match d.name.as_str() {
+            "display" => {
+                let first = v.split_whitespace().next().unwrap_or("");
+                s.display = match (first, v) {
+                    ("none", _) => Display::None,
+                    ("block" | "flow-root", _) => Display::Block,
+                    ("inline", "inline flex") => Display::InlineFlex,
+                    ("inline", "inline grid") => Display::InlineGrid,
+                    ("inline", _) => Display::Inline,
+                    ("inline-block" | "inline-table", _) => Display::InlineBlock,
+                    ("-webkit-inline-box", _) => Display::InlineBlock,
+                    ("inline-flex" | "-webkit-inline-flex", _) => Display::InlineFlex,
+                    ("inline-grid", _) => Display::InlineGrid,
+                    ("list-item", _) => Display::ListItem,
+                    // -webkit-box hoje é quase sempre o truque do line-clamp
+                    ("-webkit-box", _) => Display::Block,
+                    ("flex" | "-webkit-flex" | "-ms-flexbox", _) => Display::Flex,
+                    ("grid" | "-ms-grid", _) => Display::Grid,
+                    ("table", _) => Display::Table,
+                    ("table-row-group" | "table-header-group" | "table-footer-group", _) => Display::TableRowGroup,
+                    ("table-row", _) => Display::TableRow,
+                    ("table-cell", _) => Display::TableCell,
+                    ("table-caption", _) => Display::TableCaption,
+                    ("table-column" | "table-column-group", _) => Display::None,
+                    ("contents", _) => Display::Contents,
+                    _ => return,
+                }
+            }
+            "color" => {
+                if let Some(c) = parse_color(v, parent.color) {
+                    s.color = c;
+                }
+            }
+            "background-color" => {
+                if let Some(c) = parse_color(v, s.color) {
+                    s.background = c;
+                }
+            }
+            "background" => {
+                // várias camadas: a imagem vem da primeira, a cor da última
+                let layers = css::split_top_level(value.trim(), ',');
+                s.background = Color::TRANSPARENT;
+                s.bg_image = None;
+                s.bg_size = BgSize::Auto;
+                s.bg_pos = (Len::Percent(0.0), Len::Percent(0.0));
+                s.bg_repeat = (true, true);
+                if let Some(last) = layers.last()
+                    && let Some(c) = split_values(last).iter().rev().find_map(|t| parse_color(t, s.color))
+                {
+                    s.background = c;
+                }
+                if let Some(first) = layers.first() {
+                    let (main, size) = match css::split_top_level(first, '/').as_slice() {
+                        [a, b, ..] => (a.clone(), Some(b.clone())),
+                        _ => (first.clone(), None),
+                    };
+                    let mut pos: Vec<String> = Vec::new();
+                    for t in split_values(&main) {
+                        let lt = t.to_ascii_lowercase();
+                        if let Some(img) = parse_bg_image(&t, s.color) {
+                            if let BgImage::Linear(g) = &img
+                                && s.background.is_transparent()
+                                && g.stops.len() == 1
+                            {
+                                s.background = g.stops[0].0;
+                            }
+                            s.bg_image = Some(img);
+                        } else if let Some(r) = parse_repeat(&lt) {
+                            s.bg_repeat = r;
+                        } else if parse_color(&lt, s.color).is_none() {
+                            pos.push(lt);
+                        }
+                    }
+                    if !pos.is_empty() {
+                        s.bg_pos = parse_bg_position(&pos.join(" "), &u);
+                    }
+                    if let Some(sz) = size
+                        && let Some(bs) = parse_bg_size(&sz.to_ascii_lowercase(), &u)
+                    {
+                        s.bg_size = bs;
+                    }
+                }
+            }
+            "background-image" => {
+                let first = css::split_top_level(value.trim(), ',').into_iter().next().unwrap_or_default();
+                s.bg_image = parse_bg_image(first.trim(), s.color);
+            }
+            "background-size" => {
+                if let Some(bs) = parse_bg_size(v, &u) {
+                    s.bg_size = bs;
+                }
+            }
+            "background-position" => s.bg_pos = parse_bg_position(v, &u),
+            "background-position-x" => s.bg_pos.0 = parse_bg_position(v, &u).0,
+            "background-position-y" => s.bg_pos.1 = parse_bg_position(&format!("left {v}"), &u).1,
+            "background-repeat" => {
+                if let Some(r) = parse_repeat(v.split_whitespace().next().unwrap_or("")) {
+                    s.bg_repeat = r;
+                }
+            }
+            "border-radius" | "border-top-left-radius" | "border-top-right-radius" | "border-bottom-left-radius"
+            | "border-bottom-right-radius" => {
+                let first = v.split('/').next().unwrap_or("").split_whitespace().next().unwrap_or("");
+                if let Some(l) = len(first) {
+                    s.border_radius = l;
+                }
+            }
+            "mask-image" | "-webkit-mask-image" => {
+                s.mask_image = css::css_url(value.trim()).filter(|u| !u.is_empty()).map(|u| Rc::from(u.as_str()));
+            }
+            "mask-size" | "-webkit-mask-size" => {
+                if let Some(bs) = parse_bg_size(v, &u) {
+                    s.mask_size = bs;
+                }
+            }
+            "mask-position" | "-webkit-mask-position" => s.mask_pos = parse_bg_position(v, &u),
+            "mask-repeat" | "-webkit-mask-repeat" => {
+                if let Some(r) = parse_repeat(v.split_whitespace().next().unwrap_or("")) {
+                    s.mask_repeat = r;
+                }
+            }
+            "mask" | "-webkit-mask" => {
+                let first = css::split_top_level(value.trim(), ',').into_iter().next().unwrap_or_default();
+                s.mask_image = css::css_url(&first).filter(|u| !u.is_empty()).map(|u| Rc::from(u.as_str()));
+                let (main, size) = match css::split_top_level(&first, '/').as_slice() {
+                    [a, b, ..] => (a.clone(), Some(b.clone())),
+                    _ => (first.clone(), None),
+                };
+                let mut pos = Vec::new();
+                for t in split_values(&main) {
+                    let lt = t.to_ascii_lowercase();
+                    if lt.starts_with("url(") {
+                        continue;
+                    } else if let Some(r) = parse_repeat(&lt) {
+                        s.mask_repeat = r;
+                    } else if !matches!(lt.as_str(), "alpha" | "luminance" | "add" | "border-box" | "content-box" | "padding-box" | "no-clip") {
+                        pos.push(lt);
+                    }
+                }
+                if !pos.is_empty() {
+                    s.mask_pos = parse_bg_position(&pos.join(" "), &u);
+                }
+                if let Some(sz) = size
+                    && let Some(bs) = parse_bg_size(&sz.to_ascii_lowercase(), &u)
+                {
+                    s.mask_size = bs;
+                }
+            }
+            "content" => match parse_content(value.trim()) {
+                Some(c) => s.content = c.map(Rc::new),
+                None => return,
+            },
+            "font-size" => {
+                let pf = parent.font_size;
+                let size = match v {
+                    "xx-small" => Some(9.0),
+                    "x-small" => Some(10.0),
+                    "small" => Some(13.0),
+                    "medium" => Some(16.0),
+                    "large" => Some(18.0),
+                    "x-large" => Some(24.0),
+                    "xx-large" => Some(32.0),
+                    "xxx-large" => Some(48.0),
+                    "smaller" => Some(pf / 1.2),
+                    "larger" => Some(pf * 1.2),
+                    _ => len(v).and_then(|l| l.resolve(pf)),
+                };
+                if let Some(px) = size
+                    && px >= 0.0
+                {
+                    s.font_size = px;
+                }
+            }
+            "font-weight" => {
+                s.font_weight = match v {
+                    "normal" => 400,
+                    "bold" => 700,
+                    "bolder" => (parent.font_weight + 300).min(900),
+                    "lighter" => parent.font_weight.saturating_sub(300).max(100),
+                    _ => match v.parse::<f32>() {
+                        Ok(n) => n.clamp(1.0, 1000.0) as u16,
+                        Err(_) => return,
+                    },
+                }
+            }
+            "font-style" => s.italic = v.starts_with("italic") || v.starts_with("oblique"),
+            "font-family" => {
+                s.font_family = font_family(v);
+                s.font_names = Rc::new(font_names(v));
+            }
+            "font" => apply_font_shorthand(s, parent, v, &u),
+            "line-height" => {
+                s.line_height = match v {
+                    "normal" => LineHeight::Normal,
+                    _ => match v.parse::<f32>() {
+                        Ok(n) => LineHeight::Number(n),
+                        Err(_) => match len(v) {
+                            Some(Len::Px(p)) => LineHeight::Px(p),
+                            Some(Len::Percent(p)) => LineHeight::Px(p / 100.0 * s.font_size),
+                            _ => return,
+                        },
+                    },
+                }
+            }
+            "text-align" => {
+                s.text_align = match v {
+                    "center" | "-webkit-center" => TextAlign::Center,
+                    "right" | "end" | "-webkit-right" => TextAlign::Right,
+                    "left" | "start" | "justify" | "-webkit-left" => TextAlign::Left,
+                    _ => return,
+                }
+            }
+            "white-space" | "white-space-collapse" => {
+                s.white_space = match v {
+                    "normal" | "collapse" => WhiteSpace::Normal,
+                    "pre" | "preserve" => WhiteSpace::Pre,
+                    "nowrap" => WhiteSpace::NoWrap,
+                    "pre-wrap" | "break-spaces" => WhiteSpace::PreWrap,
+                    "pre-line" | "preserve-breaks" => WhiteSpace::PreLine,
+                    _ => return,
+                }
+            }
+            "text-transform" => {
+                s.text_transform = match v {
+                    "uppercase" => TextTransform::Upper,
+                    "lowercase" => TextTransform::Lower,
+                    "capitalize" => TextTransform::Capitalize,
+                    _ => TextTransform::None,
+                }
+            }
+            "text-decoration" | "text-decoration-line" => {
+                s.underline = v.contains("underline");
+                s.line_through = v.contains("line-through");
+            }
+            "list-style-type" | "list-style" => {
+                for t in v.split_whitespace() {
+                    s.list_style = match t {
+                        "none" => ListStyle::None,
+                        "disc" => ListStyle::Disc,
+                        "circle" => ListStyle::Circle,
+                        "square" => ListStyle::Square,
+                        "decimal" | "decimal-leading-zero" | "lower-alpha" | "upper-alpha" | "lower-roman"
+                        | "upper-roman" | "lower-latin" | "upper-latin" => ListStyle::Decimal,
+                        _ => continue,
+                    };
+                }
+            }
+            "visibility" => s.visible = v == "visible",
+            "cursor" => {
+                if let Some(c) = Cursor::parse(v) {
+                    s.cursor = c;
+                }
+            }
+            "pointer-events" => s.pointer_events = v != "none",
+            "box-sizing" => s.border_box = v == "border-box",
+            "position" => {
+                s.position = match v {
+                    "relative" => Position::Relative,
+                    "absolute" => Position::Absolute,
+                    "fixed" => Position::Fixed,
+                    "sticky" | "-webkit-sticky" => Position::Sticky,
+                    _ => Position::Static,
+                }
+            }
+            "left" => s.left = len(v).unwrap_or(Len::Auto),
+            "top" => s.top = len(v).unwrap_or(Len::Auto),
+            "right" => s.right = len(v).unwrap_or(Len::Auto),
+            "bottom" => s.bottom = len(v).unwrap_or(Len::Auto),
+            "inset" => {
+                let vals: Option<Vec<Len>> = split_values(v).iter().map(|t| len(t)).collect();
+                if let Some([t, r, b, l]) = vals.and_then(|v| expand_sides(&v)) {
+                    (s.top, s.right, s.bottom, s.left) = (t, r, b, l);
+                }
+            }
+            "z-index" => s.z_index = v.trim().parse().ok(),
+            "opacity" => {
+                if let Some(o) = number_or_percent(v.trim(), 1.0) {
+                    s.opacity = o.clamp(0.0, 1.0);
+                }
+            }
+            "min-width" => {
+                if let Some(l) = len(v) {
+                    s.min_width = l
+                }
+            }
+            "flex-direction" => {
+                if let Some(d) = parse_direction(v) {
+                    s.flex_direction = d
+                }
+            }
+            "flex-wrap" => s.flex_wrap = v.trim() != "nowrap",
+            "flex-flow" => {
+                for t in v.split_whitespace() {
+                    if let Some(d) = parse_direction(t) {
+                        s.flex_direction = d;
+                    } else {
+                        s.flex_wrap = t != "nowrap";
+                    }
+                }
+            }
+            "justify-content" => {
+                if let Some(j) = parse_justify(v) {
+                    s.justify_content = j
+                }
+            }
+            "align-items" => {
+                if let Some(a) = parse_align(v) {
+                    s.align_items = a
+                }
+            }
+            "align-self" => s.align_self = if v.trim() == "auto" { None } else { parse_align(v) },
+            "flex-grow" => {
+                if let Ok(n) = v.trim().parse::<f32>() {
+                    s.flex_grow = n.max(0.0)
+                }
+            }
+            "flex-shrink" => {
+                if let Ok(n) = v.trim().parse::<f32>() {
+                    s.flex_shrink = n.max(0.0)
+                }
+            }
+            "flex-basis" => {
+                if let Some(b) = parse_basis(v, &u) {
+                    s.flex_basis = b
+                }
+            }
+            "flex" => {
+                let toks: Vec<&str> = v.split_whitespace().collect();
+                match toks.as_slice() {
+                    ["none"] => (s.flex_grow, s.flex_shrink, s.flex_basis) = (0.0, 0.0, FlexBasis::Auto),
+                    ["auto"] => (s.flex_grow, s.flex_shrink, s.flex_basis) = (1.0, 1.0, FlexBasis::Auto),
+                    ["initial"] => (s.flex_grow, s.flex_shrink, s.flex_basis) = (0.0, 1.0, FlexBasis::Auto),
+                    _ => {
+                        // <grow> [<shrink>] [<basis>]  ou  <basis>
+                        let mut nums = Vec::new();
+                        let mut basis = None;
+                        for t in &toks {
+                            match t.parse::<f32>() {
+                                Ok(n) if nums.len() < 2 => nums.push(n),
+                                _ => basis = parse_basis(t, &u),
+                            }
+                        }
+                        if nums.is_empty() && basis.is_none() {
+                            return;
+                        }
+                        s.flex_grow = nums.first().copied().unwrap_or(1.0);
+                        s.flex_shrink = nums.get(1).copied().unwrap_or(1.0);
+                        s.flex_basis = basis.unwrap_or(if nums.is_empty() {
+                            FlexBasis::Auto
+                        } else {
+                            FlexBasis::Len(Len::Px(0.0))
+                        });
+                    }
+                }
+            }
+            "order" => s.order = v.trim().parse().unwrap_or(0),
+            "float" => {
+                s.float = match v.trim() {
+                    "left" | "inline-start" => Float::Left,
+                    "right" | "inline-end" => Float::Right,
+                    _ => Float::None,
+                }
+            }
+            "clear" => {
+                s.clear = match v.trim() {
+                    "left" | "inline-start" => Clear::Left,
+                    "right" | "inline-end" => Clear::Right,
+                    "both" => Clear::Both,
+                    _ => Clear::None,
+                }
+            }
+            "vertical-align" => {
+                s.vertical_align = match v.trim() {
+                    "top" | "text-top" => VAlign::Top,
+                    "middle" => VAlign::Middle,
+                    "bottom" | "text-bottom" => VAlign::Bottom,
+                    _ => VAlign::Baseline,
+                }
+            }
+            "border-spacing" => {
+                if let Some(Len::Px(p)) = split_values(v).first().and_then(|t| len(t)) {
+                    s.border_spacing = p.max(0.0)
+                }
+            }
+            "border-collapse" => s.border_collapse = v.trim() == "collapse",
+            "grid-template-columns" => s.grid_columns = parse_tracks(v, &u),
+            "grid-template-rows" => s.grid_rows = parse_tracks(v, &u),
+            "grid-template-areas" => s.grid_areas = parse_areas(v).map(Rc::new),
+            "grid-template" => {
+                if v.trim() == "none" {
+                    s.grid_columns = GridTemplate::default();
+                    s.grid_rows = GridTemplate::default();
+                    s.grid_areas = None;
+                } else if let Some((rows, cols)) = v.split_once('/') {
+                    if rows.contains('"') || rows.contains('\'') {
+                        s.grid_areas = parse_areas(rows).map(Rc::new);
+                    } else {
+                        s.grid_rows = parse_tracks(rows, &u);
+                    }
+                    s.grid_columns = parse_tracks(cols, &u);
+                }
+            }
+            "grid-area" => {
+                let parts: Vec<&str> = v.split('/').map(str::trim).collect();
+                if parts.len() == 1 && !parts[0].chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-') && !parts[0].starts_with("span") && parts[0] != "auto" {
+                    s.grid_area = Some(parts[0].to_string());
+                } else {
+                    let g = |i: usize| parts.get(i).map_or(GridLine::Auto, |p| parse_grid_line(p));
+                    s.grid_row = (g(0), g(2));
+                    s.grid_col = (g(1), g(3));
+                }
+            }
+            "grid-column" => s.grid_col = parse_grid_pair(v),
+            "grid-row" => s.grid_row = parse_grid_pair(v),
+            "grid-column-start" => s.grid_col.0 = parse_grid_line(v),
+            "grid-column-end" => s.grid_col.1 = parse_grid_line(v),
+            "grid-row-start" => s.grid_row.0 = parse_grid_line(v),
+            "grid-row-end" => s.grid_row.1 = parse_grid_line(v),
+            "gap" | "grid-gap" => {
+                let vals: Vec<Len> = split_values(v).iter().filter_map(|t| len(t)).collect();
+                if let Some(&r) = vals.first() {
+                    s.row_gap = r;
+                    s.column_gap = *vals.get(1).unwrap_or(&r);
+                }
+            }
+            "row-gap" | "grid-row-gap" => {
+                if let Some(l) = len(v) {
+                    s.row_gap = l
+                }
+            }
+            "column-gap" | "grid-column-gap" => {
+                if let Some(l) = len(v) {
+                    s.column_gap = l
+                }
+            }
+            "clip" => s.clipped = v.starts_with("rect"),
+            "overflow" | "overflow-x" | "overflow-y" => {
+                let toks: Vec<&str> = v.split_whitespace().collect();
+                if toks.iter().any(|t| *t != "visible") {
+                    s.overflow_clip = true;
+                }
+                let rolls = |t: &str| matches!(t, "auto" | "scroll" | "overlay");
+                match d.name.as_str() {
+                    "overflow-x" => s.scroll_x = toks.first().is_some_and(|t| rolls(t)),
+                    "overflow-y" => s.scroll_y = toks.first().is_some_and(|t| rolls(t)),
+                    _ => {
+                        s.scroll_x = toks.first().is_some_and(|t| rolls(t));
+                        s.scroll_y = toks.last().is_some_and(|t| rolls(t));
+                    }
+                }
+            }
+            "clip-path" => s.clipped = v.starts_with("inset(50%") || v.starts_with("inset(100%"),
+            "width" => {
+                if let Some(l) = len(v) {
+                    s.width = l
+                }
+            }
+            "height" => {
+                if let Some(l) = len(v) {
+                    s.height = l
+                }
+            }
+            "min-height" => {
+                if let Some(l) = len(v) {
+                    s.min_height = l
+                }
+            }
+            "max-width" => {
+                s.max_width = if v == "none" { Len::Auto } else { len(v).unwrap_or(s.max_width) }
+            }
+            "max-height" => {
+                s.max_height = if v == "none" { Len::Auto } else { len(v).unwrap_or(s.max_height) }
+            }
+            "aspect-ratio" => {
+                // "16 / 9", "1.5", "auto 4 / 3"
+                let t = v.trim_start_matches("auto").trim();
+                let mut it = t.split('/').map(|x| x.trim().parse::<f32>().ok());
+                s.aspect_ratio = match (it.next().flatten(), it.next()) {
+                    (Some(a), None) if a > 0.0 => Some(a),
+                    (Some(a), Some(Some(b))) if a > 0.0 && b > 0.0 => Some(a / b),
+                    _ => None,
+                };
+            }
+            "content-visibility" => s.content_hidden = v == "hidden",
+            "-webkit-line-clamp" | "line-clamp" => {
+                s.line_clamp = v.trim().parse::<u32>().ok().filter(|&n| n > 0);
+            }
+            "transform" | "-webkit-transform" | "translate" => {
+                s.translate = parse_translate(d.name.as_str(), v);
+                s.transform = if d.name == "translate" { None } else { parse_transform(v, &u).map(Rc::new) };
+                if s.transform.is_some() {
+                    // a matriz inteira cuida da translação também
+                    s.translate = None;
+                }
+            }
+            "transform-origin" | "-webkit-transform-origin" => {
+                let parts: Vec<&str> = v.split_whitespace().collect();
+                let kw = |t: &str, horiz: bool| -> Option<Len> {
+                    Some(match t {
+                        "left" if horiz => Len::Percent(0.0),
+                        "right" if horiz => Len::Percent(100.0),
+                        "top" if !horiz => Len::Percent(0.0),
+                        "bottom" if !horiz => Len::Percent(100.0),
+                        "center" => Len::Percent(50.0),
+                        _ => len(t)?,
+                    })
+                };
+                let (a, b) = (parts.first().copied().unwrap_or("50%"), parts.get(1).copied().unwrap_or("center"));
+                // "top left" = "left top"
+                let (a, b) = if matches!(a, "top" | "bottom") || matches!(b, "left" | "right") { (b, a) } else { (a, b) };
+                if let (Some(x), Some(y)) = (kw(a, true), kw(b, false)) {
+                    s.transform_origin = (x, y);
+                }
+            }
+            "box-shadow" | "-webkit-box-shadow" => {
+                s.box_shadow = parse_shadows(v, &u, s.color).map(Rc::new);
+            }
+            "text-shadow" => {
+                s.text_shadow = parse_shadows(v, &u, s.color).and_then(|l| l.first().copied());
+            }
+            "margin" | "padding" => {
+                let vals: Option<Vec<Len>> = split_values(v).iter().map(|t| len(t)).collect();
+                if let Some(sides) = vals.and_then(|v| expand_sides(&v)) {
+                    if d.name == "margin" {
+                        s.margin = sides
+                    } else {
+                        s.padding = sides
+                    }
+                }
+            }
+            "margin-top" | "margin-right" | "margin-bottom" | "margin-left" | "padding-top"
+            | "padding-right" | "padding-bottom" | "padding-left" | "margin-block-start"
+            | "margin-block-end" | "margin-inline-start" | "margin-inline-end" | "padding-block-start"
+            | "padding-block-end" | "padding-inline-start" | "padding-inline-end" => {
+                if let Some(l) = len(v) {
+                    let (prop, side) = d.name.split_once('-').unwrap();
+                    let idx = side_index(side);
+                    if prop == "margin" {
+                        s.margin[idx] = l
+                    } else {
+                        s.padding[idx] = l
+                    }
+                }
+            }
+            "margin-block" | "margin-inline" | "padding-block" | "padding-inline" => {
+                let vals: Option<Vec<Len>> = split_values(v).iter().map(|t| len(t)).collect();
+                if let Some(vals) = vals.filter(|x| !x.is_empty() && x.len() <= 2) {
+                    let (a, b) = (vals[0], *vals.get(1).unwrap_or(&vals[0]));
+                    let (i1, i2) = if d.name.ends_with("block") { (TOP, BOTTOM) } else { (LEFT, RIGHT) };
+                    let target = if d.name.starts_with("margin") { &mut s.margin } else { &mut s.padding };
+                    target[i1] = a;
+                    target[i2] = b;
+                }
+            }
+            "border" | "border-top" | "border-right" | "border-bottom" | "border-left" => {
+                let sides: Vec<usize> = match d.name.as_str() {
+                    "border" => vec![TOP, RIGHT, BOTTOM, LEFT],
+                    n => vec![side_index(&n[7..])],
+                };
+                let (mut w, mut st, mut c) = (3.0, false, None);
+                for t in split_values(v) {
+                    if let Some(x) = border_style_value(&t) {
+                        st = x;
+                    } else if let Some(x) = border_width_value(&t, &u) {
+                        w = x;
+                    } else if let Some(x) = parse_color(&t, s.color) {
+                        c = Some(x);
+                    }
+                }
+                for i in sides {
+                    s.border_width[i] = w;
+                    s.border_style[i] = st;
+                    s.border_color[i] = c;
+                }
+            }
+            "border-width" => {
+                let vals: Option<Vec<f32>> = split_values(v).iter().map(|t| border_width_value(t, &u)).collect();
+                if let Some(sides) = vals.and_then(|v| expand_sides(&v)) {
+                    s.border_width = sides;
+                }
+            }
+            "border-style" => {
+                let vals: Option<Vec<bool>> = split_values(v).iter().map(|t| border_style_value(t)).collect();
+                if let Some(sides) = vals.and_then(|v| expand_sides(&v)) {
+                    s.border_style = sides;
+                }
+            }
+            "border-color" => {
+                let vals: Option<Vec<Color>> = split_values(v).iter().map(|t| parse_color(t, s.color)).collect();
+                if let Some(sides) = vals.and_then(|v| expand_sides(&v)) {
+                    s.border_color = sides.map(Some);
+                }
+            }
+            n if n.starts_with("border-") => {
+                // border-top-width, border-left-color, ...
+                let rest = &n[7..];
+                if let Some((side, what)) = rest.split_once('-') {
+                    let idx = side_index(side);
+                    match what {
+                        "width" => {
+                            if let Some(w) = border_width_value(v, &u) {
+                                s.border_width[idx] = w
+                            }
+                        }
+                        "style" => {
+                            if let Some(st) = border_style_value(v) {
+                                s.border_style[idx] = st
+                            }
+                        }
+                        "color" => {
+                            if let Some(c) = parse_color(v, s.color) {
+                                s.border_color[idx] = Some(c)
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
