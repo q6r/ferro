@@ -70,6 +70,7 @@ pub fn install(r: &Realm) {
         ("expm1", 1, m_expm1),
         ("floor", 1, m_floor),
         ("fround", 1, m_fround),
+        ("f16round", 1, m_f16round),
         ("hypot", 2, m_hypot),
         ("imul", 2, m_imul),
         ("log", 1, m_log),
@@ -85,6 +86,7 @@ pub fn install(r: &Realm) {
         ("sin", 1, m_sin),
         ("sinh", 1, m_sinh),
         ("sqrt", 1, m_sqrt),
+        ("sumPrecise", 1, m_sum_precise),
         ("tan", 1, m_tan),
         ("tanh", 1, m_tanh),
         ("trunc", 1, m_trunc),
@@ -398,3 +400,170 @@ fn m_random(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
 
 #[allow(dead_code)]
 fn unused(_: JsStr) {}
+
+// ------------------------------------------------------ Math.sumPrecise
+
+/// twosum: `hi + lo` é exatamente `x + y` (pede |x| >= |y|).
+fn two_sum(x: f64, y: f64) -> (f64, f64) {
+    let hi = x + y;
+    (hi, y - (hi - x))
+}
+
+/// Soma exata (parcelas de Shewchuk, como o polyfill da proposta), com um
+/// contador de "estouro" em múltiplos de 2^1024 para não virar infinito à toa.
+fn exact_sum(values: &[f64]) -> f64 {
+    const MAX_DOUBLE: f64 = f64::MAX;
+    const MAX_ULP: f64 = 1.99584030953471981166e+292;
+    let p1023 = 2f64.powi(1023);
+    let mut partials: Vec<f64> = Vec::new();
+    let mut overflow = 0.0f64;
+    for &v in values {
+        let mut x = v;
+        let mut used = 0;
+        for i in 0..partials.len() {
+            let mut y = partials[i];
+            if x.abs() < y.abs() {
+                std::mem::swap(&mut x, &mut y);
+            }
+            let (mut hi, mut lo) = two_sum(x, y);
+            if hi.is_infinite() {
+                let sign = if hi > 0.0 { 1.0 } else { -1.0 };
+                overflow += sign;
+                x = (x - sign * p1023) - sign * p1023;
+                if x.abs() < y.abs() {
+                    std::mem::swap(&mut x, &mut y);
+                }
+                (hi, lo) = two_sum(x, y);
+            }
+            if lo != 0.0 {
+                partials[used] = lo;
+                used += 1;
+            }
+            x = hi;
+        }
+        partials.truncate(used);
+        if x != 0.0 {
+            partials.push(x);
+        }
+    }
+    let mut n = partials.len() as isize - 1;
+    let (mut hi, mut lo) = (0.0f64, 0.0f64);
+    if overflow != 0.0 {
+        let next = if n >= 0 { partials[n as usize] } else { 0.0 };
+        n -= 1;
+        if overflow.abs() > 1.0 || (overflow > 0.0 && next > 0.0) || (overflow < 0.0 && next < 0.0) {
+            return if overflow > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
+        }
+        // tira um fator 2 para fazer a conta sem estourar
+        (hi, lo) = two_sum(overflow * p1023, next / 2.0);
+        lo *= 2.0;
+        if (2.0 * hi).is_infinite() {
+            // arredondamento para o maior double: depende da próxima parcela
+            let next_neg = n >= 0 && partials[n as usize] < 0.0;
+            let next_pos = n >= 0 && partials[n as usize] > 0.0;
+            if hi > 0.0 {
+                return if hi == p1023 && lo == -(MAX_ULP / 2.0) && next_neg { MAX_DOUBLE } else { f64::INFINITY };
+            }
+            return if hi == -p1023 && lo == MAX_ULP / 2.0 && next_pos { -MAX_DOUBLE } else { f64::NEG_INFINITY };
+        }
+        if lo != 0.0 {
+            partials.truncate((n + 1) as usize);
+            partials.push(lo);
+            n += 1;
+            lo = 0.0;
+        }
+        hi *= 2.0;
+    }
+    while n >= 0 {
+        let x = hi;
+        let y = partials[n as usize];
+        n -= 1;
+        (hi, lo) = two_sum(x, y);
+        if lo != 0.0 {
+            break;
+        }
+    }
+    // erro de exatamente meio ULP: a próxima parcela decide o arredondamento
+    if n >= 0 && ((lo < 0.0 && partials[n as usize] < 0.0) || (lo > 0.0 && partials[n as usize] > 0.0)) {
+        let y = lo * 2.0;
+        let x = hi + y;
+        if y == x - hi {
+            hi = x;
+        }
+    }
+    hi
+}
+
+fn m_sum_precise(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let items = a.arg(0);
+    if items.is_nullish() {
+        let d = vm.describe(&items);
+        return Err(vm.type_error(format!("{d} is not iterable")));
+    }
+    let mut rec = super::iterator::get_iterator(vm, &items)?;
+    // estados do spec: -0, finito, +inf, -inf, NaN
+    let (mut minus_zero, mut nan, mut pos_inf, mut neg_inf) = (true, false, false, false);
+    let mut finite = Vec::new();
+    let mut count = 0f64;
+    while let Some(v) = rec.step_value(vm)? {
+        count += 1.0;
+        if count >= 9007199254740992.0 {
+            let e = vm.range_error("Too many values passed to Math.sumPrecise");
+            return Err(super::iterator::close_with_error(vm, &rec.iter, e));
+        }
+        let Value::Number(n) = v else {
+            let d = vm.describe(&v);
+            let e = vm.type_error(format!("{d} is not a number"));
+            return Err(super::iterator::close_with_error(vm, &rec.iter, e));
+        };
+        if nan {
+            continue;
+        }
+        if n.is_nan() {
+            nan = true;
+        } else if n == f64::INFINITY {
+            if neg_inf { nan = true } else { pos_inf = true }
+        } else if n == f64::NEG_INFINITY {
+            if pos_inf { nan = true } else { neg_inf = true }
+        } else if !(n == 0.0 && n.is_sign_negative()) && !pos_inf && !neg_inf {
+            minus_zero = false;
+            finite.push(n);
+        }
+    }
+    Ok(Value::Number(if nan {
+        f64::NAN
+    } else if pos_inf {
+        f64::INFINITY
+    } else if neg_inf {
+        f64::NEG_INFINITY
+    } else if minus_zero {
+        -0.0
+    } else {
+        exact_sum(&finite) + 0.0
+    }))
+}
+
+/// Math.f16round: arredonda para o float16 mais próximo (empate para o par).
+fn m_f16round(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let x = super::arg_num(vm, a, 0)?;
+    Ok(Value::Number(round_f16(x)))
+}
+
+pub fn round_f16(x: f64) -> f64 {
+    if !x.is_finite() || x == 0.0 {
+        return x;
+    }
+    let ax = x.abs();
+    // 65520 já arredonda para infinito
+    if ax >= 65520.0 {
+        return if x > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
+    }
+    // passo (ULP) do float16 nessa faixa: subnormais usam 2^-24
+    let e = ((((ax.to_bits() >> 52) & 0x7ff) as i32) - 1023).max(-14);
+    let ulp = 2f64.powi(e - 10);
+    let q = ax / ulp;
+    let f = q.floor();
+    let r = if q - f > 0.5 || (q - f == 0.5 && f % 2.0 != 0.0) { f + 1.0 } else { f };
+    let out = r * ulp;
+    if x < 0.0 { -out } else { out }
+}

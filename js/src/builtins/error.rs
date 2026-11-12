@@ -9,6 +9,7 @@ pub fn install(r: &Realm) {
     let base = make(r, "Error", &r.error_proto, None);
     r.method(&r.error_proto, "toString", 0, to_string);
     r.method(&base, "captureStackTrace", 1, capture_stack_trace);
+    r.method(&base, "isError", 1, is_error);
     base.borrow_mut().props.insert(PropKey::str("stackTraceLimit"), Property::data(Value::Number(10.0)));
     for (name, proto) in [
         ("TypeError", &r.type_error_proto),
@@ -111,4 +112,9 @@ fn capture_stack_trace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         o.borrow_mut().props.insert(PropKey::str("stack"), Property::hidden(Value::str(&stack)));
     }
     Ok(Value::Undefined)
+}
+
+/// Error.isError: objetos com [[ErrorData]] (erros de verdade, não imitações).
+fn is_error(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(matches!(&a.arg(0), Value::Object(o) if matches!(o.borrow().kind, Kind::Error))))
 }

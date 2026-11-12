@@ -65,6 +65,9 @@ pub fn install(r: &Realm) {
     r.method(&c, "race", 1, promise_race);
     r.method(&c, "any", 1, promise_any);
     r.method(&c, "withResolvers", 0, with_resolvers);
+    r.method(&c, "try", 1, promise_try);
+    r.method(&c, "allKeyed", 1, promise_all_keyed);
+    r.method(&c, "allSettledKeyed", 1, promise_all_settled_keyed);
     r.getter_sym(&c, &r.sym_species, "[Symbol.species]", super::array::return_this);
     r.method(p, "then", 2, then);
     r.method(p, "catch", 1, catch);
@@ -609,23 +612,36 @@ fn rec_done(vm: &mut Vm, rec: &ObjRef) -> bool {
 
 /// Elemento de Promise.all: guarda o valor na posição e resolve no fim.
 fn element_fn(vm: &mut Vm, rec: &ObjRef, index: usize, kind: u8) -> ObjRef {
+    let flag = vm.new_object();
+    element_fn_with(vm, rec, index, kind, &flag)
+}
+
+/// `flag` guarda [[AlreadyCalled]] (compartilhado pelo par de allSettled).
+fn element_fn_with(vm: &mut Vm, rec: &ObjRef, index: usize, kind: u8, flag: &ObjRef) -> ObjRef {
     let f = vm.realm.native("", 1, all_element);
     let data = vm.new_object();
     vm.define_data(&data, PropKey::str("rec"), Value::Object(rec.clone()));
     vm.define_data(&data, PropKey::str("index"), Value::Number(index as f64));
     vm.define_data(&data, PropKey::str("kind"), Value::Number(kind as f64));
-    vm.define_data(&data, PropKey::str("called"), Value::Bool(false));
+    vm.define_data(&data, PropKey::str("flag"), Value::Object(flag.clone()));
     set_native_data(&f, Value::Object(data));
     f
+}
+
+/// Funções de cumprida/rejeitada de allSettled: só a primeira chamada vale.
+fn settled_pair(vm: &mut Vm, rec: &ObjRef, index: usize) -> (Value, Value) {
+    let flag = vm.new_object();
+    (Value::Object(element_fn_with(vm, rec, index, 1, &flag)), Value::Object(element_fn_with(vm, rec, index, 2, &flag)))
 }
 
 /// kind: 0 = all, 1 = allSettled cumprida, 2 = allSettled rejeitada, 3 = any rejeitada.
 fn all_element(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let Value::Object(data) = native_data(&a.callee) else { return Ok(Value::Undefined) };
-    if matches!(rec_get(&data, "called"), Value::Bool(true)) {
+    let Value::Object(flag) = rec_get(&data, "flag") else { return Ok(Value::Undefined) };
+    if matches!(rec_get(&flag, "called"), Value::Bool(true)) {
         return Ok(Value::Undefined);
     }
-    vm.define_data(&data, PropKey::str("called"), Value::Bool(true));
+    vm.define_data(&flag, PropKey::str("called"), Value::Bool(true));
     let Value::Object(rec) = rec_get(&data, "rec") else { return Ok(Value::Undefined) };
     let index = match rec_get(&data, "index") {
         Value::Number(n) => n as usize,
@@ -650,7 +666,7 @@ fn all_element(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         vm.define_data(&values, crate::ops::index_key(index), stored);
     }
     if rec_done(vm, &rec) {
-        let values = rec_get(&rec, "values");
+        let values = combinator_result(vm, &rec)?;
         if kind == 3 {
             let errors = super::function::list_from_array_like(vm, &values)?;
             let agg = make_aggregate(vm, errors);
@@ -662,6 +678,24 @@ fn all_element(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         }
     }
     Ok(Value::Undefined)
+}
+
+/// Valor final de um combinador: o array de valores, ou (allKeyed) um objeto
+/// sem protótipo com as chaves originais.
+fn combinator_result(vm: &mut Vm, rec: &ObjRef) -> Result<Value, Value> {
+    let values = rec_get(rec, "values");
+    let keys = rec_get(rec, "keys");
+    if keys.is_undefined() {
+        return Ok(values);
+    }
+    let keys = super::function::list_from_array_like(vm, &keys)?;
+    let vals = super::function::list_from_array_like(vm, &values)?;
+    let out = ObjRef::new(Object::new(None, Kind::Ordinary));
+    for (k, v) in keys.iter().zip(vals) {
+        let k = vm.to_property_key(k)?;
+        vm.define_data(&out, k, v);
+    }
+    Ok(Value::Object(out))
 }
 
 fn make_aggregate(vm: &mut Vm, errors: Vec<Value>) -> Value {
@@ -691,7 +725,7 @@ fn combinator(vm: &mut Vm, a: &CallArgs, mode: u8) -> Result<Value, Value> {
                 }
                 1 => {
                     vm.define_data(&rec, PropKey::str("remaining"), Value::Number(match rec_get(&rec, "remaining") { Value::Number(n) => n + 1.0, _ => 1.0 }));
-                    (Value::Object(element_fn(vm, &rec, i, 1)), Value::Object(element_fn(vm, &rec, i, 2)))
+                    settled_pair(vm, &rec, i)
                 }
                 2 => (cap.resolve.clone(), cap.reject.clone()),
                 _ => {
@@ -734,6 +768,82 @@ fn promise_race(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn promise_any(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     combinator(vm, a, 3)
+}
+
+/// Promise.try: chama a função na hora e embrulha o resultado (ou o erro).
+fn promise_try(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !matches!(a.this, Value::Object(_)) {
+        return Err(vm.type_error("Promise.try called on non-object"));
+    }
+    let cap = vm.new_capability(&a.this)?;
+    let args = a.args.get(1..).map(|x| x.to_vec()).unwrap_or_default();
+    match vm.call(&a.arg(0), Value::Undefined, args) {
+        Ok(v) => vm.call(&cap.resolve, Value::Undefined, vec![v])?,
+        Err(e) => vm.call(&cap.reject, Value::Undefined, vec![e])?,
+    };
+    Ok(cap.promise)
+}
+
+/// Promise.allKeyed / allSettledKeyed: como all/allSettled, mas sobre as
+/// propriedades próprias enumeráveis de um objeto.
+fn keyed_combinator(vm: &mut Vm, a: &CallArgs, settled: bool) -> Result<Value, Value> {
+    let cap = vm.new_capability(&a.this)?;
+    let result = (|| -> Result<(), Value> {
+        let resolve_m = vm.get_str(&a.this, "resolve")?;
+        if !resolve_m.is_callable() {
+            return Err(vm.type_error("Promise resolve or reject function is not callable"));
+        }
+        let Value::Object(src) = a.arg(0) else {
+            let d = vm.describe(&a.arg(0));
+            return Err(vm.type_error(format!("{d} is not an object")));
+        };
+        let rec = combinator_record(vm, &cap, 0);
+        let keys = vm.new_array(Vec::new());
+        vm.define_data(&rec, PropKey::str("keys"), Value::Object(keys.clone()));
+        let Value::Object(values) = rec_get(&rec, "values") else { return Ok(()) };
+        let src_v = Value::Object(src.clone());
+        let mut index = 0;
+        for key in vm.own_keys(&src)? {
+            let Some(desc) = vm.get_own_property(&src, &key)? else { continue };
+            if !desc.enumerable {
+                continue;
+            }
+            let v = vm.get(&src_v, &key)?;
+            vm.define_data(&keys, crate::ops::index_key(index), key.to_value());
+            vm.define_data(&values, crate::ops::index_key(index), Value::Undefined);
+            let p = vm.call(&resolve_m, a.this.clone(), vec![v])?;
+            let (on_f, on_r) = if settled {
+                settled_pair(vm, &rec, index)
+            } else {
+                (Value::Object(element_fn(vm, &rec, index, 0)), cap.reject.clone())
+            };
+            let n = match rec_get(&rec, "remaining") {
+                Value::Number(n) => n + 1.0,
+                _ => 1.0,
+            };
+            vm.define_data(&rec, PropKey::str("remaining"), Value::Number(n));
+            let then = vm.get_str(&p, "then")?;
+            vm.call(&then, p, vec![on_f, on_r])?;
+            index += 1;
+        }
+        if rec_done(vm, &rec) {
+            let r = combinator_result(vm, &rec)?;
+            vm.call(&cap.resolve, Value::Undefined, vec![r])?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        vm.call(&cap.reject, Value::Undefined, vec![e])?;
+    }
+    Ok(cap.promise)
+}
+
+fn promise_all_keyed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    keyed_combinator(vm, a, false)
+}
+
+fn promise_all_settled_keyed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    keyed_combinator(vm, a, true)
 }
 
 fn queue_microtask(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
