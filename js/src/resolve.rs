@@ -365,3 +365,78 @@ impl Resolver {
         }
     }
 
+    fn expr(&mut self, e: &Expr) {
+        match e {
+            Expr::Ident(n, _) => self.refer(n),
+            Expr::Num(_) | Expr::BigInt(_) | Expr::Str(_) | Expr::Regex(..) | Expr::Null | Expr::Bool(_) | Expr::This | Expr::NewTarget | Expr::Unsupported(_) => {}
+            Expr::ImportCall(e) => self.expr(e),
+            Expr::ImportMeta => self.refer(&Name::from("__meta")),
+            Expr::SuperMember(_) => {}
+            Expr::SuperIndex(i) => self.expr(i),
+            Expr::SuperCall(args) => self.elems(args),
+            Expr::Template(_, es) => {
+                for e in es {
+                    self.expr(e);
+                }
+            }
+            Expr::Tagged { tag, exprs, .. } => {
+                self.expr(tag);
+                for e in exprs {
+                    self.expr(e);
+                }
+            }
+            Expr::Array(es) => self.elems(es),
+            Expr::Object(props) => {
+                for p in props {
+                    if let PropKeyExpr::Computed(k) = &p.key {
+                        self.expr(k);
+                    }
+                    self.expr(&p.value);
+                }
+            }
+            Expr::Function(f) => {
+                let self_binding = f.name.is_some() && f.kind == FnKind::Normal;
+                self.function(f, self_binding);
+            }
+            Expr::Class(c) => self.class(c),
+            Expr::Unary(_, x) | Expr::Await(x) | Expr::Spread(x) | Expr::OptionalChain(x) => self.expr(x),
+            Expr::Update { target, .. } => self.expr(target),
+            Expr::Binary(_, l, r) | Expr::Logical(_, l, r) => {
+                self.expr(l);
+                self.expr(r);
+            }
+            Expr::Assign(_, p, v) => {
+                self.expr(v);
+                self.pattern(p);
+            }
+            Expr::Cond(t, c, a) => {
+                self.expr(t);
+                self.expr(c);
+                self.expr(a);
+            }
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee);
+                self.elems(args);
+            }
+            Expr::New(c, args, _) => {
+                self.expr(c);
+                self.elems(args);
+            }
+            Expr::Member { obj, .. } | Expr::PrivateMember(obj, _) | Expr::PrivateIn(_, obj) => self.expr(obj),
+            Expr::Index { obj, index, .. } => {
+                self.expr(obj);
+                self.expr(index);
+            }
+            Expr::Seq(es) => {
+                for e in es {
+                    self.expr(e);
+                }
+            }
+            Expr::Yield(x, _) => {
+                if let Some(x) = x {
+                    self.expr(x);
+                }
+            }
+        }
+    }
+}
