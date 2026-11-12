@@ -64,3 +64,110 @@ fn declared_names(s: &Stmt, out: &mut Vec<Name>) {
     }
 }
 
+/// Analisa e compila o texto de um módulo. `url` vira o nome do arquivo
+/// (mensagens de erro, `import()` relativo).
+pub fn compile_module(src: &str, url: &str) -> Result<CompiledModule, ParseError> {
+    let items = parser::parse_module(src)?;
+    let mut requests: Vec<String> = Vec::new();
+    let mut request = |spec: &str| -> Name {
+        let i = match requests.iter().position(|r| r == spec) {
+            Some(i) => i,
+            None => {
+                requests.push(spec.to_string());
+                requests.len() - 1
+            }
+        };
+        Name::from(format!("__m{i}").as_str())
+    };
+    let mut imports: FxHashMap<Name, (Name, Option<Name>)> = FxHashMap::default();
+    let mut body: Vec<Stmt> = Vec::new();
+    // prólogo: getters do namespace e reexportações
+    let mut prologue = String::new();
+    for item in items {
+        match item {
+            ModuleItem::Stmt(s) => body.push(s),
+            ModuleItem::Import(d) => {
+                let ns = request(&d.specifier);
+                for (what, local) in d.bindings {
+                    let export = match what {
+                        ImportName::Default => Some(Name::from("default")),
+                        ImportName::Named(n) => Some(Name::from(n.as_str())),
+                        ImportName::Namespace => None,
+                    };
+                    imports.insert(local, (ns.clone(), export));
+                }
+            }
+            ModuleItem::Export(e) => match e {
+                ExportDecl::Decl(s) => {
+                    let mut names = Vec::new();
+                    declared_names(&s, &mut names);
+                    for n in names {
+                        prologue.push_str(&format!("__ferroExport(__ns, {}, () => {n});\n", quote(&n)));
+                    }
+                    body.push(s);
+                }
+                ExportDecl::DefaultDecl(s, n) => {
+                    prologue.push_str(&format!("__ferroExport(__ns, \"default\", () => {n});\n"));
+                    body.push(s);
+                }
+                ExportDecl::DefaultExpr(e) => {
+                    prologue.push_str("__ferroExport(__ns, \"default\", () => __default);\n");
+                    body.push(Stmt::Var(
+                        VarKind::Const,
+                        vec![VarDecl {
+                            target: Pattern::Ident(Name::from("__default")),
+                            init: Some(e),
+                        }],
+                        0,
+                    ));
+                }
+                ExportDecl::Names(list) => {
+                    for (local, exported) in list {
+                        prologue.push_str(&format!("__ferroExport(__ns, {}, () => {local});\n", quote(&exported)));
+                    }
+                }
+                ExportDecl::From(spec, list) => {
+                    let ns = request(&spec);
+                    for (theirs, exported) in list {
+                        prologue.push_str(&format!(
+                            "__ferroExport(__ns, {}, () => {ns}[{}]);\n",
+                            quote(&exported),
+                            quote(&theirs)
+                        ));
+                    }
+                }
+                ExportDecl::All(spec, alias) => {
+                    let ns = request(&spec);
+                    match alias {
+                        Some(a) => prologue.push_str(&format!("__ferroExport(__ns, {}, () => {ns});\n", quote(&a))),
+                        None => prologue.push_str(&format!("__ferroExportAll(__ns, {ns});\n")),
+                    }
+                }
+            },
+        }
+    }
+    let mut params = String::from("__ns");
+    for i in 0..requests.len() {
+        params.push_str(&format!(", __m{i}"));
+    }
+    params.push_str(", __meta");
+    // a casca: uma função assíncrona com o prólogo; o corpo entra depois
+    let shell = format!("(async function module({params}) {{\n\"use strict\";\n{prologue}}})");
+    let mut prog = parser::parse_program(&shell)?;
+    let Some(Stmt::Expr(Expr::Function(f), _)) = prog.body.first_mut() else {
+        return Err(ParseError { msg: "módulo: casca inválida".into(), line: 0, eof: false });
+    };
+    let Some(def) = Rc::get_mut(f) else {
+        return Err(ParseError { msg: "módulo: casca compartilhada".into(), line: 0, eof: false });
+    };
+    def.strict = true;
+    def.source = Rc::from("[módulo]");
+    if let FnBody::Block(b) = &mut def.body {
+        b.extend(body);
+    }
+    prog.strict = true;
+    prog.imports = imports;
+    let code = compiler::compile_script(&prog, url)?;
+    Ok(CompiledModule { requests, code })
+}
+
