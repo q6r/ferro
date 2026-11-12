@@ -3784,3 +3784,73 @@ impl<'a> LineBuilder<'a> {
         self.can_merge = false;
     }
 
+    fn push_inline_block(&mut self, w: f32, h: f32, base: f32, hold: usize, style: &Rc<ComputedStyle>, inh: &Inherited) {
+        let mut sp = self.pending_space;
+        let wrap = !matches!(self.container.white_space, WhiteSpace::Pre | WhiteSpace::NoWrap)
+            || (self.soft_break && sp > 0.0);
+        self.soft_break = false;
+        if wrap && !self.cur.is_empty() && self.x + sp + w > self.avail {
+            self.break_line(false);
+            sp = 0.0;
+        }
+        self.x += sp;
+        self.pending_space = 0.0;
+        self.after_space = false;
+        self.cur.push(Frag {
+            x: self.x,
+            w,
+            font: 0,
+            style: style.clone(),
+            inh: inh.clone(),
+            kind: FragKind::InlineBlock { h, base, hold },
+            valign: style.vertical_align,
+            mid: self.container.font_size * 0.3,
+        });
+        self.x += w;
+        self.can_merge = false;
+    }
+
+    fn add_float(&mut self, f: FloatBox) {
+        self.floats.push(f);
+        if self.cur.is_empty() {
+            self.place_line();
+        }
+    }
+
+    fn push_text(&mut self, text: &str, style: &Rc<ComputedStyle>, inh: &Inherited) {
+        let font = self.fonts.for_style(style);
+        let size = style.font_size;
+        let ws = style.white_space;
+        let preserve = matches!(ws, WhiteSpace::Pre | WhiteSpace::PreWrap);
+        let wrap = matches!(ws, WhiteSpace::Normal | WhiteSpace::PreWrap | WhiteSpace::PreLine);
+        let keep_newlines = matches!(ws, WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine);
+        let text = transform(text, style.text_transform);
+        let segments: Vec<&str> = if keep_newlines { text.split('\n').collect() } else { vec![&text] };
+
+        for (i, seg) in segments.iter().enumerate() {
+            if i > 0 {
+                self.break_line(true);
+            }
+            if preserve {
+                let seg = seg.trim_end_matches('\r').replace('\t', "    ");
+                for tok in split_runs(&seg, |c| c == ' ') {
+                    let w = self.fonts.measure(font, size, tok);
+                    self.place_text(tok, w, style, font, inh, wrap && !tok.starts_with(' '), false);
+                }
+            } else {
+                for tok in split_runs(seg, is_collapsible) {
+                    if tok.chars().all(is_collapsible) {
+                        if !self.cur.is_empty() && !self.after_space {
+                            self.pending_space = self.fonts.advance(font, ' ', size);
+                        }
+                        self.after_space = true;
+                        self.soft_break = wrap;
+                    } else {
+                        let w = self.fonts.measure(font, size, tok);
+                        self.place_text(tok, w, style, font, inh, wrap, true);
+                    }
+                }
+            }
+        }
+    }
+
