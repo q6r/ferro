@@ -3276,3 +3276,30 @@ impl Compiler {
         Ok(())
     }
 
+    fn bin_op(op: BinOp) -> Op {
+        match op {
+            BinOp::Add => Op::Add,
+            BinOp::Sub => Op::Sub,
+            BinOp::Mul => Op::Mul,
+            BinOp::Div => Op::Div,
+            BinOp::Mod => Op::Mod,
+            BinOp::Exp => Op::Exp,
+            BinOp::BitAnd => Op::BitAnd,
+            BinOp::BitOr => Op::BitOr,
+            BinOp::BitXor => Op::BitXor,
+            BinOp::Shl => Op::Shl,
+            BinOp::Shr => Op::Shr,
+            BinOp::UShr => Op::UShr,
+            BinOp::Eq => Op::Eq,
+            BinOp::Ne => Op::Ne,
+            BinOp::StrictEq => Op::StrictEq,
+            BinOp::StrictNe => Op::StrictNe,
+            BinOp::Lt => Op::Lt,
+            BinOp::Le => Op::Le,
+            BinOp::Gt => Op::Gt,
+            BinOp::Ge => Op::Ge,
+            BinOp::In => Op::In,
+            BinOp::InstanceOf => Op::InstanceOf,
+        }
+    }
+
