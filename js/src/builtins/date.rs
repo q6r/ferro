@@ -544,3 +544,42 @@ fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Number(parse_date_vm(vm, &s)))
 }
 
+fn utc(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut n = nums(vm, a, 0, 7)?;
+    if n.is_empty() {
+        n.push(f64::NAN);
+    }
+    Ok(Value::Number(time_clip(from_components(&n))))
+}
+
+macro_rules! getter {
+    ($local:ident, $utc:ident, $f:expr) => {
+        fn $local(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+            let t = this_time(vm, a)?;
+            if t.is_nan() {
+                return Ok(Value::Number(f64::NAN));
+            }
+            #[allow(clippy::redundant_closure_call)]
+            Ok(Value::Number($f(parts(t + offset_ms(vm, t))) as f64))
+        }
+        fn $utc(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+            let t = this_time(vm, a)?;
+            if t.is_nan() {
+                return Ok(Value::Number(f64::NAN));
+            }
+            #[allow(clippy::redundant_closure_call)]
+            Ok(Value::Number($f(parts(t)) as f64))
+        }
+    };
+}
+
+getter!(get_full_year, get_utc_full_year, |p: Parts| p.year);
+getter!(get_year, _get_utc_year, |p: Parts| p.year - 1900);
+getter!(get_month, get_utc_month, |p: Parts| p.month);
+getter!(get_date, get_utc_date, |p: Parts| p.day);
+getter!(get_day, get_utc_day, |p: Parts| p.weekday as i64);
+getter!(get_hours, get_utc_hours, |p: Parts| p.hour);
+getter!(get_minutes, get_utc_minutes, |p: Parts| p.minute);
+getter!(get_seconds, get_utc_seconds, |p: Parts| p.second);
+getter!(get_ms, get_utc_ms, |p: Parts| p.ms);
+
