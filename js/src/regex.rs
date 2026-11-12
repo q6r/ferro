@@ -428,3 +428,57 @@ impl Parser {
         })
     }
 
+    fn term(&mut self) -> Result<Node, RegexError> {
+        let c = self.peek().unwrap_or(0);
+        // asserções
+        match char::from_u32(c) {
+            Some('^') => {
+                self.i += 1;
+                return Ok(Node::Start);
+            }
+            Some('$') => {
+                self.i += 1;
+                return Ok(Node::End);
+            }
+            Some('\\') if matches!(self.peek_at(1).and_then(char::from_u32), Some('b' | 'B')) => {
+                let neg = self.peek_at(1) == Some('B' as u32);
+                self.i += 2;
+                return Ok(Node::WordB(neg));
+            }
+            Some('(') if self.peek_at(1) == Some('?' as u32) => {
+                let k = self.peek_at(2).and_then(char::from_u32);
+                let k3 = self.peek_at(3).and_then(char::from_u32);
+                let look = match (k, k3) {
+                    (Some('='), _) => Some((true, false, 3)),
+                    (Some('!'), _) => Some((true, true, 3)),
+                    (Some('<'), Some('=')) => Some((false, false, 4)),
+                    (Some('<'), Some('!')) => Some((false, true, 4)),
+                    _ => None,
+                };
+                if let Some((ahead, negate, skip)) = look {
+                    self.i += skip;
+                    let node = self.disjunction()?;
+                    if !self.eat(')') {
+                        return err("Unterminated group");
+                    }
+                    let n = Node::Look {
+                        ahead,
+                        negate,
+                        node: Box::new(node),
+                    };
+                    // Anexo B: lookahead pode ter quantificador sem a flag u
+                    if ahead && !self.u && self.at_quantifier() {
+                        return self.quantifier(n);
+                    }
+                    return Ok(n);
+                }
+            }
+            _ => {}
+        }
+        let atom = self.atom()?;
+        if self.at_quantifier() {
+            return self.quantifier(atom);
+        }
+        Ok(atom)
+    }
+
