@@ -1020,3 +1020,53 @@ struct FnState {
 }
 
 impl FnState {
+    fn new(kind: FnKind, strict: bool, captured: FxHashSet<Name>, is_script: bool) -> FnState {
+        FnState {
+            ops: Vec::new(),
+            consts: Vec::new(),
+            const_map: FxHashMap::default(),
+            functions: Vec::new(),
+            lines: Vec::new(),
+            templates: Vec::new(),
+            call_names: Vec::new(),
+            scopes: Vec::new(),
+            reg_top: 0,
+            max_regs: 0,
+            captured,
+            ctl: Vec::new(),
+            env_depth: 0,
+            opt: Vec::new(),
+            pending_labels: Vec::new(),
+            kind,
+            strict,
+            is_script,
+            completion: None,
+            last_line: 0,
+            is_async: false,
+            is_generator: false,
+        }
+    }
+
+    fn is_arrow(&self) -> bool {
+        self.kind == FnKind::Arrow
+    }
+}
+
+pub struct Compiler {
+    fns: Vec<FnState>,
+    file: Rc<str>,
+    captures: Captures,
+    /// Importações do módulo (nome local → namespace, nome exportado).
+    imports: crate::fxhash::FxHashMap<Name, (Name, Option<Name>)>,
+}
+
+fn syntax<T>(msg: impl Into<String>, line: u32) -> CResult<T> {
+    Err(ParseError {
+        msg: msg.into(),
+        line,
+        eof: false,
+    })
+}
+
+// ------------------------------------------------------------ entradas
+
