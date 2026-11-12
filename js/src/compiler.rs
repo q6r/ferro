@@ -2390,3 +2390,98 @@ impl Compiler {
 
     // ---------------------------------------------------------- padrões
 
+    /// Desestrutura o valor do topo da pilha (consumindo-o).
+    fn pattern(&mut self, p: &Pattern, mode: Bind) -> CResult<()> {
+        match p {
+            Pattern::Ident(n) => {
+                match mode {
+                    Bind::Init => self.init(n),
+                    Bind::Store => self.store(n),
+                }
+                Ok(())
+            }
+            Pattern::Default(inner, def) => {
+                let j = self.emit(Op::JumpIfNotUndef(0));
+                self.emit(Op::Pop);
+                self.expr_named(def, pattern_name(inner))?;
+                self.patch(j);
+                self.pattern(inner, mode)
+            }
+            Pattern::Target(e) => {
+                if mode == Bind::Init {
+                    return syntax("alvo inválido em declaração", 0);
+                }
+                self.assign_target(e)
+            }
+            Pattern::Object { props, rest } => {
+                self.emit(Op::RequireCoercible);
+                let mut key_regs = Vec::new();
+                for (k, sub) in props {
+                    self.emit(Op::Dup);
+                    match k {
+                        PropKeyExpr::Name(n) => {
+                            let c = self.konst(n);
+                            self.emit(Op::GetProp(c));
+                        }
+                        PropKeyExpr::Computed(e) => {
+                            self.expr(e)?;
+                            self.emit(Op::ToPropertyKey);
+                            if rest.is_some() {
+                                let r = self.alloc_reg();
+                                self.emit(Op::Dup);
+                                self.emit(Op::SetReg(r));
+                                key_regs.push(r);
+                            }
+                            self.emit(Op::GetIndex);
+                        }
+                        PropKeyExpr::Private(_) => return syntax("nome privado em desestruturação", 0),
+                    }
+                    self.pattern(sub, mode)?;
+                }
+                if let Some(r) = rest {
+                    let mut n = 0;
+                    let mut ki = 0;
+                    for (k, _) in props {
+                        match k {
+                            PropKeyExpr::Name(name) => {
+                                let c = self.konst(name);
+                                self.emit(Op::Str(c));
+                            }
+                            _ => {
+                                self.emit(Op::GetReg(key_regs[ki]));
+                                ki += 1;
+                            }
+                        }
+                        n += 1;
+                    }
+                    self.emit(Op::CopyRest(n));
+                    for r in key_regs.into_iter().rev() {
+                        self.free_reg(r);
+                    }
+                    self.pattern(r, mode)
+                } else {
+                    self.emit(Op::Pop);
+                    Ok(())
+                }
+            }
+            Pattern::Array { elems, rest } => {
+                self.emit(Op::GetIter);
+                for e in elems {
+                    self.emit(Op::IterValue);
+                    match e {
+                        Some(p) => self.pattern(p, mode)?,
+                        None => {
+                            self.emit(Op::Pop);
+                        }
+                    }
+                }
+                if let Some(r) = rest {
+                    self.emit(Op::IterRest);
+                    self.pattern(r, mode)?;
+                }
+                self.emit(Op::IterClose);
+                Ok(())
+            }
+        }
+    }
+
