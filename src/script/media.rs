@@ -156,3 +156,46 @@ fn load_url(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Bool(true))
 }
 
+fn play(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let ev = write(vm, |h| {
+        h.repaint = true;
+        h.media.play(n)
+    });
+    Ok(events(vm, ev))
+}
+
+fn pause(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let ev = write(vm, |h| {
+        h.repaint = true;
+        h.media.pause(n)
+    });
+    Ok(events(vm, ev))
+}
+
+fn seek(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let t = num(vm, a, 1)?;
+    let ev = write(vm, |h| h.media.seek(n, if t.is_finite() { t } else { 0.0 }));
+    Ok(events(vm, ev))
+}
+
+/// `mediaSet(el, rate, volume, muted)`.
+fn set(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let (rate, volume) = (num(vm, a, 1)?, num(vm, a, 2)?);
+    let muted = ferro_js::vm::truthy(&a.arg(3));
+    write(vm, |h| {
+        let p = h.media.player(n);
+        if rate.is_finite() && rate > 0.0 && (rate - p.rate).abs() > 1e-9 {
+            let t = p.current_time();
+            p.rate = rate;
+            p.seek_base(t);
+        }
+        p.volume = volume.clamp(0.0, 1.0);
+        p.muted = muted;
+    });
+    Ok(Value::Undefined)
+}
+
