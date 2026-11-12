@@ -2079,3 +2079,52 @@ fn parse_bg_position(v: &str, u: &Units) -> (Len, Len) {
     (x, y)
 }
 
+fn parse_gradient(inner: &str, current: Color) -> Option<Gradient> {
+    let args = css::split_top_level(inner, ',');
+    let mut angle = 180.0;
+    let mut start = 0;
+    if let Some(first) = args.first() {
+        let f = first.trim().to_ascii_lowercase();
+        if let Some(dir) = f.strip_prefix("to ") {
+            let has = |w: &str| dir.split_whitespace().any(|t| t == w);
+            angle = match (has("top"), has("bottom"), has("left"), has("right")) {
+                (true, _, true, _) => 315.0,
+                (true, _, _, true) => 45.0,
+                (_, true, true, _) => 225.0,
+                (_, true, _, true) => 135.0,
+                (true, ..) => 0.0,
+                (_, _, true, _) => 270.0,
+                (_, _, _, true) => 90.0,
+                _ => 180.0,
+            };
+            start = 1;
+        } else if let Some(n) = f.strip_suffix("deg") {
+            angle = n.trim().parse().ok()?;
+            start = 1;
+        } else if let Some(n) = f.strip_suffix("turn") {
+            angle = n.trim().parse::<f32>().ok()? * 360.0;
+            start = 1;
+        } else if let Some(n) = f.strip_suffix("rad") {
+            angle = n.trim().parse::<f32>().ok()?.to_degrees();
+            start = 1;
+        }
+    }
+    let mut stops: Vec<(Color, Option<f32>)> = Vec::new();
+    for a in &args[start..] {
+        let toks = split_values(a);
+        let Some(color) = toks.first().and_then(|t| parse_color(t, current)) else { continue };
+        let pos = toks.get(1).and_then(|t| t.strip_suffix('%')).and_then(|n| n.parse::<f32>().ok()).map(|p| p / 100.0);
+        stops.push((color, pos));
+    }
+    if stops.is_empty() {
+        return None;
+    }
+    let n = stops.len();
+    let resolved = stops
+        .iter()
+        .enumerate()
+        .map(|(i, (c, p))| (*c, p.unwrap_or(if n == 1 { 0.0 } else { i as f32 / (n - 1) as f32 })))
+        .collect();
+    Some(Gradient { angle, stops: resolved })
+}
+
