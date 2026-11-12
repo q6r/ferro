@@ -140,3 +140,69 @@ fn is_integer(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(num_arg(a).is_some_and(|n| n.is_finite() && n.trunc() == n)))
 }
 
+fn is_nan(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(num_arg(a).is_some_and(|n| n.is_nan())))
+}
+
+fn is_safe_integer(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(num_arg(a).is_some_and(|n| n.is_finite() && n.trunc() == n && n.abs() <= 9007199254740991.0)))
+}
+
+fn parse_float(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    Ok(Value::Number(conv::parse_float(s.units())))
+}
+
+fn parse_int(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    let r = conv::to_int32(vm.to_number(&a.arg(1))?);
+    Ok(Value::Number(conv::parse_int(s.units(), r)))
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = this_number(vm, a, "toString")?;
+    let radix = if a.arg(0).is_undefined() { 10.0 } else { vm.to_integer(&a.arg(0))? };
+    if !(2.0..=36.0).contains(&radix) {
+        return Err(vm.range_error("toString() radix must be between 2 and 36"));
+    }
+    Ok(Value::str(&conv::number_to_string_radix(n, radix as u32)))
+}
+
+fn to_fixed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = this_number(vm, a, "toFixed")?;
+    let d = vm.to_integer(&a.arg(0))?;
+    if !(0.0..=100.0).contains(&d) {
+        return Err(vm.range_error("toFixed() digits argument must be between 0 and 100"));
+    }
+    Ok(Value::str(&conv::to_fixed(n, d as usize)))
+}
+
+fn to_exponential(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = this_number(vm, a, "toExponential")?;
+    let d = if a.arg(0).is_undefined() {
+        None
+    } else {
+        let d = vm.to_integer(&a.arg(0))?;
+        if !(0.0..=100.0).contains(&d) && n.is_finite() {
+            return Err(vm.range_error("toExponential() argument must be between 0 and 100"));
+        }
+        Some(d as usize)
+    };
+    Ok(Value::str(&conv::to_exponential(n, d)))
+}
+
+fn to_precision(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = this_number(vm, a, "toPrecision")?;
+    if a.arg(0).is_undefined() {
+        return Ok(Value::str(&conv::number_to_string(n)));
+    }
+    let p = vm.to_integer(&a.arg(0))?;
+    if !n.is_finite() {
+        return Ok(Value::str(&conv::number_to_string(n)));
+    }
+    if !(1.0..=100.0).contains(&p) {
+        return Err(vm.range_error("toPrecision() argument must be between 1 and 100"));
+    }
+    Ok(Value::str(&conv::to_precision(n, p as usize)))
+}
+
