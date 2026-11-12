@@ -2735,3 +2735,99 @@ fn parse_angle(t: &str) -> Option<f32> {
     num(t).filter(|v| *v == 0.0)
 }
 
+/// `transform` com alguma função que não é só translação (as translações
+/// puras ficam no caminho rápido de `parse_translate`).
+fn parse_transform(v: &str, u: &Units) -> Option<Vec<TransformFn>> {
+    let v = v.trim();
+    if v == "none" || v.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut rest = v;
+    let mut only_translate = true;
+    let lenpx = |t: &str| -> (f32, f32) {
+        let t = t.trim();
+        if let Some(p) = t.strip_suffix('%') {
+            (0.0, p.trim().parse().unwrap_or(0.0))
+        } else {
+            (parse_len(t, u).and_then(|l| match l {
+                Len::Px(p) => Some(p),
+                _ => None,
+            }).unwrap_or(0.0), 0.0)
+        }
+    };
+    while let Some(open) = rest.find('(') {
+        let fname = rest[..open].trim().to_ascii_lowercase();
+        let close = rest[open..].find(')')?;
+        let args: Vec<&str> = rest[open + 1..open + close]
+            .split(|c| c == ',' || c == ' ')
+            .filter(|a| !a.trim().is_empty())
+            .collect();
+        let n = |i: usize| args.get(i).and_then(|a| a.trim().parse::<f32>().ok());
+        let f = match fname.as_str() {
+            "translate" | "translate3d" => {
+                let (x, xp) = lenpx(args.first().copied().unwrap_or("0"));
+                let (y, yp) = args.get(1).map_or((0.0, 0.0), |a| lenpx(a));
+                TransformFn::Translate(x, xp, y, yp)
+            }
+            "translatex" => {
+                let (x, xp) = lenpx(args.first().copied().unwrap_or("0"));
+                TransformFn::Translate(x, xp, 0.0, 0.0)
+            }
+            "translatey" => {
+                let (y, yp) = lenpx(args.first().copied().unwrap_or("0"));
+                TransformFn::Translate(0.0, 0.0, y, yp)
+            }
+            "translatez" => TransformFn::Translate(0.0, 0.0, 0.0, 0.0),
+            "scale" | "scale3d" => {
+                let sx = n(0).or_else(|| args.first().and_then(|a| a.trim().strip_suffix('%')?.parse::<f32>().ok().map(|p| p / 100.0)))?;
+                TransformFn::Scale(sx, n(1).unwrap_or(sx))
+            }
+            "scalex" => TransformFn::Scale(n(0)?, 1.0),
+            "scaley" => TransformFn::Scale(1.0, n(0)?),
+            "rotate" | "rotatez" => TransformFn::Rotate(parse_angle(args.first()?)?),
+            "rotate3d" if args.len() == 4 => {
+                // só a rotação em torno de z faz sentido em 2D
+                if n(0) == Some(0.0) && n(1) == Some(0.0) {
+                    TransformFn::Rotate(parse_angle(args[3])? * n(2).unwrap_or(1.0).signum())
+                } else {
+                    TransformFn::Rotate(0.0)
+                }
+            }
+            "rotatex" | "rotatey" | "perspective" => TransformFn::Rotate(0.0),
+            "skew" => TransformFn::Skew(parse_angle(args.first()?)?, args.get(1).and_then(|a| parse_angle(a)).unwrap_or(0.0)),
+            "skewx" => TransformFn::Skew(parse_angle(args.first()?)?, 0.0),
+            "skewy" => TransformFn::Skew(0.0, parse_angle(args.first()?)?),
+            "matrix" if args.len() == 6 => {
+                let mut m = [0.0f32; 6];
+                for (i, x) in m.iter_mut().enumerate() {
+                    *x = n(i)?;
+                }
+                TransformFn::Matrix(m)
+            }
+            "matrix3d" if args.len() == 16 => {
+                // a parte 2D: a b _ _ c d _ _ _ _ _ _ e f _ _
+                TransformFn::Matrix([n(0)?, n(1)?, n(4)?, n(5)?, n(12)?, n(13)?])
+            }
+            _ => return None,
+        };
+        if !matches!(f, TransformFn::Translate(..)) {
+            only_translate = false;
+        }
+        out.push(f);
+        rest = &rest[open + close + 1..];
+    }
+    // identidade (rotate(0), scale(1)...) ou só translação: nada a fazer aqui
+    let identity = out.iter().all(|f| match *f {
+        TransformFn::Scale(x, y) => x == 1.0 && y == 1.0,
+        TransformFn::Rotate(a) => a == 0.0,
+        TransformFn::Skew(a, b) => a == 0.0 && b == 0.0,
+        TransformFn::Matrix(m) => m == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        TransformFn::Translate(..) => true,
+    });
+    if only_translate || out.is_empty() || identity {
+        return None;
+    }
+    Some(out)
+}
+
