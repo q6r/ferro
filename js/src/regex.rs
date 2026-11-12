@@ -30,3 +30,57 @@ pub struct Flags {
 }
 
 impl Flags {
+    pub fn parse(s: &str) -> Option<Flags> {
+        let mut f = Flags::default();
+        for c in s.chars() {
+            let slot = match c {
+                'g' => &mut f.global,
+                'i' => &mut f.ignore_case,
+                'm' => &mut f.multiline,
+                's' => &mut f.dot_all,
+                'u' => &mut f.unicode,
+                'y' => &mut f.sticky,
+                'd' => &mut f.has_indices,
+                'v' => &mut f.unicode_sets,
+                _ => return None,
+            };
+            if *slot {
+                return None;
+            }
+            *slot = true;
+        }
+        if f.unicode && f.unicode_sets {
+            return None;
+        }
+        Some(f)
+    }
+
+    /// Modo Unicode (flag u ou v).
+    pub fn full_unicode(&self) -> bool {
+        self.unicode || self.unicode_sets
+    }
+}
+
+// ---------------------------------------------------------------- classes
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Prop {
+    Any,
+    Ascii,
+    AsciiHex,
+    Alphabetic,
+    Letter,
+    Upper,
+    Lower,
+    Number,
+    Digit,
+    Punct,
+    Symbol,
+    Space,
+    Control,
+    Mark,
+    Emoji,
+    /// Faixas de uma escrita (Latin, Greek...).
+    Script(&'static [(u32, u32)]),
+}
+
