@@ -453,3 +453,70 @@ pub fn render_styled(
 
 // ------------------------------------------------------------------ imagens
 
+const MAX_IMAGES: usize = 200;
+const MAX_IMAGE_SIDE: u32 = 4096;
+
+/// URL de cada <img> (com suporte aos atributos de carregamento preguiçoso
+/// mais comuns e ao primeiro candidato de `srcset`).
+pub fn image_sources(doc: &Document, base: &Url) -> Vec<(NodeId, Url)> {
+    let mut out = Vec::new();
+    let imgs: Vec<NodeId> = if doc.shadow_roots.is_empty() {
+        doc.find_all("img")
+    } else {
+        (0..doc.nodes.len()).filter(|&n| doc.tag(n) == Some("img") && doc.is_connected(n)).collect()
+    };
+    for n in imgs {
+        let Some(el) = doc.element(n) else { continue };
+        let lazy = el.attr("data-src").or(el.attr("data-lazy-src")).filter(|s| !s.trim().is_empty());
+        let src = el.attr("src").filter(|s| !s.trim().is_empty());
+        let srcset = || {
+            el.attr("srcset")
+                .or(el.attr("data-srcset"))
+                .and_then(|s| s.split(',').next())
+                .and_then(|c| c.split_whitespace().next())
+        };
+        let chosen = lazy.or(src).or_else(srcset);
+        if let Some(u) = chosen.and_then(|s| base.join(s.trim()).ok()) {
+            out.push((n, u));
+        }
+        if out.len() >= MAX_IMAGES {
+            break;
+        }
+    }
+    out
+}
+
+pub fn decode_image(bytes: &[u8]) -> Option<ImageData> {
+    let Ok(mut img) = image::load_from_memory(bytes) else {
+        // SVG, com o renderizador próprio
+        let text = std::str::from_utf8(bytes).ok()?;
+        if !text.contains("<svg") {
+            return None;
+        }
+        let svg = crate::svg::parse(text)?;
+        let w = svg.width.clamp(1.0, 2048.0).round() as u32;
+        let h = svg.height.clamp(1.0, 2048.0).round() as u32;
+        return Some(svg.render(w, h, None));
+    };
+    if img.width() > MAX_IMAGE_SIDE || img.height() > MAX_IMAGE_SIDE {
+        img = img.thumbnail(MAX_IMAGE_SIDE, MAX_IMAGE_SIDE);
+    }
+    let rgba = img.to_rgba8();
+    Some(ImageData {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    })
+}
+
+/// Baixa e decodifica as imagens dos <img>.
+pub fn fetch_images(net: &Net, sources: Vec<(NodeId, Url)>, cancel: &(dyn Fn() -> bool + Sync)) -> Images {
+    fetch_resources(net, sources, Vec::new(), Vec::new(), cancel)
+}
+
+enum Job {
+    Img(Url, Vec<NodeId>),
+    Bg(String),
+    Font(FontFaceRule),
+}
+
