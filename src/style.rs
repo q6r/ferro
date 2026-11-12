@@ -340,3 +340,107 @@ pub enum FlexBasis {
     Len(Len),
 }
 
+#[derive(Debug, Clone)]
+pub struct ComputedStyle {
+    // herdadas
+    pub color: Color,
+    pub font_size: f32,
+    pub font_weight: u16,
+    pub italic: bool,
+    pub font_family: FontFamily,
+    pub line_height: LineHeight,
+    pub text_align: TextAlign,
+    pub white_space: WhiteSpace,
+    pub text_transform: TextTransform,
+    pub list_style: ListStyle,
+    pub visible: bool,
+    pub custom: Rc<CustomVars>,
+    pub cursor: Cursor,
+    /// pointer-events (false = none: o mouse atravessa o elemento).
+    pub pointer_events: bool,
+    // não herdadas
+    pub display: Display,
+    pub background: Color,
+    pub margin: [Len; 4],
+    pub padding: [Len; 4],
+    pub border_width: [f32; 4],
+    pub border_style: [bool; 4],
+    pub border_color: [Option<Color>; 4],
+    pub width: Len,
+    pub height: Len,
+    pub min_height: Len,
+    pub max_width: Len,
+    pub max_height: Len,
+    /// aspect-ratio (largura / altura).
+    pub aspect_ratio: Option<f32>,
+    /// -webkit-line-clamp: no máximo N linhas (o resto é cortado).
+    pub line_clamp: Option<u32>,
+    /// transform/translate: deslocamento [px x, % x, px y, % y].
+    pub translate: Option<[f32; 4]>,
+    /// transform com rotação/escala/inclinação/matriz (aplicado na pintura).
+    pub transform: Option<Rc<Vec<TransformFn>>>,
+    /// transform-origin (padrão: 50% 50%).
+    pub transform_origin: (Len, Len),
+    /// box-shadow (as de fora; `inset` é ignorada).
+    pub box_shadow: Option<Rc<Vec<Shadow>>>,
+    /// text-shadow (herdada; só a primeira sombra).
+    pub text_shadow: Option<Shadow>,
+    /// content-visibility: hidden (a caixa fica, o conteúdo não é desenhado).
+    pub content_hidden: bool,
+    pub border_box: bool,
+    pub underline: bool,
+    pub line_through: bool,
+    pub position: Position,
+    pub left: Len,
+    pub top: Len,
+    pub clipped: bool,
+    pub overflow_clip: bool,
+    /// overflow-x / overflow-y: auto ou scroll (o usuário pode rolar).
+    pub scroll_x: bool,
+    pub scroll_y: bool,
+    pub right: Len,
+    pub bottom: Len,
+    pub z_index: Option<i32>,
+    pub opacity: f32,
+    pub min_width: Len,
+    // flexbox
+    pub flex_direction: FlexDirection,
+    pub flex_wrap: bool,
+    pub justify_content: Justify,
+    pub align_items: Align,
+    pub align_self: Option<Align>,
+    pub flex_grow: f32,
+    pub flex_shrink: f32,
+    pub flex_basis: FlexBasis,
+    pub order: i32,
+    pub row_gap: Len,
+    pub column_gap: Len,
+    pub float: Float,
+    pub clear: Clear,
+    pub vertical_align: VAlign,
+    // tabelas (herdadas)
+    pub border_spacing: f32,
+    pub border_collapse: bool,
+    // grid
+    pub grid_columns: GridTemplate,
+    pub grid_rows: GridTemplate,
+    pub grid_areas: Option<Rc<Vec<Vec<String>>>>,
+    pub grid_area: Option<String>,
+    pub grid_col: (GridLine, GridLine),
+    pub grid_row: (GridLine, GridLine),
+    pub border_radius: Len,
+    pub bg_image: Option<BgImage>,
+    pub bg_size: BgSize,
+    pub bg_pos: (Len, Len),
+    pub bg_repeat: (bool, bool),
+    /// `content` de ::before/::after (None = none/normal).
+    pub content: Option<Rc<Vec<ContentPart>>>,
+    /// Nomes de `font-family`, em minúsculas (para as fontes web). Herdado.
+    pub font_names: Rc<Vec<Rc<str>>>,
+    /// mask-image: a imagem recorta o fundo (ícones pintados com a cor do fundo).
+    pub mask_image: Option<Rc<str>>,
+    pub mask_size: BgSize,
+    pub mask_pos: (Len, Len),
+    pub mask_repeat: (bool, bool),
+}
+
