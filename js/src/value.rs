@@ -186,6 +186,35 @@ impl PropKey {
             PropKey::Sym(s) => Value::Symbol(s.clone()),
         }
     }
+
+    /// CanonicalNumericIndexString: o número, se a chave for a forma
+    /// canônica de um número ("1", "-0", "1.5", "NaN"...).
+    pub fn numeric_index(&self) -> Option<f64> {
+        let PropKey::Str(s) = self else { return None };
+        if let Some(i) = s.as_index() {
+            return Some(i as f64);
+        }
+        let u = s.units();
+        let c = *u.first()?;
+        if !(c == b'-' as u16 || c == b'I' as u16 || c == b'N' as u16 || (b'0' as u16..=b'9' as u16).contains(&c)) {
+            return None;
+        }
+        if s.eq_str("-0") {
+            return Some(-0.0);
+        }
+        let n = crate::conv::string_to_number(u);
+        s.eq_str(&crate::conv::number_to_string(n)).then_some(n)
+    }
+}
+
+/// Índice inteiro não negativo (sem -0) de um número, se houver.
+#[inline]
+pub fn integer_index(n: f64) -> Option<usize> {
+    if n >= 0.0 && n.fract() == 0.0 && !(n == 0.0 && n.is_sign_negative()) && n < 9007199254740992.0 {
+        Some(n as usize)
+    } else {
+        None
+    }
 }
 
 impl From<&str> for PropKey {
@@ -581,6 +610,7 @@ pub enum TaKind {
     U16,
     I32,
     U32,
+    F16,
     F32,
     F64,
     BI64,
@@ -588,7 +618,7 @@ pub enum TaKind {
 }
 
 impl TaKind {
-    pub const ALL: [TaKind; 11] = [
+    pub const ALL: [TaKind; 12] = [
         TaKind::I8,
         TaKind::U8,
         TaKind::U8C,
@@ -596,6 +626,7 @@ impl TaKind {
         TaKind::U16,
         TaKind::I32,
         TaKind::U32,
+        TaKind::F16,
         TaKind::F32,
         TaKind::F64,
         TaKind::BI64,
@@ -605,7 +636,7 @@ impl TaKind {
     pub fn size(self) -> usize {
         match self {
             TaKind::I8 | TaKind::U8 | TaKind::U8C => 1,
-            TaKind::I16 | TaKind::U16 => 2,
+            TaKind::I16 | TaKind::U16 | TaKind::F16 => 2,
             TaKind::I32 | TaKind::U32 | TaKind::F32 => 4,
             TaKind::F64 | TaKind::BI64 | TaKind::BU64 => 8,
         }
@@ -620,6 +651,7 @@ impl TaKind {
             TaKind::U16 => "Uint16Array",
             TaKind::I32 => "Int32Array",
             TaKind::U32 => "Uint32Array",
+            TaKind::F16 => "Float16Array",
             TaKind::F32 => "Float32Array",
             TaKind::F64 => "Float64Array",
             TaKind::BI64 => "BigInt64Array",
@@ -627,13 +659,79 @@ impl TaKind {
         }
     }
 
+    /// Posição em `ALL` (e em `Realm::typed_protos`).
+    pub fn index(self) -> usize {
+        TaKind::ALL.iter().position(|k| *k == self).unwrap_or(0)
+    }
+
     pub fn is_bigint(self) -> bool {
         matches!(self, TaKind::BI64 | TaKind::BU64)
     }
+
+    /// Lê um elemento de `b` (little-endian, `b.len() >= size()`).
+    pub fn decode(self, b: &[u8]) -> Value {
+        let mut arr = [0u8; 8];
+        arr[..self.size()].copy_from_slice(&b[..self.size()]);
+        match self {
+            TaKind::I8 => Value::Number(arr[0] as i8 as f64),
+            TaKind::U8 | TaKind::U8C => Value::Number(arr[0] as f64),
+            TaKind::I16 => Value::Number(i16::from_le_bytes([arr[0], arr[1]]) as f64),
+            TaKind::U16 => Value::Number(u16::from_le_bytes([arr[0], arr[1]]) as f64),
+            TaKind::I32 => Value::Number(i32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::U32 => Value::Number(u32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::F16 => Value::Number(crate::conv::f16_to_f64(u16::from_le_bytes([arr[0], arr[1]]))),
+            TaKind::F32 => Value::Number(f32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::F64 => Value::Number(f64::from_le_bytes(arr)),
+            TaKind::BI64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_i64(i64::from_le_bytes(arr)))),
+            TaKind::BU64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_u64(u64::from_le_bytes(arr)))),
+        }
+    }
+
+    /// Codifica um número (tipos não-BigInt) em little-endian; devolve os bytes usados.
+    pub fn encode_number(self, n: f64, out: &mut [u8; 8]) -> usize {
+        use crate::conv::to_int32;
+        match self {
+            TaKind::I8 | TaKind::U8 => out[0] = to_int32(n) as u8,
+            TaKind::U8C => {
+                // ToUint8Clamp: arredonda para o mais próximo, empate para o par
+                let c = if n.is_nan() { 0.0 } else { n.clamp(0.0, 255.0) };
+                out[0] = c.round_ties_even() as u8;
+            }
+            TaKind::I16 | TaKind::U16 => out[..2].copy_from_slice(&(to_int32(n) as u16).to_le_bytes()),
+            TaKind::F16 => out[..2].copy_from_slice(&crate::conv::f64_to_f16(n).to_le_bytes()),
+            TaKind::I32 | TaKind::U32 => out[..4].copy_from_slice(&(to_int32(n) as u32).to_le_bytes()),
+            TaKind::F32 => out[..4].copy_from_slice(&(n as f32).to_le_bytes()),
+            TaKind::F64 => out.copy_from_slice(&n.to_le_bytes()),
+            TaKind::BI64 | TaKind::BU64 => return 0,
+        }
+        self.size()
+    }
 }
 
-/// Bytes de um ArrayBuffer (compartilhados com as vistas).
+/// Bytes de um ArrayBuffer (compartilhados com as vistas). Desanexado, o
+/// vetor fica vazio: as vistas antigas passam a ver tamanho 0.
 pub type Bytes = Rc<RefCell<Vec<u8>>>;
+
+/// Um ArrayBuffer.
+pub struct BufferData {
+    pub bytes: Bytes,
+    /// Tamanho máximo (Some = redimensionável).
+    pub max: Option<usize>,
+    pub detached: bool,
+    /// Imutável (transferToImmutable / sliceToImmutable): só leitura.
+    pub immutable: bool,
+}
+
+impl BufferData {
+    pub fn new(bytes: Vec<u8>) -> BufferData {
+        BufferData {
+            bytes: Rc::new(RefCell::new(bytes)),
+            max: None,
+            detached: false,
+            immutable: false,
+        }
+    }
+}
 
 /// Uma vista sobre um ArrayBuffer (typed array ou DataView).
 pub struct TypedArrayData {
@@ -642,78 +740,72 @@ pub struct TypedArrayData {
     pub kind: TaKind,
     /// Em bytes.
     pub offset: usize,
-    /// Em elementos (DataView: em bytes).
+    /// Em elementos (DataView: em bytes). Ignorado se `tracking`.
     pub length: usize,
+    /// Acompanha o tamanho do buffer (redimensionável, criada sem tamanho).
+    pub tracking: bool,
+    /// O buffer é imutável (não muda depois de criado).
+    pub immutable: bool,
 }
 
 impl TypedArrayData {
+    /// Tamanho em elementos para um buffer de `blen` bytes (None = fora dos limites).
+    #[inline]
+    pub fn len_in(&self, blen: usize) -> Option<usize> {
+        if self.tracking {
+            if self.offset > blen { None } else { Some((blen - self.offset) / self.kind.size()) }
+        } else if self.offset + self.length * self.kind.size() > blen {
+            None
+        } else {
+            Some(self.length)
+        }
+    }
+
+    /// Tamanho atual em elementos (0 fora dos limites ou desanexado).
+    pub fn len(&self) -> usize {
+        self.len_in(self.data.borrow().len()).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Tamanho atual em bytes (0 fora dos limites ou desanexado).
+    pub fn byte_len(&self) -> usize {
+        self.len() * self.kind.size()
+    }
+
     /// Lê o elemento `i` (None fora dos limites).
+    #[inline]
     pub fn get(&self, i: usize) -> Option<Value> {
-        if i >= self.length {
+        let d = self.data.borrow();
+        if i >= self.len_in(d.len())? {
             return None;
         }
-        let sz = self.kind.size();
-        let start = self.offset + i * sz;
-        let d = self.data.borrow();
-        let b = d.get(start..start + sz)?;
-        let mut arr = [0u8; 8];
-        arr[..sz].copy_from_slice(b);
-        Some(match self.kind {
-            TaKind::I8 => Value::Number(arr[0] as i8 as f64),
-            TaKind::U8 | TaKind::U8C => Value::Number(arr[0] as f64),
-            TaKind::I16 => Value::Number(i16::from_le_bytes([arr[0], arr[1]]) as f64),
-            TaKind::U16 => Value::Number(u16::from_le_bytes([arr[0], arr[1]]) as f64),
-            TaKind::I32 => Value::Number(i32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
-            TaKind::U32 => Value::Number(u32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
-            TaKind::F32 => Value::Number(f32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
-            TaKind::F64 => Value::Number(f64::from_le_bytes(arr)),
-            TaKind::BI64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_i64(i64::from_le_bytes(arr)))),
-            TaKind::BU64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_u64(u64::from_le_bytes(arr)))),
-        })
+        let start = self.offset + i * self.kind.size();
+        Some(self.kind.decode(&d[start..]))
     }
 
     /// Grava um número (já convertido) no elemento `i`.
     pub fn set_number(&self, i: usize, n: f64) {
-        if i >= self.length {
-            return;
+        let mut b = [0u8; 8];
+        let sz = self.kind.encode_number(n, &mut b);
+        if sz > 0 {
+            self.write(i, &b[..sz]);
         }
-        use crate::conv::to_int32;
-        let bytes: Vec<u8> = match self.kind {
-            TaKind::I8 | TaKind::U8 => vec![to_int32(n) as u8],
-            TaKind::U8C => {
-                // ToUint8Clamp: arredonda para o mais próximo, empate para o par
-                let c = if n.is_nan() { 0.0 } else { n.clamp(0.0, 255.0) };
-                let f = c.floor();
-                let r = if c - f > 0.5 {
-                    f + 1.0
-                } else if c - f < 0.5 || f % 2.0 == 0.0 {
-                    f
-                } else {
-                    f + 1.0
-                };
-                vec![r as u8]
-            }
-            TaKind::I16 | TaKind::U16 => (to_int32(n) as u16).to_le_bytes().to_vec(),
-            TaKind::I32 | TaKind::U32 => (to_int32(n) as u32).to_le_bytes().to_vec(),
-            TaKind::F32 => (n as f32).to_le_bytes().to_vec(),
-            TaKind::F64 => n.to_le_bytes().to_vec(),
-            TaKind::BI64 | TaKind::BU64 => return,
-        };
-        self.write(i, &bytes);
     }
 
     pub fn set_bigint(&self, i: usize, b: &crate::bigint::BigInt) {
-        if i >= self.length || !self.kind.is_bigint() {
-            return;
+        if self.kind.is_bigint() {
+            self.write(i, &b.to_u64_wrapping().to_le_bytes());
         }
-        self.write(i, &b.to_u64_wrapping().to_le_bytes());
     }
 
     fn write(&self, i: usize, bytes: &[u8]) {
-        let start = self.offset + i * self.kind.size();
         let mut d = self.data.borrow_mut();
-        if let Some(dst) = d.get_mut(start..start + bytes.len()) {
-            dst.copy_from_slice(bytes);
+        if self.len_in(d.len()).is_some_and(|n| i < n) {
+            let start = self.offset + i * self.kind.size();
+            d[start..start + bytes.len()].copy_from_slice(bytes);
         }
     }
 }
@@ -753,7 +845,7 @@ pub enum Kind {
     Async(Box<crate::builtins::promise::AsyncData>),
     /// Objeto embrulhando um BigInt (`Object(1n)`).
     BigIntBox(Rc<crate::bigint::BigInt>),
-    ArrayBuffer(Bytes),
+    ArrayBuffer(BufferData),
     /// Objeto do hospedeiro (o navegador): `class` e `id` têm o significado
     /// que ele der (ex.: nó do DOM com o NodeId).
     Host { class: u32, id: usize },
@@ -811,9 +903,15 @@ impl Object {
 
     pub fn own(&self, k: &PropKey) -> Option<Property> {
         if let Kind::TypedArray(t) = &self.kind
-            && let Some(i) = k.as_index()
+            && let Some(n) = k.numeric_index()
         {
-            return t.get(i as usize).map(Property::data);
+            let v = integer_index(n).and_then(|i| t.get(i))?;
+            // elementos de buffer imutável: nem graváveis nem configuráveis
+            return Some(Property {
+                slot: Slot::Data { value: v, writable: !t.immutable },
+                enumerable: true,
+                configurable: !t.immutable,
+            });
         }
         if let Kind::Array(v) = &self.kind {
             if let Some(i) = k.as_index() {
@@ -878,7 +976,7 @@ impl Object {
         let mut keys = Vec::new();
         match &self.kind {
             Kind::TypedArray(t) => {
-                for i in 0..t.length {
+                for i in 0..t.len() {
                     keys.push(PropKey::Str(JsStr::new(&i.to_string())));
                 }
             }
@@ -921,6 +1019,20 @@ impl Object {
             keys.push(PropKey::str("length"));
         }
         keys
+    }
+
+    /// Typed array com chave numérica: a busca não sobe para o protótipo.
+    #[inline]
+    pub fn ta_numeric(&self, k: &PropKey) -> Option<f64> {
+        match &self.kind {
+            Kind::TypedArray(_) => k.numeric_index(),
+            _ => None,
+        }
+    }
+
+    /// Typed array sobre buffer imutável.
+    pub fn ta_immutable(&self) -> bool {
+        matches!(&self.kind, Kind::TypedArray(t) if t.immutable)
     }
 
     pub fn is_enumerable(&self, k: &PropKey) -> bool {

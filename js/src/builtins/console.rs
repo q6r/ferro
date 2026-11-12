@@ -370,18 +370,19 @@ impl Inspector {
         let shape = match &b.kind {
             Kind::Array(v) => Shape::Array(v.clone()),
             Kind::TypedArray(t) => {
-                typed_prefix = Some(format!("{}({})", t.kind.name(), t.length));
-                Shape::Array((0..t.length).filter_map(|i| t.get(i)).collect())
+                let len = t.len();
+                typed_prefix = Some(format!("{}({len})", t.kind.name()));
+                Shape::Array((0..len).filter_map(|i| t.get(i)).collect())
             }
-            Kind::ArrayBuffer(bytes) => {
-                let d = bytes.borrow();
+            Kind::ArrayBuffer(buf) => {
+                let d = buf.bytes.borrow();
                 let hex: Vec<String> = d.iter().take(50).map(|x| format!("{x:02x}")).collect();
                 let more = if d.len() > 50 { format!(" ... {} more bytes", d.len() - 50) } else { String::new() };
                 base = format!("ArrayBuffer {{ [Uint8Contents]: <{}{more}>, byteLength: {} }}", hex.join(" "), d.len());
                 Shape::Plain
             }
             Kind::DataView(t) => {
-                base = format!("DataView {{ byteLength: {}, byteOffset: {} }}", t.length, t.offset);
+                base = format!("DataView {{ byteLength: {}, byteOffset: {} }}", t.len(), t.offset);
                 Shape::Plain
             }
             Kind::Map(c) => Shape::Map(c.entries.iter().flatten().cloned().collect()),

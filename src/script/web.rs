@@ -45,11 +45,10 @@ pub(crate) fn bytes_of(v: &Value) -> Option<Vec<u8>> {
     let Value::Object(o) = v else { return None };
     let b = o.borrow();
     match &b.kind {
-        Kind::ArrayBuffer(bytes) => Some(bytes.borrow().clone()),
+        Kind::ArrayBuffer(buf) => Some(buf.bytes.borrow().clone()),
         Kind::TypedArray(t) | Kind::DataView(t) => {
             let data = t.data.borrow();
-            let len = if matches!(b.kind, Kind::DataView(_)) { t.length } else { t.length * t.kind.size() };
-            let end = (t.offset + len).min(data.len());
+            let end = (t.offset + t.byte_len()).min(data.len());
             Some(data[t.offset.min(end)..end].to_vec())
         }
         _ => None,
