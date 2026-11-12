@@ -228,3 +228,56 @@ impl Vm {
         fo
     }
 
+    pub fn make_class(&mut self, code: Rc<Code>, env: Option<Env>, sup: Option<Value>) -> Result<(ObjRef, ObjRef), Value> {
+        let (proto_parent, ctor_parent) = match sup {
+            None => (Some(self.realm.object_proto.clone()), self.realm.function_proto.clone()),
+            Some(Value::Null) => (None, self.realm.function_proto.clone()),
+            Some(Value::Object(s)) if s.is_constructor() => {
+                let pp = self.get_obj(&s, &PropKey::str("prototype"))?;
+                let pp = match pp {
+                    Value::Object(p) => Some(p),
+                    Value::Null => None,
+                    _ => return Err(self.type_error("Class extends value does not have valid prototype property")),
+                };
+                (pp, s)
+            }
+            Some(v) => {
+                let d = self.describe(&v);
+                return Err(self.type_error(format!("Class extends value {d} is not a constructor or null")));
+            }
+        };
+        let proto = ObjRef::new(Object::new(proto_parent, Kind::Ordinary));
+        let name = Value::String(code.name.clone());
+        let length = code.length;
+        let fo = ObjRef::new(Object::new(
+            Some(ctor_parent),
+            Kind::Function(Func::Closure(Rc::new(Closure {
+                code,
+                env,
+                this: None,
+                new_target: None,
+                home: Some(proto.clone()),
+                fields: None,
+                gc: Default::default(),
+            }))),
+        ));
+        {
+            let mut b = fo.borrow_mut();
+            b.props.insert(PropKey::str("length"), readonly(Value::Number(length as f64)));
+            b.props.insert(PropKey::str("name"), readonly(name));
+            b.props.insert(
+                PropKey::str("prototype"),
+                Property {
+                    slot: Slot::Data {
+                        value: Value::Object(proto.clone()),
+                        writable: false,
+                    },
+                    enumerable: false,
+                    configurable: false,
+                },
+            );
+        }
+        proto.borrow_mut().props.insert(PropKey::str("constructor"), Property::hidden(Value::Object(fo.clone())));
+        Ok((fo, proto))
+    }
+
