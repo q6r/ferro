@@ -498,3 +498,51 @@ struct FloatBox {
     left: bool,
 }
 
+/// Marca de quanto já foi emitido, para mover ou apagar o que vier depois.
+#[derive(Clone)]
+struct Mark {
+    items: usize,
+    links: usize,
+    boxes: usize,
+    anchors: usize,
+    layers: usize,
+    floats: usize,
+    abs: Vec<usize>,
+}
+
+/// Índices do fundo e das bordas de um bloco na lista de exibição (para
+/// esticar a caixa depois: flex, grid e células de tabela).
+#[derive(Clone, Copy, Default)]
+struct Deco {
+    /// Sombras (primeiro item, quantas).
+    shadow: Option<(usize, usize)>,
+    bg: Option<usize>,
+    img: Option<usize>,
+    border: Option<usize>,
+    round_border: bool,
+}
+
+struct BlockResult {
+    height: f32,
+    first_baseline: Option<f32>,
+    deco: Deco,
+}
+
+/// Opções de layout_block.
+#[derive(Default)]
+struct Opts {
+    marker: Option<String>,
+    forced_h: Option<f32>,
+    /// Cria um novo contexto de formatação de bloco (isola floats).
+    bfc: bool,
+}
+
+impl Opts {
+    fn bfc() -> Opts {
+        Opts {
+            bfc: true,
+            ..Opts::default()
+        }
+    }
+}
+
