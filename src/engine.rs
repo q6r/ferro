@@ -375,3 +375,81 @@ pub fn render(loaded: &Loaded, images: &Images, fonts: &Fonts, width: f32, heigh
     render_styled(loaded, images, fonts, width, height).0
 }
 
+/// Como `render`, devolvendo também os estilos calculados (getComputedStyle).
+pub fn render_styled(
+    loaded: &Loaded,
+    images: &Images,
+    fonts: &Fonts,
+    width: f32,
+    height: f32,
+) -> (Page, style::Styles) {
+    let timing = std::env::var_os("FERRO_TEMPOS").is_some();
+    let t0 = std::time::Instant::now();
+    let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let media = MediaContext { width, height };
+    let mut sheets = vec![(cached_sheet(UA_STYLESHEET, &media), Origin::UserAgent)];
+    if is_quirks(&loaded.doc) {
+        sheets.push((cached_sheet(QUIRKS_STYLESHEET, &media), Origin::UserAgent));
+    }
+    if html::scripting() {
+        sheets.push((cached_sheet("noscript { display: none }", &media), Origin::UserAgent));
+    }
+    for s in &loaded.css {
+        if s.media.as_deref().is_none_or(|m| css::media_matches(m, &media)) {
+            sheets.push((cached_sheet(&s.text, &media), Origin::Author));
+        }
+    }
+    let t_css = ms(t0);
+    let t1 = std::time::Instant::now();
+    let styles = style::compute(&loaded.doc, &sheets, &media);
+    let t_cascade = ms(t1);
+    let t2 = std::time::Instant::now();
+    let root = layout::build_box_tree(&loaded.doc, &styles);
+    let t_boxes = ms(t2);
+    let t3 = std::time::Instant::now();
+    let page = root.as_ref().map(|root| layout::layout(&loaded.doc, root, fonts, images, width, height));
+    if timing {
+        eprintln!(
+            "[ferro] tempos: CSS {t_css:.0} ms · cascata {t_cascade:.0} ms · caixas {t_boxes:.0} ms · layout {:.0} ms",
+            ms(t3)
+        );
+    }
+    let mut page = match page {
+        Some(page) => page,
+        None => Page {
+            items: Vec::new(),
+            height,
+            background: Color::WHITE,
+            links: Vec::new(),
+            boxes: Vec::new(),
+            scrollers: Vec::new(),
+            hits: Vec::new(),
+            fixed_nodes: Default::default(),
+            fixed_links: Vec::new(),
+            anchors: Vec::new(),
+            missing_urls: Vec::new(),
+            missing_fonts: Vec::new(),
+        },
+    };
+    // fontes web das famílias que a página realmente usa
+    let used: std::collections::HashSet<&str> = styles
+        .nodes
+        .iter()
+        .flatten()
+        .flat_map(|s| s.font_names.iter().map(|n| &**n))
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    page.missing_fonts = sheets
+        .iter()
+        .flat_map(|(sh, _)| &sh.font_faces)
+        .filter(|f| f.latin && used.contains(f.family.as_str()))
+        .filter(|f| !f.sources.iter().any(|u| fonts::web_font_tried(u)))
+        .filter(|f| seen.insert(f.sources[0].clone()))
+        .take(24)
+        .cloned()
+        .collect();
+    (page, styles)
+}
+
+// ------------------------------------------------------------------ imagens
+
