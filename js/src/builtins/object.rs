@@ -561,3 +561,49 @@ pub fn freeze_obj(o: &ObjRef, freeze: bool) {
     }
 }
 
+fn freeze(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let v = a.arg(0);
+    if let Value::Object(o) = &v {
+        freeze_obj(o, true);
+    }
+    Ok(v)
+}
+
+fn seal(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let v = a.arg(0);
+    if let Value::Object(o) = &v {
+        freeze_obj(o, false);
+    }
+    Ok(v)
+}
+
+fn prevent_extensions(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let v = a.arg(0);
+    if let Value::Object(o) = &v {
+        vm.prevent_extensions(o)?;
+    }
+    Ok(v)
+}
+
+fn test_integrity(o: &ObjRef, frozen: bool) -> bool {
+    let b = o.borrow();
+    if b.extensible {
+        return false;
+    }
+    if let Kind::Array(v) = &b.kind
+        && frozen
+        && !b.frozen
+        && v.iter().any(|x| !matches!(x, Value::Empty))
+    {
+        return false;
+    }
+    b.props.iter().all(|(_, p)| {
+        !p.configurable
+            && (!frozen
+                || match p.slot {
+                    Slot::Data { writable, .. } => !writable,
+                    _ => true,
+                })
+    })
+}
+
