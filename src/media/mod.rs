@@ -29,10 +29,11 @@ pub fn is_type_supported(mime: &str) -> bool {
     }
     let ok_codec = |c: &str| {
         let c = c.trim();
-        // AV1 8 bits; H.264 Baseline (42) e Main (4d); AAC
+        // AV1 8 bits; H.264 Baseline (42), Main (4d) e High (64), 8 bits 4:2:0; AAC
         (c.starts_with("av01.0.") && !c.contains(".10."))
             || c.starts_with("avc1.42")
             || c.starts_with("avc1.4d")
+            || c.starts_with("avc1.64")
             || c.starts_with("mp4a.40.2")
             || c.starts_with("mp4a.40.5")
             || c == "mp4a.40"

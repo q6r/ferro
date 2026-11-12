@@ -165,12 +165,12 @@ Já funcionam: YouTube (página inicial, busca com miniaturas, navegação inter
 - Media Source Extensions (`MediaSource`, `SourceBuffer`, `TimeRanges`) no prelúdio, com o estado em Rust: o player
   do site (YouTube) baixa os segmentos e o Ferro os lê (`mp4.rs`: MP4 fragmentado; `webm.rs`: WebM/Matroska, os dois
   incrementais, com os dados chegando em pedaços).
-- Decodificadores em Rust puro, sem assembly nem C (`decode.rs`): H.264 Baseline/Main (`rusty_h264`), AV1 8 bits
+- Decodificadores em Rust puro, sem assembly nem C (`decode.rs`): H.264 Baseline/Main/High (`rusty_h264`), AV1 8 bits
   (`rav1d`), VP9 8/10 bits (`rusty_vp9`), VP8 (`vp8-decoder`), AAC e Vorbis (`symphonia`) e Opus (`opus1`, até 5.1).
-  Formatos aceitos: `video/mp4` com `avc1.42*`/`avc1.4d*`/`av01.0.*` e `audio/mp4` AAC; `video/webm`/`audio/webm`
+  Formatos aceitos: `video/mp4` com `avc1.42*`/`avc1.4d*`/`avc1.64*`/`av01.0.*` e `audio/mp4` AAC; `video/webm`/`audio/webm`
   com `vp9`/`vp09.00.*`/`vp09.02.*`/`vp8`/`av01.0.*` e `opus`/`vorbis`.
 - `cargo run --release --example midia -- arquivo.webm` lê um arquivo, decodifica as trilhas e mede a velocidade
-  (VP9 720p: ~150 quadros/s numa thread).
+  (VP9 720p: ~150 quadros/s numa thread; H.264 High 720p: ~130; 1080p: ~50).
 - Arquivos MP4 comuns (`<video src="x.mp4">` ou `<source>`): o arquivo é baixado inteiro e lido pelas tabelas do
   `stbl`; `<video controls>` toca/pausa com um clique e, parado, mostra o botão de play. Exemplo: `exemplos/video.html`.
 - Reprodução (`player.rs`): threads de decodificação alimentadas ~3 s à frente do relógio; uma thread apresentadora

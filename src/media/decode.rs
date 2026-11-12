@@ -1,4 +1,4 @@
-//! Decodificadores (todos em Rust): AV1 (rav1d), H.264 Baseline/Main
+//! Decodificadores (todos em Rust): AV1 (rav1d), H.264 Baseline/Main/High
 //! (rusty_h264), VP9 (rusty_vp9), AAC (symphonia) e Opus (opus1). Os quadros
 //! saem em YUV 4:2:0 e viram RGBA na hora de mostrar.
 
