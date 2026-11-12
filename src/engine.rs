@@ -447,16 +447,20 @@ fn cached_sheet(text: &str, media: &MediaContext) -> std::rc::Rc<css::Stylesheet
 
 /// Estilo + layout para uma largura de janela.
 pub fn render(loaded: &Loaded, images: &Images, fonts: &Fonts, width: f32, height: f32) -> Page {
-    render_styled(loaded, images, fonts, width, height).0
+    render_styled(loaded, images, fonts, width, height, None, &[]).0
 }
 
 /// Como `render`, devolvendo também os estilos calculados (getComputedStyle).
+/// Com os estilos anteriores e as mudanças do DOM desde eles, recalcula só o
+/// que mudou.
 pub fn render_styled(
     loaded: &Loaded,
     images: &Images,
     fonts: &Fonts,
     width: f32,
     height: f32,
+    prev: Option<&style::Styles>,
+    changes: &[crate::dom::Change],
 ) -> (Page, style::Styles) {
     let timing = std::env::var_os("FERRO_TEMPOS").is_some();
     let t0 = std::time::Instant::now();
@@ -476,7 +480,7 @@ pub fn render_styled(
     }
     let t_css = ms(t0);
     let t1 = std::time::Instant::now();
-    let styles = style::compute(&loaded.doc, &sheets, &media);
+    let styles = style::compute_incremental(&loaded.doc, &sheets, &media, prev, changes);
     let t_cascade = ms(t1);
     let t2 = std::time::Instant::now();
     let root = layout::build_box_tree(&loaded.doc, &styles);

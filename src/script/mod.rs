@@ -1653,7 +1653,13 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
     crate::layout::set_video_sizes(
         hb.media.players.iter().filter(|(_, p)| p.width > 0).map(|(&n, p)| (n, (p.width as f32, p.height as f32))).collect(),
     );
-    let (mut page, styles) = engine::render_styled(&hb.page, &hb.images, &fonts, hb.width, hb.height);
+    // estilo incremental: só o que as mudanças do DOM desde a última vez afetam
+    let changes = std::mem::take(&mut hb.page.doc.changes);
+    let (mut page, styles) = {
+        let hb = &*hb;
+        let prev = hb.layout.as_ref().map(|l| &l.styles);
+        engine::render_styled(&hb.page, &hb.images, &fonts, hb.width, hb.height, prev, &changes)
+    };
     if hb.no_resources {
         page.missing_urls.clear();
         page.missing_fonts.clear();

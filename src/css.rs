@@ -176,6 +176,11 @@ pub fn set_dynamic_state(s: DynState) {
     DYN.with(|d| *d.borrow_mut() = s);
 }
 
+/// Cópia do estado dinâmico atual (para saber o que mudou entre dois cálculos).
+pub fn dynamic_state() -> DynState {
+    DYN.with(|d| d.borrow().clone())
+}
+
 fn dyn_state<R>(f: impl FnOnce(&DynState) -> R) -> R {
     DYN.with(|d| f(&d.borrow()))
 }

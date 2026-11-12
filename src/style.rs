@@ -2,7 +2,7 @@
 //! casam (folha do agente de usuário, folhas do autor, atributo style),
 //! ordena por origem/importância/especificidade/ordem e calcula os valores.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::css::{self, Declaration, MediaContext, Specificity, Stylesheet};
@@ -451,6 +451,8 @@ pub struct ComputedStyle {
     pub mask_repeat: (bool, bool),
     /// `color-scheme` escuro: `light-dark()` escolhe a segunda cor (herdado).
     pub scheme_dark: bool,
+    /// Alguma propriedade usou `inherit`/`unset`: depende do pai além do herdado.
+    pub explicit_inherit: bool,
 }
 
 thread_local! {
@@ -553,6 +555,7 @@ impl ComputedStyle {
             box_shadow: None,
             text_shadow: None,
             scheme_dark: css::prefers_dark(),
+            explicit_inherit: false,
             content_hidden: false,
             border_box: false,
             underline: false,
@@ -1278,6 +1281,190 @@ struct RuleIndex {
     entries: Vec<Entry>,
     normal: Buckets,
     pseudo: Buckets,
+    inv: Invalidation,
+}
+
+/// O que os seletores olham, para saber quem recalcular quando algo muda.
+#[derive(Default)]
+struct Invalidation {
+    classes: HashSet<String>,
+    ids: HashSet<String>,
+    attrs: HashSet<String>,
+    /// Classe/id/atributo num composto ancestral → quem pode ser afetado lá
+    /// embaixo (as características do elemento final desses seletores).
+    anc_classes: HashMap<String, InvSet>,
+    anc_ids: HashMap<String, InvSet>,
+    anc_attrs: HashMap<String, InvSet>,
+    /// :hover/:focus... num composto ancestral
+    anc_dynamic: InvSet,
+    /// ... antes de um `+`/`~` (afeta os irmãos seguintes)
+    sib_classes: HashSet<String>,
+    sib_ids: HashSet<String>,
+    sib_attrs: HashSet<String>,
+    /// :first-child, :nth-*, :empty, `+`, `~`
+    structural: bool,
+    /// ... de um jeito que alcança descendentes (`li:first-child a`): quem lá embaixo
+    anc_structural: InvSet,
+    empty: bool,
+    dynamic: bool,
+}
+
+/// Elementos que um seletor pode atingir: qualquer um com uma destas
+/// características (ou todos, se `whole`).
+#[derive(Default, Clone)]
+struct InvSet {
+    whole: bool,
+    classes: HashSet<String>,
+    ids: HashSet<String>,
+    tags: HashSet<String>,
+    attrs: HashSet<String>,
+}
+
+impl InvSet {
+    fn of_subject(c: &css::Compound) -> InvSet {
+        let mut s = InvSet::default();
+        if let Some(id) = &c.id {
+            s.ids.insert(id.clone());
+        } else if let Some(cl) = c.classes.first() {
+            s.classes.insert(cl.clone());
+        } else if let Some(a) = c.attrs.first() {
+            s.attrs.insert(a.name.clone());
+        } else if let Some(t) = &c.tag {
+            s.tags.insert(t.clone());
+        } else {
+            s.whole = true;
+        }
+        s
+    }
+
+    fn merge(&mut self, o: &InvSet) {
+        if self.whole {
+            return;
+        }
+        if o.whole {
+            *self = InvSet { whole: true, ..Default::default() };
+            return;
+        }
+        self.classes.extend(o.classes.iter().cloned());
+        self.ids.extend(o.ids.iter().cloned());
+        self.tags.extend(o.tags.iter().cloned());
+        self.attrs.extend(o.attrs.iter().cloned());
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.whole && self.classes.is_empty() && self.ids.is_empty() && self.tags.is_empty() && self.attrs.is_empty()
+    }
+
+    fn hits(&self, el: &crate::dom::ElementData) -> bool {
+        self.whole
+            || self.tags.contains(&el.tag)
+            || el.id().is_some_and(|i| self.ids.contains(i))
+            || el.classes().any(|c| self.classes.contains(c))
+            || el.attrs.iter().any(|(k, _)| self.attrs.contains(k))
+    }
+}
+
+/// Atributos que mudam o resultado de :checked, :disabled, :link...
+const STATE_ATTRS: [&str; 7] = ["checked", "selected", "disabled", "href", "placeholder", "value", "type"];
+
+impl Invalidation {
+    /// `target`: quem o seletor de fora atinge (None = este é o de fora).
+    fn selector(&mut self, sel: &css::Selector, outer_subject: bool, target: Option<&InvSet>) {
+        let n = sel.compounds.len();
+        let own_target = InvSet::of_subject(sel.compounds.last().unwrap());
+        let target = target.unwrap_or(&own_target).clone();
+        let sibling = |c: &css::Combinator| matches!(c, css::Combinator::NextSibling | css::Combinator::SubsequentSibling);
+        for (i, c) in sel.compounds.iter().enumerate() {
+            let subject = outer_subject && i + 1 == n;
+            let sib = sel.combinators.get(i..).is_some_and(|cs| cs.iter().any(sibling));
+            self.compound(c, subject, sib, &target);
+        }
+        if sel.combinators.iter().any(sibling) {
+            self.structural = true;
+            // `.a + .b .c`: o irmão muda quem casa lá embaixo
+            if sel.combinators[..sel.combinators.len().saturating_sub(1)].iter().any(sibling) || !outer_subject {
+                self.anc_structural.merge(&target);
+            }
+        }
+    }
+
+    fn compound(&mut self, c: &css::Compound, subject: bool, sib: bool, target: &InvSet) {
+        for cl in &c.classes {
+            self.classes.insert(cl.clone());
+            if !subject {
+                self.anc_classes.entry(cl.clone()).or_default().merge(target);
+            }
+            if sib {
+                self.sib_classes.insert(cl.clone());
+            }
+        }
+        if let Some(id) = &c.id {
+            self.ids.insert(id.clone());
+            if !subject {
+                self.anc_ids.entry(id.clone()).or_default().merge(target);
+            }
+            if sib {
+                self.sib_ids.insert(id.clone());
+            }
+        }
+        for a in &c.attrs {
+            self.attrs.insert(a.name.clone());
+            if !subject {
+                self.anc_attrs.entry(a.name.clone()).or_default().merge(target);
+            }
+            if sib {
+                self.sib_attrs.insert(a.name.clone());
+            }
+        }
+        for p in &c.pseudos {
+            use css::Pseudo as P;
+            match p {
+                P::Not(list) | P::Is(list) | P::Where(list) => {
+                    for s in list {
+                        self.selector(s, subject, Some(target));
+                    }
+                }
+                P::FirstChild
+                | P::LastChild
+                | P::OnlyChild
+                | P::FirstOfType
+                | P::LastOfType
+                | P::NthChild(..)
+                | P::NthLastChild(..)
+                | P::NthOfType(..)
+                | P::Empty => {
+                    self.structural = true;
+                    if matches!(p, P::Empty) {
+                        self.empty = true;
+                    }
+                    if !subject {
+                        self.anc_structural.merge(target);
+                    }
+                }
+                P::Hover | P::Active | P::Focus | P::FocusVisible | P::FocusWithin | P::Fullscreen => {
+                    self.dynamic = true;
+                    if !subject || sib {
+                        self.anc_dynamic.merge(target);
+                        if sib {
+                            self.anc_dynamic.whole = true;
+                        }
+                    }
+                }
+                P::Checked | P::Disabled | P::Enabled | P::Link | P::PlaceholderShown => {
+                    for a in STATE_ATTRS {
+                        self.attrs.insert(a.into());
+                        if !subject {
+                            self.anc_attrs.entry(a.into()).or_default().merge(target);
+                        }
+                        if sib {
+                            self.sib_attrs.insert(a.into());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 thread_local! {
@@ -1313,6 +1500,7 @@ impl RuleIndex {
             entries: Vec::new(),
             normal: Buckets::default(),
             pseudo: Buckets::default(),
+            inv: Invalidation::default(),
         };
         let mut order = 0;
         for (si, (sheet, origin)) in sheets.iter().enumerate() {
@@ -1322,6 +1510,7 @@ impl RuleIndex {
                     if sel.compounds.iter().any(|c| c.pseudos.iter().any(|p| matches!(p, css::Pseudo::Never))) {
                         continue;
                     }
+                    idx.inv.selector(sel, true, None);
                     // compostos ligados por descendente/filho são ancestrais do elemento
                     let mut ancestors = Vec::new();
                     for (c, comb) in sel.compounds.iter().zip(&sel.combinators) {
@@ -1370,6 +1559,18 @@ pub struct Styles {
     pub nodes: Vec<Option<Rc<ComputedStyle>>>,
     pub before: HashMap<NodeId, Rc<ComputedStyle>>,
     pub after: HashMap<NodeId, Rc<ComputedStyle>>,
+    /// Com o que estes estilos foram calculados (para o cálculo incremental).
+    key: Option<StyleKey>,
+}
+
+#[derive(Clone)]
+struct StyleKey {
+    index: usize,
+    width: f32,
+    height: f32,
+    root_font: f32,
+    dark: bool,
+    dyn_state: css::DynState,
 }
 
 impl std::ops::Index<NodeId> for Styles {
@@ -1388,6 +1589,7 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
         nodes: vec![None; doc.nodes.len()],
         before: HashMap::new(),
         after: HashMap::new(),
+        key: None,
     };
     let root_style = Rc::new(ComputedStyle::initial());
     let mut cx = Cascade {
@@ -1435,7 +1637,348 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
         }
         styles.nodes[node] = Some(style);
     }
+    styles.key = Some(StyleKey {
+        index: Rc::as_ptr(&index) as usize,
+        width: media.width,
+        height: media.height,
+        root_font: cx.root_font,
+        dark: css::prefers_dark(),
+        dyn_state: css::dynamic_state(),
+    });
     styles
+}
+
+/// Como `compute`, mas reaproveita `prev` e recalcula só os elementos que as
+/// mudanças do DOM (`changes`) e do estado dinâmico podem ter afetado.
+pub fn compute_incremental(
+    doc: &Document,
+    sheets: &[(Rc<Stylesheet>, Origin)],
+    media: &MediaContext,
+    prev: Option<&Styles>,
+    changes: &[crate::dom::Change],
+) -> Styles {
+    use crate::dom::Change;
+    let index = RuleIndex::for_sheets(sheets);
+    let dyn_now = css::dynamic_state();
+    let Some((prev, key)) = prev.and_then(|p| p.key.as_ref().map(|k| (p, k))) else {
+        return compute(doc, sheets, media);
+    };
+    if key.index != Rc::as_ptr(&index) as usize
+        || key.width != media.width
+        || key.height != media.height
+        || key.dark != css::prefers_dark()
+        || changes.iter().any(|c| matches!(c, Change::All))
+    {
+        if std::env::var_os("FERRO_TEMPOS").is_some() {
+            eprintln!("[ferro] estilo: cálculo completo ({} mudanças)", changes.len());
+        }
+        return compute(doc, sheets, media);
+    }
+    let n = doc.nodes.len();
+    let inv = &index.inv;
+    // 1 = o próprio elemento, 2 = ele e todos os descendentes
+    let mut marks = vec![0u8; n];
+    let is_el = |x: NodeId| x < n && doc.element(x).is_some();
+    fn mark(marks: &mut [u8], x: NodeId, m: u8) {
+        if let Some(v) = marks.get_mut(x) {
+            *v = (*v).max(m);
+        }
+    }
+    let mark_following = |marks: &mut [u8], x: NodeId| {
+        if let Some(p) = doc.node(x).parent {
+            let kids = &doc.node(p).children;
+            if let Some(i) = kids.iter().position(|&k| k == x) {
+                for &k in &kids[i + 1..] {
+                    mark(marks, k, 2);
+                }
+            }
+        }
+    };
+    let words = |v: Option<&str>| -> HashSet<String> { v.unwrap_or("").split_ascii_whitespace().map(str::to_string).collect() };
+    // (elemento, quem pode ser afetado entre os descendentes dele)
+    let mut descend: Vec<(NodeId, &InvSet)> = Vec::new();
+    for c in changes {
+        match c {
+            Change::Attr(e, name, old) => {
+                if !is_el(*e) {
+                    continue;
+                }
+                let new = doc.element(*e).and_then(|el| el.attr(name));
+                let mut sets: Vec<&InvSet> = Vec::new();
+                let (any, sib) = match name.as_str() {
+                    "class" | "id" => {
+                        let (a, b) = (words(old.as_deref()), words(new));
+                        let diff: Vec<&String> = a.symmetric_difference(&b).collect();
+                        let (all, anc, sib) = if name == "class" {
+                            (&inv.classes, &inv.anc_classes, &inv.sib_classes)
+                        } else {
+                            (&inv.ids, &inv.anc_ids, &inv.sib_ids)
+                        };
+                        sets.extend(diff.iter().filter_map(|d| anc.get(*d)));
+                        (diff.iter().any(|d| all.contains(*d)), diff.iter().any(|d| sib.contains(*d)))
+                    }
+                    "style" => (true, false),
+                    other => {
+                        let used = inv.attrs.contains(other);
+                        if !used && (other.starts_with("data-") || other.starts_with("aria-")) {
+                            (false, false)
+                        } else {
+                            sets.extend(inv.anc_attrs.get(other));
+                            (true, inv.sib_attrs.contains(other))
+                        }
+                    }
+                };
+                if any {
+                    mark(&mut marks, *e, 1);
+                }
+                for set in sets {
+                    if set.whole {
+                        mark(&mut marks, *e, 2);
+                    } else {
+                        descend.push((*e, set));
+                    }
+                }
+                if sib {
+                    mark_following(&mut marks, *e);
+                }
+            }
+            Change::Inserted(x) => mark(&mut marks, *x, 2),
+            Change::Children(p) => {
+                if inv.empty && is_el(*p) {
+                    mark(&mut marks, *p, 1);
+                }
+                if inv.structural && *p < n {
+                    for &k in &doc.node(*p).children {
+                        if doc.element(k).is_none() {
+                            continue;
+                        }
+                        mark(&mut marks, k, 1);
+                        if inv.anc_structural.whole {
+                            mark(&mut marks, k, 2);
+                        } else if !inv.anc_structural.is_empty() {
+                            descend.push((k, &inv.anc_structural));
+                        }
+                    }
+                }
+            }
+            Change::Text(t) => {
+                if let Some(p) = doc.node(*t).parent
+                    && (inv.empty || doc.tag(p) == Some("textarea"))
+                {
+                    mark(&mut marks, p, 1);
+                }
+            }
+            Change::All => {}
+        }
+    }
+    // :hover, :focus... de quem mudou de estado
+    if inv.dynamic && key.dyn_state != dyn_now {
+        let (a, b) = (&key.dyn_state, &dyn_now);
+        let mut changed: Vec<NodeId> = Vec::new();
+        for (x, y) in [(&a.hover, &b.hover), (&a.active, &b.active), (&a.focus_within, &b.focus_within)] {
+            changed.extend(x.iter().filter(|v| !y.contains(v)));
+            changed.extend(y.iter().filter(|v| !x.contains(v)));
+        }
+        if a.focus != b.focus || a.focus_visible != b.focus_visible {
+            changed.extend(a.focus.iter().chain(b.focus.iter()));
+        }
+        if a.fullscreen != b.fullscreen {
+            changed.extend(a.fullscreen.iter().chain(b.fullscreen.iter()));
+        }
+        for x in changed {
+            mark(&mut marks, x, 1);
+            if inv.anc_dynamic.whole {
+                mark(&mut marks, x, 2);
+                mark_following(&mut marks, x);
+            } else if !inv.anc_dynamic.tags.is_empty()
+                || !inv.anc_dynamic.classes.is_empty()
+                || !inv.anc_dynamic.ids.is_empty()
+                || !inv.anc_dynamic.attrs.is_empty()
+            {
+                descend.push((x, &inv.anc_dynamic));
+            }
+        }
+    }
+    // descendentes atingidos por uma mudança num ancestral (`.aberto .menu`)
+    for (e, set) in descend {
+        if marks.get(e) == Some(&2) {
+            continue;
+        }
+        let mut st: Vec<NodeId> = doc.flat_children(e).to_vec();
+        while let Some(x) = st.pop() {
+            if marks.get(x) == Some(&2) {
+                continue;
+            }
+            if let Some(el) = doc.element(x) {
+                if set.hits(el) {
+                    mark(&mut marks, x, 1);
+                }
+                st.extend(doc.flat_children(x).iter().copied());
+            }
+        }
+    }
+
+    let mut styles = Styles {
+        nodes: vec![None; n],
+        before: HashMap::new(),
+        after: HashMap::new(),
+        key: None,
+    };
+    let mut cx = Cascade {
+        doc,
+        index: &index,
+        media: *media,
+        root_font: key.root_font,
+        own_bits: vec![None; n],
+        ancestor_bits: vec![None; n],
+        scratch: std::cell::RefCell::new(Vec::new()),
+    };
+    let root_style = Rc::new(ComputedStyle::initial());
+    let mut restyled_count = 0usize;
+    // (nó, estilo do pai, herdadas do pai mudaram, pai recalculado, forçar a subárvore)
+    let mut stack: Vec<(NodeId, Rc<ComputedStyle>, bool, bool, bool)> = doc
+        .node(Document::ROOT)
+        .children
+        .iter()
+        .rev()
+        .map(|&c| (c, root_style.clone(), false, false, false))
+        .collect();
+    while let Some((node, parent, pchanged, prestyled, forced)) = stack.pop() {
+        let (style, changed, restyled, force) = match &doc.node(node).data {
+            NodeData::Element(_) => {
+                let m = marks[node];
+                let force = forced || m == 2;
+                let old = prev.nodes.get(node).cloned().flatten();
+                let need = force
+                    || m != 0
+                    || pchanged
+                    || old.as_ref().is_none_or(|o| prestyled && o.explicit_inherit);
+                if need {
+                    cx.prepare_ancestors(node);
+                    let s = Rc::new(cx.style_for(node, &parent, None).0);
+                    if doc.node(node).parent == Some(Document::ROOT) && s.font_size != key.root_font {
+                        // rem mudou: vale tudo de novo
+                        return compute(doc, sheets, media);
+                    }
+                    restyled_count += 1;
+                    if index.pseudo.len > 0 && s.display != Display::None {
+                        for (pe, map) in [
+                            (css::PseudoElement::Before, &mut styles.before),
+                            (css::PseudoElement::After, &mut styles.after),
+                        ] {
+                            let (ps, matched) = cx.style_for(node, &s, Some(pe));
+                            if matched && ps.content.is_some() && ps.display != Display::None {
+                                map.insert(node, Rc::new(ps));
+                            }
+                        }
+                    }
+                    let changed = old.as_ref().is_none_or(|o| !inherited_same(o, &s));
+                    (s, changed, true, force)
+                } else {
+                    let s = old.unwrap_or_else(|| parent.clone());
+                    if let Some(b) = prev.before.get(&node) {
+                        styles.before.insert(node, b.clone());
+                    }
+                    if let Some(a) = prev.after.get(&node) {
+                        styles.after.insert(node, a.clone());
+                    }
+                    (s, false, false, false)
+                }
+            }
+            NodeData::Text(_) => (parent.clone(), false, false, false),
+            _ => continue,
+        };
+        for &c in doc.flat_children(node).iter().rev() {
+            stack.push((c, style.clone(), changed, restyled, force));
+        }
+        styles.nodes[node] = Some(style);
+    }
+    styles.key = Some(StyleKey {
+        index: Rc::as_ptr(&index) as usize,
+        width: media.width,
+        height: media.height,
+        root_font: cx.root_font,
+        dark: css::prefers_dark(),
+        dyn_state: dyn_now,
+    });
+    // depuração: confere o incremental contra o cálculo completo
+    if std::env::var_os("FERRO_ESTILO_CONFERE").is_some() {
+        let full = compute(doc, sheets, media);
+        let mut bad = 0;
+        for (i, (a, b)) in styles.nodes.iter().zip(&full.nodes).enumerate() {
+            let (a, b) = (a.as_ref().map(|s| format!("{s:?}")), b.as_ref().map(|s| format!("{s:?}")));
+            if a != b {
+                bad += 1;
+                if bad <= 3 {
+                    let what = doc.element(i).map(|e| format!("<{} class={:?}>", e.tag, e.attr("class"))).unwrap_or_default();
+                    eprintln!("[ferro] estilo incremental DIFERENTE no nó {i} {what} (marca {})", marks.get(i).copied().unwrap_or(0));
+                    if let (Some(a), Some(b)) = (&a, &b) {
+                        for (x, y) in a.split(", ").zip(b.split(", ")) {
+                            if x != y {
+                                eprintln!("      incremental: {x}
+      completo:    {y}");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (name, ma, mb) in [("before", &styles.before, &full.before), ("after", &styles.after, &full.after)] {
+            if ma.len() != mb.len() {
+                eprintln!("[ferro] ::{name} diferente: {} × {}", ma.len(), mb.len());
+            }
+        }
+        if bad > 0 {
+            eprintln!("[ferro] estilo incremental: {bad} nós diferentes do cálculo completo");
+        }
+    }
+    if std::env::var_os("FERRO_TEMPOS").is_some() {
+        let subtree = marks.iter().filter(|&&m| m == 2).count();
+        let own = marks.iter().filter(|&&m| m == 1).count();
+        eprintln!(
+            "[ferro] estilo incremental: {restyled_count} recalculados ({} mudanças; marcas: {own} só o elemento, {subtree} com descendentes)",
+            changes.len()
+        );
+        if std::env::var_os("FERRO_TEMPOS_MUDANCAS").is_some() {
+            for c in changes.iter().take(40) {
+                eprintln!("    {c:?}");
+            }
+        }
+    }
+    styles
+}
+
+/// As propriedades herdadas são iguais? (então os filhos não precisam recalcular)
+fn inherited_same(a: &ComputedStyle, b: &ComputedStyle) -> bool {
+    fn same_vars(a: &Rc<CustomVars>, b: &Rc<CustomVars>) -> bool {
+        Rc::ptr_eq(a, b)
+            || (a.own == b.own
+                && match (&a.parent, &b.parent) {
+                    (None, None) => true,
+                    (Some(x), Some(y)) => same_vars(x, y),
+                    _ => false,
+                })
+    }
+    a.color == b.color
+        && a.font_size == b.font_size
+        && a.font_weight == b.font_weight
+        && a.italic == b.italic
+        && a.font_family == b.font_family
+        && a.line_height == b.line_height
+        && a.text_align == b.text_align
+        && a.white_space == b.white_space
+        && a.text_transform == b.text_transform
+        && a.list_style == b.list_style
+        && a.cursor == b.cursor
+        && a.pointer_events == b.pointer_events
+        && a.visible == b.visible
+        && a.border_spacing == b.border_spacing
+        && a.border_collapse == b.border_collapse
+        && a.font_names == b.font_names
+        && a.text_shadow == b.text_shadow
+        && a.scheme_dark == b.scheme_dark
+        && same_vars(&a.custom, &b.custom)
 }
 
 struct Cascade<'a> {
@@ -1631,8 +2174,12 @@ impl Cascade<'_> {
         let v = value.trim();
         let lower = v.to_ascii_lowercase();
         match lower.as_str() {
-            "inherit" => return copy_property(s, parent, &d.name),
+            "inherit" => {
+                s.explicit_inherit = true;
+                return copy_property(s, parent, &d.name);
+            }
             "initial" | "unset" | "revert" | "revert-layer" => {
+                s.explicit_inherit = true;
                 let base = if lower == "initial" || !is_inherited(&d.name) {
                     ComputedStyle::initial()
                 } else {
