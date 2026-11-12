@@ -1179,3 +1179,118 @@ impl Parser {
         Ok(args)
     }
 
+    fn parse_lhs(&mut self) -> PResult<Expr> {
+        let mut e = if self.is_kw("new") {
+            self.parse_new()?
+        } else if self.is_kw("super") {
+            self.advance()?;
+            if self.is("(") {
+                Expr::SuperCall(self.parse_args()?)
+            } else if self.eat(".")? {
+                Expr::SuperMember(self.ident_name()?)
+            } else if self.eat("[")? {
+                let idx = self.parse_expression(false)?;
+                self.expect("]")?;
+                Expr::SuperIndex(Box::new(idx))
+            } else {
+                return self.unexpected();
+            }
+        } else if self.is_kw("import") {
+            self.advance()?;
+            if self.eat(".")? {
+                self.ident_name()?;
+                if !self.module {
+                    return self.err("import.meta só pode ser usado em módulos");
+                }
+                Expr::ImportMeta
+            } else {
+                let args = self.parse_args()?;
+                match args.into_iter().next() {
+                    Some(ArrayElem::Expr(e)) => Expr::ImportCall(Box::new(e)),
+                    _ => return self.err("import() precisa de um especificador"),
+                }
+            }
+        } else {
+            self.parse_primary()?
+        };
+        let mut optional_seen = false;
+        loop {
+            let line = self.line();
+            if self.eat(".")? {
+                if let Tok::Private(n) = self.tok.tok.clone() {
+                    self.advance()?;
+                    e = Expr::PrivateMember(Box::new(e), n);
+                } else {
+                    let prop = self.ident_name()?;
+                    e = Expr::Member {
+                        obj: Box::new(e),
+                        prop,
+                        optional: false,
+                    };
+                }
+            } else if self.eat("?.")? {
+                optional_seen = true;
+                if self.is("(") {
+                    let args = self.parse_args()?;
+                    e = Expr::Call {
+                        callee: Box::new(e),
+                        args,
+                        optional: true,
+                        line,
+                    };
+                } else if self.eat("[")? {
+                    let idx = self.parse_expression(false)?;
+                    self.expect("]")?;
+                    e = Expr::Index {
+                        obj: Box::new(e),
+                        index: Box::new(idx),
+                        optional: true,
+                    };
+                } else if let Tok::Private(n) = self.tok.tok.clone() {
+                    self.advance()?;
+                    e = Expr::PrivateMember(Box::new(e), n);
+                } else {
+                    let prop = self.ident_name()?;
+                    e = Expr::Member {
+                        obj: Box::new(e),
+                        prop,
+                        optional: true,
+                    };
+                }
+            } else if self.eat("[")? {
+                let idx = self.parse_expression(false)?;
+                self.expect("]")?;
+                e = Expr::Index {
+                    obj: Box::new(e),
+                    index: Box::new(idx),
+                    optional: false,
+                };
+            } else if self.is("(") {
+                let args = self.parse_args()?;
+                e = Expr::Call {
+                    callee: Box::new(e),
+                    args,
+                    optional: false,
+                    line,
+                };
+            } else if let Tok::Template { .. } = &self.tok.tok {
+                if optional_seen {
+                    return self.err("template marcado em cadeia opcional");
+                }
+                let (cooked, raw, exprs) = self.parse_template_parts()?;
+                e = Expr::Tagged {
+                    tag: Box::new(e),
+                    cooked,
+                    raw,
+                    exprs,
+                };
+            } else {
+                break;
+            }
+        }
+        if optional_seen {
+            e = Expr::OptionalChain(Box::new(e));
+        }
+        Ok(e)
+    }
+
