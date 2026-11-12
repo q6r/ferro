@@ -1967,3 +1967,68 @@ hidden(G, 'Audio', named(function Audio(src) {
 
 // ------------------------------------------------- mais do Element/Node
 const EP = Element.prototype;
+methods(EP, {
+  getAttributeNS(ns, name) { return this.getAttribute(name); },
+  setAttributeNS(ns, name, v) { this.setAttribute(String(name).split(':').pop(), v); },
+  removeAttributeNS(ns, name) { this.removeAttribute(name); },
+  hasAttributeNS(ns, name) { return this.hasAttribute(name); },
+  getElementsByTagNameNS(ns, name) { return this.getElementsByTagName(name); },
+  animate() {
+    const a = new EventTarget();
+    Object.assign(a, { playState: 'finished', finished: Promise.resolve(a), ready: Promise.resolve(a),
+      cancel() {}, finish() {}, play() {}, pause() {}, reverse() {}, onfinish: null, oncancel: null, currentTime: 0 });
+    setTimeout(() => { if (typeof a.onfinish === 'function') a.onfinish(); }, 0);
+    return a;
+  },
+  getAnimations() { return []; },
+  requestFullscreen() {
+    if (!this.isConnected) return Promise.reject(new TypeError('Failed to execute \'requestFullscreen\' on \'Element\': Element is not connected.'));
+    const prev = N.fullscreenElement();
+    N.requestFullscreen(this);
+    return new Promise((res) => setTimeout(() => {
+      if (prev && prev !== this) fireTrusted(prev, new Event('fullscreenchange', { bubbles: true, composed: true }));
+      fireTrusted(this, new Event('fullscreenchange', { bubbles: true, composed: true }));
+      fireTrusted(this, new Event('webkitfullscreenchange', { bubbles: true, composed: true }));
+      res();
+    }, 0));
+  },
+  webkitRequestFullscreen() { return this.requestFullscreen(); },
+  webkitRequestFullScreen() { return this.requestFullscreen(); },
+  requestPointerLock() {},
+  setPointerCapture() {}, releasePointerCapture() {}, hasPointerCapture() { return false; },
+  checkVisibility() { return this.getClientRects().length > 0; },
+  computedStyleMap() { return new Map(); },
+});
+// sem attachShadow nativo: bibliotecas como o ShadyDOM (polyfill) montam o
+// shadow DOM dentro do DOM normal, que o Ferro desenha
+accessor(EP, 'prefix', () => null);
+methods(Node.prototype, {
+  lookupNamespaceURI() { return null; },
+  lookupPrefix() { return null; },
+  isDefaultNamespace() { return false; },
+});
+
+// ---------------------------------------------------------- CSS.escape
+const CSSNS = {
+  escape(v) {
+    const s = String(v);
+    let out = '';
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      const ch = s[i];
+      if (c === 0) out += '�';
+      else if ((c >= 1 && c <= 0x1f) || c === 0x7f || (i === 0 && c >= 48 && c <= 57) ||
+        (i === 1 && c >= 48 && c <= 57 && s.charCodeAt(0) === 45)) out += '\\' + c.toString(16) + ' ';
+      else if (i === 0 && s.length === 1 && c === 45) out += '\\' + ch;
+      else if (c >= 0x80 || c === 45 || c === 95 || (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)) out += ch;
+      else out += '\\' + ch;
+    }
+    return out;
+  },
+  supports() { return true; },
+  registerProperty() {},
+};
+hidden(G, 'CSS', CSSNS);
+
+// ---------------------------------------------------- folhas (CSSOM)
+const SHEETS = new WeakMap();
