@@ -75,3 +75,38 @@ pub fn install(r: &Realm) {
 
 // ----------------------------------------------------------- internos
 
+impl Vm {
+    pub fn new_promise(&self) -> ObjRef {
+        self.new_promise_with_proto(self.realm.promise_proto.clone())
+    }
+
+    fn new_promise_with_proto(&self, proto: ObjRef) -> ObjRef {
+        ObjRef::new(Object::new(
+            Some(proto),
+            Kind::Promise(Box::new(PromiseData {
+                state: PState::Pending,
+                fulfill: Vec::new(),
+                reject: Vec::new(),
+                handled: false,
+            })),
+        ))
+    }
+
+    /// As funções resolve/reject de uma promessa (só a primeira chamada vale).
+    pub fn resolving_functions(&self, p: &ObjRef) -> (ObjRef, ObjRef) {
+        let done = Rc::new(Cell::new(false));
+        let mk = |f: NativeFn, name: &str| {
+            let fo = self.realm.native(name, 1, f);
+            let rec = ObjRef::new(Object::new(
+                None,
+                Kind::PromiseResolver {
+                    promise: p.clone(),
+                    done: done.clone(),
+                },
+            ));
+            set_native_data(&fo, Value::Object(rec));
+            fo
+        };
+        (mk(resolve_fn, ""), mk(reject_fn, ""))
+    }
+
