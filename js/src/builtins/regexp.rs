@@ -396,3 +396,66 @@ fn hit_to_array(vm: &mut Vm, prog: &Program, s: &JsStr, hit: &Hit) -> Value {
     Value::Object(arr)
 }
 
+pub fn exec(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, _, prog) = this_parts(vm, a, "exec")?;
+    let s = vm.to_string(&a.arg(0))?;
+    match builtin_match(vm, &a.this, &prog, &s)? {
+        Some(hit) => Ok(hit_to_array(vm, &prog, &s, &hit)),
+        None => Ok(Value::Null),
+    }
+}
+
+/// O `exec` de R é o original? (dá para pular a criação dos arrays)
+fn builtin_exec_of(vm: &mut Vm, r: &Value) -> Result<Option<Rc<Program>>, Value> {
+    let Some((_, _, prog)) = regexp_parts(r) else { return Ok(None) };
+    let e = vm.get_str(r, "exec")?;
+    Ok(match &e {
+        Value::Object(f) if f.ptr_eq(&vm.realm.regexp_exec) => Some(prog),
+        _ => None,
+    })
+}
+
+/// RegExpExec: chama `exec` (que pode ter sido trocado pelo usuário).
+fn regexp_exec(vm: &mut Vm, r: &Value, s: &JsStr) -> Result<Value, Value> {
+    let e = vm.get_str(r, "exec")?;
+    if e.is_callable() {
+        let res = vm.call(&e, r.clone(), vec![Value::String(s.clone())])?;
+        if !matches!(res, Value::Object(_) | Value::Null) {
+            return Err(vm.type_error("object or null expected from exec"));
+        }
+        return Ok(res);
+    }
+    let Some((_, _, prog)) = regexp_parts(r) else {
+        return Err(vm.type_error("RegExp exec method called on incompatible receiver"));
+    };
+    match builtin_match(vm, r, &prog, s)? {
+        Some(hit) => Ok(hit_to_array(vm, &prog, s, &hit)),
+        None => Ok(Value::Null),
+    }
+}
+
+fn advance(s: &JsStr, i: usize, unicode: bool) -> usize {
+    let u = s.units();
+    if unicode && i + 1 < u.len() && (0xD800..0xDC00).contains(&u[i]) && (0xDC00..0xE000).contains(&u[i + 1]) {
+        i + 2
+    } else {
+        i + 1
+    }
+}
+
+fn test(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !matches!(a.this, Value::Object(_)) {
+        return Err(vm.type_error("RegExp.prototype.test called on incompatible receiver"));
+    }
+    let s = vm.to_string(&a.arg(0))?;
+    if let Some(prog) = builtin_exec_of(vm, &a.this)? {
+        return Ok(Value::Bool(builtin_match(vm, &a.this, &prog, &s)?.is_some()));
+    }
+    Ok(Value::Bool(!matches!(regexp_exec(vm, &a.this, &s)?, Value::Null)))
+}
+
+fn rx_flags(vm: &mut Vm, r: &Value) -> Result<String, Value> {
+    let f = vm.get_str(r, "flags")?;
+    vm.to_rust_string(&f)
+}
+
