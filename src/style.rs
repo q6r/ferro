@@ -225,3 +225,76 @@ impl Cursor {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ListStyle {
+    None,
+    Disc,
+    Circle,
+    Square,
+    Decimal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Position {
+    Static,
+    Relative,
+    Absolute,
+    Fixed,
+    Sticky,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Float {
+    None,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Clear {
+    None,
+    Left,
+    Right,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum VAlign {
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+}
+
+/// Um limite de trilha do grid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Track {
+    Len(Len),
+    Fr(f32),
+    Auto,
+    MinContent,
+    MaxContent,
+}
+
+/// Trilha do grid: minmax(min, max). Uma trilha simples tem min = max
+/// (e `1fr` vira minmax(auto, 1fr)).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrackSize {
+    pub min: Track,
+    pub max: Track,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GridTemplate {
+    pub tracks: Vec<TrackSize>,
+    /// repeat(auto-fill | auto-fit, ...): repete quantas couberem.
+    pub auto_fill: Option<Vec<TrackSize>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GridLine {
+    Auto,
+    Line(i32),
+    Span(u32),
+}
+
