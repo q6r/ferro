@@ -2189,3 +2189,41 @@ fn css_string(s: &str) -> Option<(String, &str)> {
     None
 }
 
+/// `content`: Some(None) = none/normal; None = inválido.
+fn parse_content(v: &str) -> Option<Option<Vec<ContentPart>>> {
+    let lower = v.to_ascii_lowercase();
+    if lower == "none" || lower == "normal" {
+        return Some(None);
+    }
+    let mut parts = Vec::new();
+    let mut rest = v.trim();
+    while !rest.is_empty() {
+        let lr = rest.to_ascii_lowercase();
+        if rest.starts_with('"') || rest.starts_with('\'') {
+            let (t, r) = css_string(rest)?;
+            parts.push(ContentPart::Text(t));
+            rest = r.trim_start();
+        } else if let Some(r) = lr.strip_prefix("attr(") {
+            let end = r.find(')')?;
+            parts.push(ContentPart::Attr(r[..end].trim().to_string()));
+            rest = rest[5 + end + 1..].trim_start();
+        } else if lr.starts_with("open-quote") {
+            parts.push(ContentPart::OpenQuote);
+            rest = rest[10..].trim_start();
+        } else if lr.starts_with("close-quote") {
+            parts.push(ContentPart::CloseQuote);
+            rest = rest[11..].trim_start();
+        } else if lr.starts_with("counter") || lr.starts_with("url(") || lr.starts_with("no-") {
+            // contadores e imagens em content ainda não: ignora esse pedaço
+            let end = rest.find(')').map(|e| e + 1).or_else(|| rest.find(' ')).unwrap_or(rest.len());
+            parts.push(ContentPart::Text(String::new()));
+            rest = rest[end..].trim_start();
+        } else if let Some(sp) = rest.find(' ') {
+            rest = rest[sp..].trim_start();
+        } else {
+            break;
+        }
+    }
+    Some(Some(parts))
+}
+
