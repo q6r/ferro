@@ -64,3 +64,70 @@ pub fn install(r: &Realm) {
     );
 }
 
+/// `new Function("a", "b", "return a + b")`.
+fn function_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = a.args.len();
+    let mut params = Vec::new();
+    for i in 0..n.saturating_sub(1) {
+        params.push(vm.to_rust_string(&a.args[i])?);
+    }
+    let body = if n > 0 { vm.to_rust_string(&a.args[n - 1])? } else { String::new() };
+    let prefix = match super::native_data(&a.callee) {
+        Value::String(s) if s.eq_str("AsyncFunction") => "async function",
+        Value::String(s) if s.eq_str("GeneratorFunction") => "function*",
+        Value::String(s) if s.eq_str("AsyncGeneratorFunction") => "async function*",
+        _ => "function",
+    };
+    let def = match crate::parser::parse_function_parts_kind(&params.join(","), &body, prefix) {
+        Ok(d) => d,
+        Err(e) => return Err(vm.syntax_error(e.msg)),
+    };
+    let code = match crate::compiler::compile_standalone(&def, "anonymous") {
+        Ok(c) => c,
+        Err(e) => return Err(vm.syntax_error(e.msg)),
+    };
+    Ok(Value::Object(vm.make_closure(code, None, None)))
+}
+
+fn call(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !a.this.is_callable() {
+        return Err(vm.type_error("Function.prototype.call called on non-function"));
+    }
+    let this = a.arg(0);
+    let args = if a.args.len() > 1 { a.args[1..].to_vec() } else { Vec::new() };
+    vm.call(&a.this.clone(), this, args)
+}
+
+/// Lista de valores de um array-like (`apply`, `Reflect.apply`).
+pub fn list_from_array_like(vm: &mut Vm, v: &Value) -> Result<Vec<Value>, Value> {
+    match v {
+        Value::Undefined | Value::Null => Ok(Vec::new()),
+        Value::Object(o) => {
+            if let Kind::Array(items) = &o.borrow().kind {
+                return Ok(items
+                    .iter()
+                    .map(|x| match x {
+                        Value::Empty => Value::Undefined,
+                        x => x.clone(),
+                    })
+                    .collect());
+            }
+            let len = vm.length_of(o)?;
+            let mut out = Vec::with_capacity(len.min(65536));
+            for i in 0..len {
+                out.push(vm.get_obj(o, &crate::ops::index_key(i))?);
+            }
+            Ok(out)
+        }
+        _ => Err(vm.type_error("CreateListFromArrayLike called on non-object")),
+    }
+}
+
+fn apply(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !a.this.is_callable() {
+        return Err(vm.type_error("Function.prototype.apply was called on a non-function"));
+    }
+    let args = list_from_array_like(vm, &a.arg(1))?;
+    vm.call(&a.this.clone(), a.arg(0), args)
+}
+
