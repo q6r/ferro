@@ -105,3 +105,49 @@ struct Pool {
 }
 
 impl Pool {
+    fn submit(&self, job: Job) {
+        self.queue.lock().unwrap().push_back(job);
+        if self.active.load(Ordering::SeqCst) >= 8 {
+            return;
+        }
+        self.active.fetch_add(1, Ordering::SeqCst);
+        let (q, a, tx) = (self.queue.clone(), self.active.clone(), self.tx.clone());
+        let spawned = std::thread::Builder::new().name("ferro-rede".into()).spawn(move || {
+            loop {
+                let job = q.lock().unwrap().pop_front();
+                match job {
+                    Some(job) => {
+                        if tx.send(job()).is_err() {
+                            break;
+                        }
+                    }
+                    None => break,
+                }
+            }
+            a.fetch_sub(1, Ordering::SeqCst);
+        });
+        if spawned.is_err() {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        // a página foi embora: o que ainda não começou não precisa mais
+        self.queue.lock().unwrap().clear();
+    }
+}
+
+/// O último layout: retângulos dos elementos e estilos calculados.
+pub(crate) struct LayoutInfo {
+    pub boxes: Vec<(NodeId, Rect)>,
+    /// Áreas de mouse na ordem de pintura (`true` = fixa na janela).
+    pub hits: Vec<(NodeId, Rect, bool)>,
+    /// Elementos dentro de `position: fixed`.
+    pub fixed: std::collections::HashSet<NodeId>,
+    pub height: f32,
+    pub styles: Styles,
+    pub scrollers: Vec<crate::layout::Scroller>,
+}
+
