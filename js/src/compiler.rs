@@ -1757,3 +1757,48 @@ impl Compiler {
 
     // --------------------------------------------------------- instruções
 
+    fn stmts(&mut self, ss: &[Stmt]) -> CResult<()> {
+        for s in ss {
+            self.stmt(s)?;
+        }
+        Ok(())
+    }
+
+    /// Abre um escopo de bloco com as declarações léxicas de `ss` e
+    /// cria as funções declaradas nele.
+    fn enter_block(&mut self, ss: &[Stmt], kind: ScopeKind, key: usize) -> CResult<()> {
+        let mut lex = Vec::new();
+        lexical_decls(ss, true, &mut lex);
+        self.push_scope(kind, key);
+        for (n, d) in &lex {
+            let ready = *d == Decl::Func;
+            self.declare(n.clone(), *d, false, ready);
+        }
+        self.open_env();
+        let sloppy = !self.fr().strict;
+        for s in ss {
+            if let Stmt::Function(f) = s {
+                let idx = self.function(f, None, None, false)?;
+                self.emit(Op::Closure(idx));
+                let name = f.name.clone().unwrap_or_else(|| "".into());
+                if sloppy {
+                    self.emit(Op::Dup);
+                    self.store_function_var(&name);
+                }
+                self.init(&name);
+            }
+        }
+        Ok(())
+    }
+
+    fn block(&mut self, ss: &[Stmt]) -> CResult<()> {
+        self.enter_block(ss, ScopeKind::Block, slice_key(ss))?;
+        self.stmts(ss)?;
+        self.pop_scope();
+        Ok(())
+    }
+
+    fn take_labels(&mut self) -> Vec<Name> {
+        std::mem::take(&mut self.f().pending_labels)
+    }
+
