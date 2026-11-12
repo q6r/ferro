@@ -647,3 +647,74 @@ pub struct TypedArrayData {
 }
 
 impl TypedArrayData {
+    /// Lê o elemento `i` (None fora dos limites).
+    pub fn get(&self, i: usize) -> Option<Value> {
+        if i >= self.length {
+            return None;
+        }
+        let sz = self.kind.size();
+        let start = self.offset + i * sz;
+        let d = self.data.borrow();
+        let b = d.get(start..start + sz)?;
+        let mut arr = [0u8; 8];
+        arr[..sz].copy_from_slice(b);
+        Some(match self.kind {
+            TaKind::I8 => Value::Number(arr[0] as i8 as f64),
+            TaKind::U8 | TaKind::U8C => Value::Number(arr[0] as f64),
+            TaKind::I16 => Value::Number(i16::from_le_bytes([arr[0], arr[1]]) as f64),
+            TaKind::U16 => Value::Number(u16::from_le_bytes([arr[0], arr[1]]) as f64),
+            TaKind::I32 => Value::Number(i32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::U32 => Value::Number(u32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::F32 => Value::Number(f32::from_le_bytes([arr[0], arr[1], arr[2], arr[3]]) as f64),
+            TaKind::F64 => Value::Number(f64::from_le_bytes(arr)),
+            TaKind::BI64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_i64(i64::from_le_bytes(arr)))),
+            TaKind::BU64 => Value::BigInt(Rc::new(crate::bigint::BigInt::from_u64(u64::from_le_bytes(arr)))),
+        })
+    }
+
+    /// Grava um número (já convertido) no elemento `i`.
+    pub fn set_number(&self, i: usize, n: f64) {
+        if i >= self.length {
+            return;
+        }
+        use crate::conv::to_int32;
+        let bytes: Vec<u8> = match self.kind {
+            TaKind::I8 | TaKind::U8 => vec![to_int32(n) as u8],
+            TaKind::U8C => {
+                // ToUint8Clamp: arredonda para o mais próximo, empate para o par
+                let c = if n.is_nan() { 0.0 } else { n.clamp(0.0, 255.0) };
+                let f = c.floor();
+                let r = if c - f > 0.5 {
+                    f + 1.0
+                } else if c - f < 0.5 || f % 2.0 == 0.0 {
+                    f
+                } else {
+                    f + 1.0
+                };
+                vec![r as u8]
+            }
+            TaKind::I16 | TaKind::U16 => (to_int32(n) as u16).to_le_bytes().to_vec(),
+            TaKind::I32 | TaKind::U32 => (to_int32(n) as u32).to_le_bytes().to_vec(),
+            TaKind::F32 => (n as f32).to_le_bytes().to_vec(),
+            TaKind::F64 => n.to_le_bytes().to_vec(),
+            TaKind::BI64 | TaKind::BU64 => return,
+        };
+        self.write(i, &bytes);
+    }
+
+    pub fn set_bigint(&self, i: usize, b: &crate::bigint::BigInt) {
+        if i >= self.length || !self.kind.is_bigint() {
+            return;
+        }
+        self.write(i, &b.to_u64_wrapping().to_le_bytes());
+    }
+
+    fn write(&self, i: usize, bytes: &[u8]) {
+        let start = self.offset + i * self.kind.size();
+        let mut d = self.data.borrow_mut();
+        if let Some(dst) = d.get_mut(start..start + bytes.len()) {
+            dst.copy_from_slice(bytes);
+        }
+    }
+}
+
