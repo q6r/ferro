@@ -268,3 +268,33 @@ impl Resolver {
         }
     }
 
+    fn pattern(&mut self, p: &Pattern) {
+        match p {
+            Pattern::Ident(n) => self.refer(n),
+            Pattern::Object { props, rest } => {
+                for (k, v) in props {
+                    if let PropKeyExpr::Computed(e) = k {
+                        self.expr(e);
+                    }
+                    self.pattern(v);
+                }
+                if let Some(r) = rest {
+                    self.pattern(r);
+                }
+            }
+            Pattern::Array { elems, rest } => {
+                for p in elems.iter().flatten() {
+                    self.pattern(p);
+                }
+                if let Some(r) = rest {
+                    self.pattern(r);
+                }
+            }
+            Pattern::Default(p, e) => {
+                self.expr(e);
+                self.pattern(p);
+            }
+            Pattern::Target(e) => self.expr(e),
+        }
+    }
+
