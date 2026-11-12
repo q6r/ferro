@@ -954,3 +954,69 @@ enum LoopKind {
     ForAwait,
 }
 
+enum Ctl {
+    Loop {
+        labels: Vec<Name>,
+        breaks: Vec<usize>,
+        continues: Vec<usize>,
+        env_depth: u32,
+        kind: LoopKind,
+    },
+    Block {
+        labels: Vec<Name>,
+        breaks: Vec<usize>,
+        env_depth: u32,
+        is_switch: bool,
+    },
+    /// Tratador de exceção ativo (sair dele exige PopTry).
+    Try,
+    /// Corpo do finally (aponta para a AST, que vive durante toda a compilação).
+    Finally(*const [Stmt], u32),
+}
+
+enum Res {
+    Reg(u32),
+    Env(u32, u32),
+    Global,
+}
+
+struct Found {
+    res: Res,
+    decl: Decl,
+    chk: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Bind {
+    /// Declaração (let/const/parâmetro): sem checar TDZ, marca como pronta.
+    Init,
+    /// Atribuição comum.
+    Store,
+}
+
+struct FnState {
+    ops: Vec<Op>,
+    consts: Vec<Value>,
+    const_map: FxHashMap<JsStr, u32>,
+    functions: Vec<Rc<Code>>,
+    lines: Vec<(u32, u32)>,
+    templates: Vec<TemplateSrc>,
+    call_names: Vec<(u32, u32)>,
+    scopes: Vec<ScopeC>,
+    reg_top: u32,
+    max_regs: u32,
+    captured: FxHashSet<Name>,
+    ctl: Vec<Ctl>,
+    env_depth: u32,
+    opt: Vec<Vec<(usize, u32)>>,
+    pending_labels: Vec<Name>,
+    kind: FnKind,
+    strict: bool,
+    is_script: bool,
+    completion: Option<u32>,
+    last_line: u32,
+    is_async: bool,
+    is_generator: bool,
+}
+
+impl FnState {
