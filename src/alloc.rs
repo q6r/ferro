@@ -270,3 +270,41 @@ unsafe impl GlobalAlloc for Alloc {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classes() {
+        for s in 1..=SMALL {
+            let c = class_of(s);
+            assert!(c < NCLASS, "{s}");
+            assert!(class_size(c) >= s, "{s}");
+            if c > 0 {
+                assert!(class_size(c - 1) < s, "{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn aloca_e_libera() {
+        let a = Alloc;
+        unsafe {
+            let mut ps = Vec::new();
+            for i in 1..2000usize {
+                let l = Layout::from_size_align(i % 1100 + 1, 8).unwrap();
+                let p = a.alloc(l);
+                assert!(!p.is_null());
+                std::ptr::write_bytes(p, (i % 251) as u8, l.size());
+                ps.push((p, l, (i % 251) as u8));
+            }
+            for (p, l, v) in &ps {
+                assert_eq!(*p.add(l.size() - 1), *v);
+                a.dealloc(*p, *l);
+            }
+        }
+        // threads que terminam devolvem a memória
+        let h = std::thread::spawn(|| (0..1000).map(|i| vec![i as u8; 40]).collect::<Vec<_>>());
+        assert_eq!(h.join().unwrap().len(), 1000);
+    }
+}
