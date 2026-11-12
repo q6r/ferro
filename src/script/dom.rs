@@ -1966,3 +1966,69 @@ fn template_content(vm: &mut Vm, a: &mut CallArgs) -> R {
 
 // --------------------------------------------------------------- Document
 
+fn find_tag(vm: &Vm, tag: &str) -> Option<NodeId> {
+    find_tag_in(vm, Document::ROOT, tag)
+}
+
+/// `<html>`, `<head>` ou `<body>` de um documento (o principal ou um criado
+/// por createHTMLDocument/DOMParser).
+fn find_tag_in(vm: &Vm, root: NodeId, tag: &str) -> Option<NodeId> {
+    read(vm, |h| {
+        let doc = &h.page.doc;
+        let html = doc.node(root).children.iter().copied().find(|&c| doc.tag(c) == Some("html"))?;
+        if tag == "html" {
+            return Some(html);
+        }
+        doc.node(html).children.iter().copied().find(|&c| doc.tag(c) == Some(tag))
+    })
+}
+
+fn document_element(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let d = this(vm, a)?;
+    let n = find_tag_in(vm, d, "html");
+    Ok(wrap_opt(vm, n))
+}
+
+fn head(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let d = this(vm, a)?;
+    let n = find_tag_in(vm, d, "head");
+    Ok(wrap_opt(vm, n))
+}
+
+fn body(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let d = this(vm, a)?;
+    let n = find_tag_in(vm, d, "body");
+    Ok(wrap_opt(vm, n))
+}
+
+/// Documento novo, fora da árvore principal (createHTMLDocument).
+fn new_document(vm: &mut Vm, html: &str) -> NodeId {
+    write(vm, |h| {
+        let tmp = crate::html::parse(html);
+        let d = h.page.doc.create(NodeData::Document);
+        for &c in &tmp.node(Document::ROOT).children.clone() {
+            let k = crate::html::copy_into(&tmp, c, &mut h.page.doc);
+            h.page.doc.append(d, k);
+        }
+        // scripts de documentos inertes nunca rodam
+        for x in h.page.doc.descendants(d) {
+            if h.page.doc.tag(x) == Some("script") {
+                h.started.insert(x);
+            }
+        }
+        d
+    })
+}
+
+/// `__native.createDocument(título)`.
+pub(crate) fn create_document(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let title = if a.arg(0).is_nullish() {
+        String::new()
+    } else {
+        let t = arg_string(vm, a, 0)?;
+        format!("<title>{}</title>", t.replace('&', "&amp;").replace('<', "&lt;"))
+    };
+    let d = new_document(vm, &format!("<!DOCTYPE html><html><head>{title}</head><body></body></html>"));
+    Ok(wrap(vm, d))
+}
+
