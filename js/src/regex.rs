@@ -482,3 +482,39 @@ impl Parser {
         Ok(atom)
     }
 
+    fn at_quantifier(&self) -> bool {
+        match self.peek().and_then(char::from_u32) {
+            Some('*' | '+' | '?') => true,
+            Some('{') => self.brace_quantifier().is_some(),
+            _ => false,
+        }
+    }
+
+    /// `{n}`, `{n,}`, `{n,m}` a partir da posição atual: (min, max, tamanho).
+    fn brace_quantifier(&self) -> Option<(u32, u32, usize)> {
+        let mut j = self.i + 1;
+        let num = |j: &mut usize| -> Option<u32> {
+            let start = *j;
+            let mut v: u64 = 0;
+            while let Some(&c) = self.s.get(*j) {
+                if !(0x30..=0x39).contains(&c) {
+                    break;
+                }
+                v = (v * 10 + (c - 0x30) as u64).min(INF as u64);
+                *j += 1;
+            }
+            if *j == start { None } else { Some(v as u32) }
+        };
+        let min = num(&mut j)?;
+        let max = if self.s.get(j) == Some(&(',' as u32)) {
+            j += 1;
+            if self.s.get(j) == Some(&('}' as u32)) { INF } else { num(&mut j)? }
+        } else {
+            min
+        };
+        if self.s.get(j) != Some(&('}' as u32)) {
+            return None;
+        }
+        Some((min, max, j + 1 - self.i))
+    }
+
