@@ -584,3 +584,48 @@ fn match_media(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Bool(crate::css::media_matches(&q, &crate::css::MediaContext { width, height })))
 }
 
+fn now(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Number(vm.now_ms()))
+}
+
+fn report_error(vm: &mut Vm, a: &mut CallArgs) -> R {
+    vm.report_uncaught(&a.arg(0));
+    Ok(Value::Undefined)
+}
+
+/// `__native.log(texto)`: aviso do próprio navegador no console.
+fn log(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let t = arg_string(vm, a, 0)?;
+    eprintln!("[ferro] {t}");
+    Ok(Value::Undefined)
+}
+
+/// customElements.define: registra e atualiza os elementos que já existem.
+fn define_custom(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let name = arg_string(vm, a, 0)?.to_ascii_lowercase();
+    let Value::Object(ctor) = a.arg(1) else {
+        return Err(vm.type_error("Failed to execute 'define' on 'CustomElementRegistry': parameter 2 is not of type 'Function'."));
+    };
+    if read(vm, |h| h.custom.contains_key(&name)) {
+        return Err(super::dom::dom_error(
+            vm,
+            "NotSupportedError",
+            &format!("Failed to execute 'define' on 'CustomElementRegistry': the name \"{name}\" has already been used with this registry"),
+        ));
+    }
+    write(vm, |h| h.custom.insert(name.clone(), ctor));
+    // elementos já existentes com essa tag: troca o protótipo e roda o construtor
+    let existing: Vec<usize> = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.descendants(crate::dom::Document::ROOT).into_iter().filter(|&n| doc.tag(n) == Some(name.as_str())).collect()
+    });
+    let mut out = Vec::new();
+    for n in existing {
+        // o mesmo objeto JS: o construtor troca o protótipo dele
+        let el = super::wrap(vm, n);
+        super::dom::upgrade_custom(vm, n, &el)?;
+        out.push(el);
+    }
+    Ok(vm.array_value(out))
+}
+
