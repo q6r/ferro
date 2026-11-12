@@ -285,3 +285,52 @@ fn case_variants(c: u32) -> [u32; 3] {
     [l, u, extra]
 }
 
+/// Canonicalize do spec (para comparar sem diferenciar maiúsculas).
+pub fn canon(c: u32, unicode: bool) -> u32 {
+    if c < 0x80 {
+        if unicode {
+            return if (0x41..=0x5A).contains(&c) { c + 32 } else { c };
+        }
+        return if (0x61..=0x7A).contains(&c) { c - 32 } else { c };
+    }
+    let Some(ch) = char::from_u32(c) else { return c };
+    if unicode {
+        match c {
+            0x17F => return 0x73,
+            0x212A => return 0x6B,
+            _ => {}
+        }
+        let mut it = ch.to_lowercase();
+        match (it.next(), it.next()) {
+            (Some(l), None) => l as u32,
+            _ => c,
+        }
+    } else {
+        let mut it = ch.to_uppercase();
+        match (it.next(), it.next()) {
+            (Some(u), None) if (u as u32) >= 0x80 => u as u32,
+            _ => c,
+        }
+    }
+}
+
+// ------------------------------------------------------------------ árvore
+
+#[derive(Clone, Debug)]
+enum Node {
+    Empty,
+    Char(u32),
+    Any,
+    Class(ClassSet),
+    Start,
+    End,
+    WordB(bool),
+    Group(Box<Node>, Option<u32>),
+    Look { ahead: bool, negate: bool, node: Box<Node> },
+    BackRef(u32),
+    NamedRef(String),
+    Repeat { node: Box<Node>, min: u32, max: u32, greedy: bool },
+    Concat(Vec<Node>),
+    Alt(Vec<Node>),
+}
+
