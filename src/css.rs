@@ -382,3 +382,66 @@ fn parse_nth(s: &str) -> Option<(i32, i32)> {
     }
 }
 
+fn parse_attr_selector(chars: &[char], i: &mut usize) -> Option<AttrSelector> {
+    skip_ws(chars, i);
+    let name = read_ident(chars, i)?.to_ascii_lowercase();
+    skip_ws(chars, i);
+    let op = match chars.get(*i)? {
+        ']' => {
+            *i += 1;
+            return Some(AttrSelector {
+                name,
+                op: AttrOp::Exists,
+                value: String::new(),
+                case_insensitive: false,
+            });
+        }
+        '=' => AttrOp::Equals,
+        '~' => AttrOp::Includes,
+        '|' => AttrOp::DashMatch,
+        '^' => AttrOp::Prefix,
+        '$' => AttrOp::Suffix,
+        '*' => AttrOp::Substring,
+        _ => return None,
+    };
+    *i += if op == AttrOp::Equals { 1 } else { 2 };
+    skip_ws(chars, i);
+    let value = match chars.get(*i)? {
+        q @ ('"' | '\'') => {
+            let q = *q;
+            *i += 1;
+            let mut v = String::new();
+            while *i < chars.len() && chars[*i] != q {
+                if chars[*i] == '\\' && *i + 1 < chars.len() {
+                    *i += 1;
+                }
+                v.push(chars[*i]);
+                *i += 1;
+            }
+            *i += 1;
+            v
+        }
+        _ => read_ident(chars, i)?,
+    };
+    skip_ws(chars, i);
+    let mut case_insensitive = false;
+    if matches!(chars.get(*i), Some('i' | 'I')) {
+        case_insensitive = true;
+        *i += 1;
+        skip_ws(chars, i);
+    } else if matches!(chars.get(*i), Some('s' | 'S')) {
+        *i += 1;
+        skip_ws(chars, i);
+    }
+    if chars.get(*i) != Some(&']') {
+        return None;
+    }
+    *i += 1;
+    Some(AttrSelector {
+        name,
+        op,
+        value,
+        case_insensitive,
+    })
+}
+
