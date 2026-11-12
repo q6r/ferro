@@ -445,3 +445,43 @@ fn parse_attr_selector(chars: &[char], i: &mut usize) -> Option<AttrSelector> {
     })
 }
 
+fn skip_ws(chars: &[char], i: &mut usize) {
+    while *i < chars.len() && chars[*i].is_whitespace() {
+        *i += 1;
+    }
+}
+
+fn is_ident_start(c: char) -> bool {
+    c.is_alphabetic() || c == '_' || c == '-' || c == '\\' || !c.is_ascii()
+}
+
+/// Lê um identificador CSS, tratando escapes (`\:`, `\31 `).
+fn read_ident(chars: &[char], i: &mut usize) -> Option<String> {
+    let mut s = String::new();
+    while *i < chars.len() {
+        let c = chars[*i];
+        if c == '\\' {
+            *i += 1;
+            let hex: String = chars[*i..].iter().take(6).take_while(|c| c.is_ascii_hexdigit()).collect();
+            if !hex.is_empty() {
+                *i += hex.len();
+                if chars.get(*i).is_some_and(|c| c.is_whitespace()) {
+                    *i += 1;
+                }
+                s.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?).unwrap_or('\u{FFFD}'));
+            } else if let Some(&next) = chars.get(*i) {
+                s.push(next);
+                *i += 1;
+            }
+        } else if c.is_alphanumeric() || c == '-' || c == '_' || !c.is_ascii() {
+            s.push(c);
+            *i += 1;
+        } else {
+            break;
+        }
+    }
+    if s.is_empty() { None } else { Some(s) }
+}
+
+// ------------------------------------------------------------------ matching
+
