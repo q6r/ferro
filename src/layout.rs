@@ -2085,3 +2085,85 @@ impl<'a> Ctx<'a> {
 
     // ------------------------------------------------- tamanhos intrínsecos
 
+    /// (min-content, max-content) da caixa de borda, sem margens.
+    fn intrinsic(&mut self, b: &'a LayoutBox) -> (f32, f32) {
+        let key = b as *const LayoutBox as usize;
+        if let Some(&v) = self.intrinsic_cache.get(&key) {
+            return v;
+        }
+        let s = &b.style;
+        let anon = matches!(b.kind, BoxKind::Anonymous);
+        let extra = if anon {
+            0.0
+        } else {
+            px(s.padding[LEFT]) + px(s.padding[RIGHT]) + s.border(LEFT) + s.border(RIGHT)
+        };
+        let content = |w: f32| if s.border_box { w } else { w + extra };
+        let margins = |c: &LayoutBox| {
+            if matches!(c.kind, BoxKind::Anonymous) {
+                0.0
+            } else {
+                px(c.style.margin[LEFT]) + px(c.style.margin[RIGHT])
+            }
+        };
+        let mut r = match (s.width, anon) {
+            (Len::Px(w), false) => (content(w), content(w)),
+            _ => {
+                let (mn, mx) = if s.display.is_flex() && !anon {
+                    let gap = px(s.column_gap);
+                    let kids: Vec<&'a LayoutBox> = b.children.iter().filter(|c| !c.is_out_of_flow()).collect();
+                    let (mut sum_min, mut sum_max, mut max_min, mut max_max) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+                    for c in &kids {
+                        let (a, z) = self.intrinsic(c);
+                        let m = margins(c);
+                        sum_min += a + m;
+                        sum_max += z + m;
+                        max_min = max_min.max(a + m);
+                        max_max = max_max.max(z + m);
+                    }
+                    let gaps = gap * kids.len().saturating_sub(1) as f32;
+                    if s.flex_direction.is_column() {
+                        (max_min, max_max)
+                    } else if s.flex_wrap {
+                        (max_min, sum_max + gaps)
+                    } else {
+                        (sum_min + gaps, sum_max + gaps)
+                    }
+                } else if s.display == Display::Table && !anon {
+                    let g = table_grid(self.doc, b);
+                    if g.rows.is_empty() {
+                        (0.0, 0.0)
+                    } else {
+                        let sp = if s.border_collapse { 0.0 } else { s.border_spacing };
+                        let (mins, maxs) = self.table_columns(&g, sp);
+                        let spacing = sp * (g.ncols + 1) as f32;
+                        (mins.iter().sum::<f32>() + spacing, maxs.iter().sum::<f32>() + spacing)
+                    }
+                } else if has_inflow_blocks(b) || (s.display.is_grid() && !anon) {
+                    let mut acc = (0.0f32, 0.0f32);
+                    for c in b.children.iter().filter(|c| !c.is_out_of_flow()) {
+                        let (a, z) = self.intrinsic(c);
+                        let m = margins(c);
+                        acc = (acc.0.max(a + m), acc.1.max(z + m));
+                    }
+                    acc
+                } else {
+                    self.inline_intrinsic(b)
+                };
+                (mn + extra, mx + extra)
+            }
+        };
+        if !anon {
+            if let Len::Px(m) = s.max_width {
+                let m = content(m);
+                r = (r.0.min(m), r.1.min(m));
+            }
+            if let Len::Px(m) = s.min_width {
+                let m = content(m);
+                r = (r.0.max(m), r.1.max(m));
+            }
+        }
+        self.intrinsic_cache.insert(key, r);
+        r
+    }
+
