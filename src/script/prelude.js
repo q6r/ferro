@@ -2792,3 +2792,84 @@ class AbortController {
 hidden(G, 'AbortSignal', AbortSignal);
 hidden(G, 'AbortController', AbortController);
 
+// ------------------------------------------------- fetch
+class Headers {
+  constructor(init) {
+    this._h = [];
+    if (init instanceof Headers) this._h = init._h.map((e) => e.slice());
+    else if (init && typeof init[Symbol.iterator] === 'function') for (const [k, v] of init) this.append(k, v);
+    else if (init && typeof init === 'object') for (const k of Object.keys(init)) this.append(k, init[k]);
+  }
+  append(k, v) { this._h.push([String(k).toLowerCase(), String(v).trim()]); }
+  set(k, v) { k = String(k).toLowerCase(); this.delete(k); this._h.push([k, String(v).trim()]); }
+  get(k) {
+    k = String(k).toLowerCase();
+    const vs = this._h.filter((e) => e[0] === k).map((e) => e[1]);
+    return vs.length ? vs.join(', ') : null;
+  }
+  getSetCookie() { return []; }
+  has(k) { k = String(k).toLowerCase(); return this._h.some((e) => e[0] === k); }
+  delete(k) { k = String(k).toLowerCase(); this._h = this._h.filter((e) => e[0] !== k); }
+  forEach(cb, t) { for (const [k, v] of this.entries()) cb.call(t, v, k, this); }
+  *entries() {
+    const names = [...new Set(this._h.map((e) => e[0]))].sort();
+    for (const n of names) yield [n, this.get(n)];
+  }
+  keys() { return [...this.entries()].map((e) => e[0]).values(); }
+  values() { return [...this.entries()].map((e) => e[1]).values(); }
+  [Symbol.iterator]() { return this.entries(); }
+}
+hidden(G, 'Headers', Headers);
+
+/// Corpo de uma requisição: bytes (ou null) e o content-type implícito.
+function encodeBody(body) {
+  if (body === undefined || body === null) return [null, null];
+  if (typeof body === 'string') return [body, 'text/plain;charset=UTF-8'];
+  if (body instanceof URLSearchParams) return [body.toString(), 'application/x-www-form-urlencoded;charset=UTF-8'];
+  if (body instanceof Blob) return [BLOB.get(body).bytes, body.type || null];
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return [toBytes(body), null];
+  if (body instanceof FormData) {
+    const boundary = '----FerroFormBoundary' + G.crypto.randomUUID().replace(/-/g, '');
+    const parts = [];
+    for (const [k, v, name] of body._list) {
+      let head = `--${boundary}\r\nContent-Disposition: form-data; name="${k}"`;
+      if (v instanceof Blob) {
+        head += `; filename="${name || v.name || 'blob'}"\r\nContent-Type: ${v.type || 'application/octet-stream'}`;
+        parts.push(head + '\r\n\r\n', v, '\r\n');
+      } else parts.push(head + '\r\n\r\n' + v + '\r\n');
+    }
+    parts.push(`--${boundary}--\r\n`);
+    return [BLOB.get(new Blob(parts)).bytes, 'multipart/form-data; boundary=' + boundary];
+  }
+  return [String(body), 'text/plain;charset=UTF-8'];
+}
+class Request {
+  constructor(input, init = {}) {
+    const src = input instanceof Request ? input : null;
+    const url = src ? src.url : String(input);
+    const p = N.urlParse(url, document.baseURI);
+    if (!p) throw new TypeError(`Failed to construct 'Request': Invalid URL`);
+    this.url = p.href;
+    this.method = String(init.method || (src && src.method) || 'GET').toUpperCase();
+    this.headers = new Headers(init.headers || (src && src.headers) || undefined);
+    this._body = init.body !== undefined ? init.body : src ? src._body : null;
+    this.credentials = init.credentials || (src && src.credentials) || 'same-origin';
+    this.mode = init.mode || (src && src.mode) || 'cors';
+    this.cache = init.cache || 'default';
+    this.redirect = init.redirect || 'follow';
+    this.referrer = 'about:client';
+    this.referrerPolicy = init.referrerPolicy || '';
+    this.integrity = init.integrity || '';
+    this.keepalive = !!init.keepalive;
+    this.signal = init.signal || (src && src.signal) || new AbortSignal();
+    this.destination = '';
+  }
+  clone() { return new Request(this); }
+  text() { return Promise.resolve(this._body == null ? '' : typeof this._body === 'string' ? this._body : N.utf8Decode(encodeBody(this._body)[0])); }
+  json() { return this.text().then(JSON.parse); }
+  arrayBuffer() { return Promise.resolve(toBytes(encodeBody(this._body)[0] ?? '').buffer); }
+}
+hidden(G, 'Request', Request);
+const STATUS_TEXT = { 200: 'OK', 201: 'Created', 204: 'No Content', 206: 'Partial Content', 301: 'Moved Permanently',
+  302: 'Found', 304: 'Not Modified', 400: 'Bad Request', 401: 'Unauthorized', 403: 'Forbidden', 404: 'Not Found',
+  405: 'Method Not Allowed', 429: 'Too Many Requests', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable' };
