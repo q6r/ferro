@@ -187,3 +187,41 @@ impl Alloc {
     }
 }
 
+unsafe impl GlobalAlloc for Alloc {
+    #[inline]
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let size = layout.size();
+        if size > SMALL || layout.align() > 16 {
+            return unsafe { System.alloc(layout) };
+        }
+        let c = class_of(size);
+        let cs = class_size(c);
+        let fast = LOCAL.try_with(|l| unsafe {
+            let l = &mut *l.get();
+            let head = l.free[c];
+            if !head.is_null() {
+                l.free[c] = *(head as *mut *mut u8);
+                return head;
+            }
+            if !l.bump.is_null() && (l.end as usize) - (l.bump as usize) >= cs {
+                let p = l.bump;
+                l.bump = p.add(cs);
+                return p;
+            }
+            null_mut()
+        });
+        let r = match fast {
+            Ok(p) if !p.is_null() => return p,
+            Ok(_) => {
+                ensure_guard();
+                LOCAL.try_with(|l| unsafe { Self::refill(&mut *l.get(), c, cs) })
+            }
+            Err(e) => Err(e),
+        };
+        match r {
+            Ok(p) => p,
+            // thread já sendo destruída: usa o sistema com o tamanho da classe
+            Err(_) => unsafe { System.alloc(Layout::from_size_align_unchecked(class_size(c), 16)) },
+        }
+    }
+
