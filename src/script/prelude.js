@@ -584,3 +584,75 @@ const CSS_PROPS = ('align-content align-items align-self all animation animation
   '-webkit-box-orient -webkit-font-smoothing -webkit-text-size-adjust -webkit-user-select ' +
   '-webkit-tap-highlight-color -webkit-transform -webkit-transition -webkit-mask-image -webkit-overflow-scrolling ' +
   '-webkit-backdrop-filter -moz-osx-font-smoothing').split(' ');
+const camel = (p) => (p.startsWith('-webkit-') ? 'webkit' + p.slice(7) : p.startsWith('-moz-') ? 'moz' + p.slice(4) : p)
+  .replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+for (const p of CSS_PROPS) {
+  const get = function () { return this.getPropertyValue(p); };
+  const set = function (v) { this.setProperty(p, v); };
+  accessor(CSSStyleDeclaration.prototype, camel(p), get, set);
+  if (p.includes('-')) accessor(CSSStyleDeclaration.prototype, p, get, set);
+  if (p.startsWith('-webkit-')) accessor(CSSStyleDeclaration.prototype, 'Webkit' + camel(p).slice(6), get, set);
+}
+accessor(CSSStyleDeclaration.prototype, 'cssFloat', function () { return this.getPropertyValue('float'); },
+  function (v) { this.setProperty('float', v); });
+hidden(G, 'CSSStyleDeclaration', CSSStyleDeclaration);
+const STYLE_CACHE = new WeakMap();
+for (const P of [HTMLElement.prototype, SVGElement.prototype]) {
+  accessor(P, 'style', function () {
+    let d = STYLE_CACHE.get(this);
+    if (!d) {
+      d = Object.create(CSSStyleDeclaration.prototype);
+      STYLE.set(d, { el: this });
+      STYLE_CACHE.set(this, d);
+    }
+    return d;
+  }, function (v) { this.setAttribute('style', String(v)); });
+}
+hidden(G, 'getComputedStyle', function getComputedStyle(el) {
+  if (!(el instanceof Element)) throw new TypeError("Failed to execute 'getComputedStyle' on 'Window': parameter 1 is not of type 'Element'.");
+  const raw = N.computedStyle(el) || {};
+  const m = new Map();
+  for (const k of Object.keys(raw)) m.set(k, { value: raw[k], important: '' });
+  const d = Object.create(CSSStyleDeclaration.prototype);
+  STYLE.set(d, { el, computed: m });
+  return d;
+});
+
+// -------------------------------------------------------------- dataset
+class DOMStringMap {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+hidden(G, 'DOMStringMap', DOMStringMap);
+const DATASET = new WeakMap();
+const toDataAttr = (k) => 'data-' + k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+const toDataProp = (a) => a.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+for (const P of [HTMLElement.prototype, SVGElement.prototype]) {
+  accessor(P, 'dataset', function () {
+    let d = DATASET.get(this);
+    if (d) return d;
+    const el = this;
+    d = new Proxy(Object.create(DOMStringMap.prototype), {
+      get(t, k) {
+        if (typeof k !== 'string') return t[k];
+        const v = el.getAttribute(toDataAttr(k));
+        return v === null ? undefined : v;
+      },
+      set(t, k, v) {
+        if (typeof k !== 'string') { t[k] = v; return true; }
+        el.setAttribute(toDataAttr(k), String(v));
+        return true;
+      },
+      has(t, k) { return typeof k === 'string' && el.hasAttribute(toDataAttr(k)); },
+      deleteProperty(t, k) { el.removeAttribute(toDataAttr(String(k))); return true; },
+      ownKeys() { return el.getAttributeNames().filter((n) => n.startsWith('data-')).map(toDataProp); },
+      getOwnPropertyDescriptor(t, k) {
+        if (typeof k !== 'string') return undefined;
+        const v = el.getAttribute(toDataAttr(k));
+        return v === null ? undefined : { value: v, writable: true, enumerable: true, configurable: true };
+      },
+    });
+    DATASET.set(this, d);
+    return d;
+  });
+}
+
