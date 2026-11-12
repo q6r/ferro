@@ -785,3 +785,48 @@ impl Canvas {
         }
     }
 
+    /// Retângulo arredondado com antialias via função de distância.
+    /// `stroke = Some(w)` desenha só um contorno de largura `w`.
+    fn round_rect_clip(&mut self, r: Rect, radius: f32, color: Color, stroke: Option<f32>, clip: Clip) {
+        if color.a == 0 || r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        let c = clip.intersect(Clip::from_rect(r));
+        if c.is_empty() {
+            return;
+        }
+        let sdf = rr_sdf;
+        let inner = stroke.map(|w| {
+            (
+                Rect {
+                    x: r.x + w,
+                    y: r.y + w,
+                    w: (r.w - 2.0 * w).max(0.0),
+                    h: (r.h - 2.0 * w).max(0.0),
+                },
+                (radius - w).max(0.0),
+            )
+        });
+        for y in c.y0..c.y1 {
+            let py = y as f32 + 0.5;
+            for x in c.x0..c.x1 {
+                let px = x as f32 + 0.5;
+                let mut cov = (0.5 - sdf(px, py, r, radius)).clamp(0.0, 1.0);
+                if let Some((ir, irad)) = inner
+                    && cov > 0.0
+                {
+                    let inside = if ir.w > 0.0 && ir.h > 0.0 {
+                        (0.5 - sdf(px, py, ir, irad)).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    cov = (cov - inside).max(0.0);
+                }
+                if cov > 0.0 {
+                    self.blend(x, y, color, (cov * 255.0) as u32);
+                }
+            }
+        }
+    }
+
