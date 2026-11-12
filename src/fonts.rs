@@ -513,3 +513,31 @@ impl Fonts {
         })
     }
 
+    pub fn glyph(&self, id: FontId, ch: char, size: f32) -> Option<Glyph> {
+        let k = (id, ch, Self::key(size));
+        if let Some(g) = self.glyphs.borrow().get(&k) {
+            return Some(g.clone());
+        }
+        let rid = self.resolve(id, ch);
+        let (metrics, coverage) = self.face(rid)?.rasterize(ch, size);
+        let g = Glyph {
+            metrics,
+            coverage: std::rc::Rc::new(coverage),
+        };
+        self.glyphs.borrow_mut().insert(k, g.clone());
+        Some(g)
+    }
+}
+
+#[cfg(test)]
+mod tests_emoji {
+    use super::*;
+
+    #[test]
+    fn emoji_colorido() {
+        let f = Fonts::system().unwrap();
+        let id = f.pick(FontFamily::Sans, 400, false);
+        let cg = f.color_glyph(id, '😀', 32.0, false);
+        assert!(cg.is_some_and(|g| g.rgba.chunks(4).any(|p| p[3] > 0 && p[0] > 100)));
+    }
+}
