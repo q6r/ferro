@@ -643,3 +643,51 @@ fn sym_replace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::String(JsStr::from_units(out)))
 }
 
+fn sym_split(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let r = a.this.clone();
+    let Some((_, _, prog)) = regexp_parts(&r) else {
+        return Err(vm.type_error("RegExp.prototype[Symbol.split] called on incompatible receiver"));
+    };
+    let s = vm.to_string(&a.arg(0))?;
+    let lim = if a.arg(1).is_undefined() { u32::MAX } else { crate::conv::to_uint32(vm.to_number(&a.arg(1))?) };
+    let mut out: Vec<Value> = Vec::new();
+    if lim == 0 {
+        return Ok(vm.array_value(out));
+    }
+    let size = s.len();
+    let unicode = prog.flags.full_unicode();
+    if size == 0 {
+        if prog.match_at(s.units(), 0).is_some() {
+            return Ok(vm.array_value(out));
+        }
+        return Ok(vm.array_value(vec![Value::String(s)]));
+    }
+    let mut p = 0usize;
+    let mut q = 0usize;
+    while q < size {
+        let Some(caps) = prog.search(s.units(), q, false) else { break };
+        let (start, end) = (caps[0], caps[1]);
+        if start >= size {
+            break;
+        }
+        if end == p {
+            q = advance(&s, start, unicode);
+            continue;
+        }
+        out.push(Value::String(s.slice(p, start)));
+        if out.len() as u32 >= lim {
+            return Ok(vm.array_value(out));
+        }
+        p = end;
+        for g in 1..=prog.ngroups as usize {
+            out.push(slice_or_undef(&s, caps[2 * g], caps[2 * g + 1]));
+            if out.len() as u32 >= lim {
+                return Ok(vm.array_value(out));
+            }
+        }
+        q = p;
+    }
+    out.push(Value::String(s.slice(p, size)));
+    Ok(vm.array_value(out))
+}
+
