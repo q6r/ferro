@@ -199,3 +199,59 @@ fn set(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `[currentTime, readyState, paused, seeking, ended, largura, altura, duração]`.
+fn state(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let v = write(vm, |h| {
+        let dur = h
+            .media
+            .players
+            .get(&n)
+            .and_then(|p| p.source)
+            .and_then(|s| h.media.sources.get(&s))
+            .map_or(f64::NAN, |s| s.duration);
+        h.media.players.get(&n).map(|p| {
+            vec![
+                Value::Number(p.current_time()),
+                Value::Number(p.ready_state as f64),
+                Value::Bool(p.paused),
+                Value::Bool(p.seeking),
+                Value::Bool(p.ended),
+                Value::Number(p.width as f64),
+                Value::Number(p.height as f64),
+                Value::Number(dur),
+                Value::Number(p.pipeline.frames_shown as f64),
+            ]
+        })
+    });
+    Ok(match v {
+        Some(v) => vm.array_value(v),
+        None => Value::Null,
+    })
+}
+
+pub(crate) fn install(vm: &Vm, n: &ObjRef) {
+    let r = &vm.realm;
+    for (name, len, f) in [
+        ("mediaSupports", 1, supports as ferro_js::value::NativeFn),
+        ("msNew", 0, ms_new),
+        ("msDuration", 2, ms_duration),
+        ("msEnd", 1, ms_end),
+        ("msBuffered", 1, ms_buffered),
+        ("msDescribe", 1, ms_describe),
+        ("sbNew", 2, sb_new),
+        ("sbAppend", 3, sb_append),
+        ("sbRemove", 3, sb_remove),
+        ("sbBuffered", 1, sb_buffered),
+        ("mediaAttach", 2, attach),
+        ("mediaLoadUrl", 2, load_url),
+        ("mediaDetach", 1, detach),
+        ("mediaPlay", 1, play),
+        ("mediaPause", 1, pause),
+        ("mediaSeek", 2, seek),
+        ("mediaSet", 4, set),
+        ("mediaState", 1, state),
+    ] {
+        r.method(n, name, len, f);
+    }
+}
