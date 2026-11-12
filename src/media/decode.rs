@@ -277,3 +277,43 @@ impl VideoDecoder {
 
 // ------------------------------------------------------------------- AAC
 
+pub struct AudioDecoder {
+    dec: symphonia_codec_aac::AacDecoder,
+    pub sample_rate: u32,
+    pub channels: usize,
+}
+
+impl AudioDecoder {
+    pub fn new(codec: &Codec) -> Option<AudioDecoder> {
+        use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
+        use symphonia_core::codecs::audio::{AudioCodecParameters, AudioDecoderOptions};
+        let Codec::Aac { config, channels, sample_rate } = codec else { return None };
+        let mut params = AudioCodecParameters::new();
+        params.for_codec(CODEC_ID_AAC).with_sample_rate(*sample_rate);
+        if !config.is_empty() {
+            params.with_extra_data(config.clone().into_boxed_slice());
+        }
+        let dec = symphonia_codec_aac::AacDecoder::try_new(&params, &AudioDecoderOptions::default()).ok()?;
+        Some(AudioDecoder { dec, sample_rate: *sample_rate, channels: (*channels).max(1) as usize })
+    }
+
+    /// Amostras PCM intercaladas (f32), já no formato da trilha.
+    pub fn decode(&mut self, s: &Sample) -> Result<Vec<f32>, String> {
+        use symphonia_core::codecs::audio::AudioDecoder as _;
+        use symphonia_core::packet::PacketRef;
+        use symphonia_core::units::{Duration, Timestamp};
+        let packet = PacketRef::new(0, Timestamp::new(0), Duration::new(0), &s.data);
+        let buf = self.dec.decode_ref(&packet).map_err(|e| format!("aac: {e}"))?;
+        let spec = buf.spec().clone();
+        self.sample_rate = spec.rate();
+        self.channels = spec.channels().count().max(1);
+        let mut out: Vec<f32> = Vec::new();
+        buf.copy_to_vec_interleaved(&mut out);
+        Ok(out)
+    }
+
+    pub fn reset(&mut self) {
+        use symphonia_core::codecs::audio::AudioDecoder as _;
+        self.dec.reset();
+    }
+}
