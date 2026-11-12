@@ -856,3 +856,63 @@ fn transform_matrix(fns: &[crate::style::TransformFn], w: f32, h: f32) -> [f32; 
     m
 }
 
+fn px(l: Len) -> f32 {
+    match l {
+        Len::Px(v) => v,
+        _ => 0.0,
+    }
+}
+
+fn set_rect(it: &mut DisplayItem, top: Option<f32>, h: f32) {
+    if let DisplayItem::Shadow { rect, .. } = it {
+        // a sombra acompanha a caixa (deslocamento e espalhamento já estão nela)
+        let grow = rect.h;
+        let _ = grow;
+        if let Some(t) = top {
+            rect.y = t;
+        }
+        rect.h = h;
+        return;
+    }
+    match it {
+        DisplayItem::Rect { rect, .. }
+        | DisplayItem::RoundRect { rect, .. }
+        | DisplayItem::Gradient { rect, .. }
+        | DisplayItem::RoundBorder { rect, .. }
+        | DisplayItem::BgImage { rect, .. } => {
+            if let Some(t) = top {
+                rect.y = t;
+            }
+            rect.h = h;
+        }
+        _ => {}
+    }
+}
+
+/// Raio dos cantos, resolvido contra a caixa.
+fn radius_of(s: &ComputedStyle, r: Rect) -> f32 {
+    let m = r.w.min(r.h);
+    match s.border_radius {
+        Len::Px(v) => v,
+        Len::Percent(p) => p / 100.0 * m,
+        Len::Auto => 0.0,
+    }
+    .clamp(0.0, m / 2.0)
+}
+
+fn colspan(doc: &Document, b: &LayoutBox) -> usize {
+    b.node()
+        .and_then(|n| doc.element(n))
+        .and_then(|e| e.attr("colspan"))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(1usize)
+        .clamp(1, 100)
+}
+
+/// Uma tabela organizada em linhas de células (com colspan).
+struct TableGrid<'a> {
+    captions: Vec<&'a LayoutBox>,
+    rows: Vec<(Option<&'a LayoutBox>, Vec<(&'a LayoutBox, usize)>)>,
+    ncols: usize,
+}
+
