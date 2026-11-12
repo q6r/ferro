@@ -221,3 +221,55 @@ impl BigInt {
         Some(if neg { v.neg() } else { v })
     }
 
+    /// Conversão para Number com arredondamento correto.
+    pub fn to_f64(&self) -> f64 {
+        let bits = self.mag.len() * 32 - self.mag.last().map_or(32, |x| x.leading_zeros() as usize);
+        let v = if bits <= 64 {
+            let mut x = 0u64;
+            for (i, &d) in self.mag.iter().enumerate() {
+                x |= (d as u64) << (32 * i);
+            }
+            x as f64
+        } else {
+            if bits > 1100 {
+                return if self.neg { f64::NEG_INFINITY } else { f64::INFINITY };
+            }
+            // os 64 bits do topo + "bit grudento" do resto
+            let shift = bits - 64;
+            let top = self.clone_abs().shr_mag(shift as u64);
+            let mut x = 0u64;
+            for (i, &d) in top.mag.iter().enumerate().take(2) {
+                x |= (d as u64) << (32 * i);
+            }
+            let lost = self.clone_abs().sub(&top.shl(shift as u64));
+            if !lost.is_zero() {
+                x |= 1;
+            }
+            x as f64 * 2f64.powi(shift as i32)
+        };
+        if self.neg { -v } else { v }
+    }
+
+    fn clone_abs(&self) -> BigInt {
+        BigInt {
+            neg: false,
+            mag: self.mag.clone(),
+        }
+    }
+
+    /// Texto do literal (`123n`, `0xFFn`...), sem o `n` e sem `_`.
+    pub fn parse_literal(text: &str) -> Option<BigInt> {
+        let t: String = text.chars().filter(|&c| c != '_' && c != 'n').collect();
+        let lower = t.to_ascii_lowercase();
+        let (digits, radix) = if let Some(r) = lower.strip_prefix("0x") {
+            (r.to_string(), 16)
+        } else if let Some(r) = lower.strip_prefix("0o") {
+            (r.to_string(), 8)
+        } else if let Some(r) = lower.strip_prefix("0b") {
+            (r.to_string(), 2)
+        } else {
+            (lower, 10)
+        };
+        BigInt::parse_radix(&digits, radix)
+    }
+
