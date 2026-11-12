@@ -2356,3 +2356,143 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn flex_row(
+        &mut self,
+        b: &'a LayoutBox,
+        kids: &[&'a LayoutBox],
+        x: f32,
+        y: f32,
+        w: f32,
+        definite_h: Option<f32>,
+        inh: &Inherited,
+    ) -> (f32, Option<f32>) {
+        let s = &b.style;
+        let gap = s.column_gap.resolve_or_zero(w);
+        let row_gap = s.row_gap.resolve_or_zero(w);
+        let reverse = s.flex_direction == crate::style::FlexDirection::RowReverse;
+        let mut items: Vec<FlexItem<'a>> = kids.iter().map(|c| self.flex_item(c, w)).collect();
+
+        // quebra em linhas
+        let mut lines: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut start = 0;
+        let mut used = 0.0;
+        for i in 0..items.len() {
+            let o = items[i].outer();
+            if s.flex_wrap && i > start && used + gap + o > w {
+                lines.push(start..i);
+                start = i;
+                used = 0.0;
+            }
+            used += if i > start { gap + o } else { o };
+        }
+        lines.push(start..items.len());
+
+        let mut cur_y = y;
+        let mut first_baseline = None;
+        let single_line = lines.len() == 1;
+        for range in lines {
+            let n = range.len();
+            let line = &mut items[range.clone()];
+            // tamanhos flexíveis: distribui o espaço livre (uma passada + limites)
+            let gaps = gap * (n.saturating_sub(1)) as f32;
+            let outer_base: f32 =
+                line.iter().map(|it| it.base + it.extra + it.margin[LEFT] + it.margin[RIGHT]).sum::<f32>() + gaps;
+            let free = w - outer_base;
+            if free > 0.0 {
+                let total: f32 = line.iter().map(|it| it.b.style.flex_grow).sum();
+                for it in line.iter_mut() {
+                    let g = it.b.style.flex_grow;
+                    it.size = if total > 0.0 { it.base + free * g / total.max(1.0) } else { it.base };
+                    it.size = it.size.clamp(it.min, it.max);
+                }
+            } else {
+                let total: f32 = line.iter().map(|it| it.b.style.flex_shrink * it.base).sum();
+                for it in line.iter_mut() {
+                    let wgt = it.b.style.flex_shrink * it.base;
+                    let cut = if total > 0.0 { -free * wgt / total } else { 0.0 };
+                    it.size = (it.base - cut).clamp(it.min, it.max);
+                }
+            }
+            let used: f32 = line.iter().map(FlexItem::outer).sum::<f32>() + gaps;
+            let mut remaining = w - used;
+            // margens auto engolem o espaço que sobra
+            let autos: usize = line.iter().map(|it| it.auto_l as usize + it.auto_r as usize).sum();
+            if remaining > 0.0 && autos > 0 {
+                let each = remaining / autos as f32;
+                for it in line.iter_mut() {
+                    if it.auto_l {
+                        it.margin[LEFT] += each;
+                    }
+                    if it.auto_r {
+                        it.margin[RIGHT] += each;
+                    }
+                }
+                remaining = 0.0;
+            }
+            let (mut pos, between) = if remaining > 0.0 {
+                match s.justify_content {
+                    Justify::Start => (0.0, 0.0),
+                    Justify::End => (remaining, 0.0),
+                    Justify::Center => (remaining / 2.0, 0.0),
+                    Justify::SpaceBetween if n > 1 => (0.0, remaining / (n - 1) as f32),
+                    Justify::SpaceBetween => (0.0, 0.0),
+                    Justify::SpaceAround => (remaining / n as f32 / 2.0, remaining / n as f32),
+                    Justify::SpaceEvenly => (remaining / (n + 1) as f32, remaining / (n + 1) as f32),
+                }
+            } else {
+                (0.0, 0.0)
+            };
+
+            // layout de cada item na sua posição
+            let mut placed: Vec<(Mark, BlockResult, f32)> = Vec::with_capacity(n);
+            for it in line.iter() {
+                let outer = it.outer();
+                let rel = if reverse { w - pos - outer } else { pos };
+                let bm = BoxModel {
+                    margin: it.margin,
+                    border: it.border,
+                    padding: it.padding,
+                    content_w: it.size,
+                };
+                let m = self.mark();
+                let r = self.layout_block(it.b, &bm, x + rel, cur_y + it.margin[TOP], inh, Opts::bfc());
+                let outer_h = r.height + it.margin[TOP] + it.margin[BOTTOM];
+                placed.push((m, r, outer_h));
+                pos += outer + gap + between;
+            }
+            let mut line_cross = placed.iter().map(|p| p.2).fold(0.0f32, f32::max);
+            if single_line && let Some(h) = definite_h {
+                line_cross = h;
+            }
+            // alinhamento no eixo cruzado
+            for k in 0..n {
+                let it = &line[k];
+                let align = it.b.style.align_self.unwrap_or(s.align_items);
+                let outer_h = placed[k].2;
+                let dy = match align {
+                    Align::Center => (line_cross - outer_h) / 2.0,
+                    Align::End => line_cross - outer_h,
+                    Align::Stretch => {
+                        if it.b.style.height == Len::Auto && outer_h < line_cross {
+                            let h = line_cross - it.margin[TOP] - it.margin[BOTTOM];
+                            self.stretch(placed[k].1.deco, h);
+                        }
+                        0.0
+                    }
+                    Align::Start | Align::Baseline => 0.0,
+                };
+                if dy != 0.0 {
+                    let (before, after) = placed.split_at(k + 1);
+                    let next = after.first().map(|p| &p.0);
+                    self.shift_between(&before[k].0, next, 0.0, dy);
+                }
+                if first_baseline.is_none() {
+                    first_baseline = placed[k].1.first_baseline.map(|b| b + dy);
+                }
+            }
+            cur_y += line_cross + row_gap;
+        }
+        ((cur_y - row_gap - y).max(0.0), first_baseline)
+    }
+
