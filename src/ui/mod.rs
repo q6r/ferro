@@ -1776,3 +1776,67 @@ impl App {
         self.request_redraw();
     }
 
+    fn palette_key(&mut self, ev: &KeyEvent, ctrl: bool, shift: bool, alt: bool) {
+        let mut changed = false;
+        match &ev.logical_key {
+            Key::Named(NamedKey::Enter) => return self.submit_palette(),
+            Key::Named(NamedKey::Escape) => return self.close_palette(),
+            Key::Named(NamedKey::Backspace) => {
+                self.omni.backspace(ctrl);
+                changed = true;
+            }
+            Key::Named(NamedKey::Delete) => {
+                self.omni.delete(ctrl);
+                changed = true;
+            }
+            Key::Named(NamedKey::ArrowLeft) => self.omni.left(shift, ctrl),
+            Key::Named(NamedKey::ArrowRight) => self.omni.right(shift, ctrl),
+            Key::Named(NamedKey::Home) => self.omni.home(shift),
+            Key::Named(NamedKey::End) => self.omni.end(shift),
+            Key::Named(NamedKey::ArrowDown) if !self.suggestions.is_empty() => {
+                self.suggestion = (self.suggestion + 1) % self.suggestions.len();
+            }
+            Key::Named(NamedKey::ArrowUp) if !self.suggestions.is_empty() => {
+                let n = self.suggestions.len();
+                self.suggestion = (self.suggestion + n - 1) % n;
+            }
+            Key::Character(c) if ctrl => match c.to_lowercase().as_str() {
+                "a" => self.omni.select_all(),
+                "c" | "x" => {
+                    let sel = self.omni.selected_text().to_string();
+                    if !sel.is_empty()
+                        && let Some(cb) = self.clipboard()
+                    {
+                        let _ = cb.set_text(sel);
+                    }
+                    if c.eq_ignore_ascii_case("x") {
+                        self.omni.backspace(false);
+                        changed = true;
+                    }
+                }
+                "v" => {
+                    if let Some(text) = self.clipboard().and_then(|cb| cb.get_text().ok()) {
+                        let line = text.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+                        self.omni.insert(&line);
+                        changed = true;
+                    }
+                }
+                _ => {}
+            },
+            _ => {
+                if !ctrl
+                    && !alt
+                    && let Some(t) = &ev.text
+                {
+                    self.omni.insert(t);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.palette_edited = true;
+            self.refresh_suggestions();
+        }
+        self.request_redraw();
+    }
+
