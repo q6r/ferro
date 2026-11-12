@@ -252,3 +252,37 @@ fn run_js(file: Option<String>) -> i32 {
     }
 }
 
+fn log(msg: impl AsRef<str>) {
+    eprintln!("[ferro] {}", msg.as_ref());
+}
+
+fn ms(t: Instant) -> f64 {
+    t.elapsed().as_secs_f64() * 1000.0
+}
+
+/// URL, caminho de arquivo, ou domínio sem esquema (vira https://).
+fn resolve_target(t: &str) -> Result<Url, String> {
+    if let Ok(u) = Url::parse(t)
+        && matches!(u.scheme(), "http" | "https" | "file" | "data" | "ferro")
+    {
+        return Ok(u);
+    }
+    let p = std::path::Path::new(t);
+    if p.exists() {
+        let abs = std::path::absolute(p).map_err(|e| e.to_string())?;
+        return Url::from_file_path(&abs).map_err(|_| format!("caminho inválido: {t}"));
+    }
+    Url::parse(&format!("https://{t}")).map_err(|e| format!("{t}: {e}"))
+}
+
+fn render_png(a: &Args) -> Result<(), String> {
+    // os scripts precisam de pilha grande (o interpretador é recursivo)
+    let a = a.clone();
+    std::thread::Builder::new()
+        .stack_size(ferro::script::STACK_SIZE)
+        .spawn(move || render_png_inner(&a))
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|_| "a renderização falhou".to_string())?
+}
+
