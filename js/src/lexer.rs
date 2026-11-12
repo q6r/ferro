@@ -333,3 +333,83 @@ impl Lexer {
         })
     }
 
+    fn read_ident(&mut self) -> Result<(Rc<str>, bool), LexError> {
+        // caminho rápido: só ASCII, sem escapes
+        let start = self.pos;
+        let mut end = start;
+        while let Some(&c) = self.src.get(end) {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '$' {
+                end += 1;
+            } else {
+                break;
+            }
+        }
+        let next = self.src.get(end).copied().unwrap_or('\0');
+        if end > start && !self.src[start].is_ascii_digit() && next != '\\' && (next.is_ascii() || !is_id_part(next)) {
+            self.buf.clear();
+            self.buf.extend(&self.src[start..end]);
+            self.pos = end;
+            return Ok((self.intern(), false));
+        }
+        let mut s = String::new();
+        let mut escaped = false;
+        loop {
+            let c = self.peek();
+            if c == '\\' && self.peek_at(1) == 'u' {
+                self.pos += 2;
+                let ch = self.read_unicode_escape()?;
+                s.push(ch);
+                escaped = true;
+            } else if (s.is_empty() && is_id_start(c)) || (!s.is_empty() && is_id_part(c)) {
+                s.push(c);
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if s.is_empty() {
+            return Err(self.err("identificador inválido"));
+        }
+        self.buf = s;
+        Ok((self.intern(), escaped))
+    }
+
+    /// O Rc<str> do nome em `self.buf` (o mesmo para nomes iguais).
+    fn intern(&mut self) -> Rc<str> {
+        if let Some(r) = self.names.get(self.buf.as_str()) {
+            return r.clone();
+        }
+        let r: Rc<str> = Rc::from(self.buf.as_str());
+        self.names.insert(self.buf.as_str().into(), r.clone());
+        r
+    }
+
+    /// Depois de "\u": XXXX ou {X...}.
+    fn read_unicode_escape(&mut self) -> Result<char, LexError> {
+        let code = if self.peek() == '{' {
+            self.pos += 1;
+            let mut v: u32 = 0;
+            let mut n = 0;
+            while self.peek() != '}' {
+                let d = self.peek().to_digit(16).ok_or_else(|| self.err("escape unicode inválido"))?;
+                v = v.checked_mul(16).and_then(|v| v.checked_add(d)).ok_or_else(|| self.err("escape grande demais"))?;
+                self.pos += 1;
+                n += 1;
+            }
+            self.pos += 1;
+            if n == 0 || v > 0x10FFFF {
+                return Err(self.err("escape unicode inválido"));
+            }
+            v
+        } else {
+            let mut v = 0;
+            for _ in 0..4 {
+                let d = self.peek().to_digit(16).ok_or_else(|| self.err("escape unicode inválido"))?;
+                v = v * 16 + d;
+                self.pos += 1;
+            }
+            v
+        };
+        Ok(char::from_u32(code).unwrap_or('\u{FFFD}'))
+    }
+
