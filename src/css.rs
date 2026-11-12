@@ -660,3 +660,66 @@ fn match_compound(doc: &Document, node: NodeId, c: &Compound) -> bool {
 
 // ------------------------------------------------------------ folha de estilo
 
+pub fn parse_stylesheet(src: &str, ctx: &MediaContext) -> Stylesheet {
+    let clean = strip_comments(src);
+    let chars: Vec<char> = clean.chars().collect();
+    let mut p = Parser {
+        s: &chars,
+        pos: 0,
+        ctx,
+        faces: Vec::new(),
+    };
+    let mut rules = Vec::new();
+    p.parse_rule_list(&mut rules, false);
+    Stylesheet {
+        rules,
+        font_faces: p.faces,
+    }
+}
+
+/// Declarações soltas, como no atributo `style="..."`.
+pub fn parse_declarations(src: &str) -> Vec<Declaration> {
+    let mut out = Vec::new();
+    for part in split_top_level(&strip_comments(src), ';') {
+        let Some(colon) = part.find(':') else { continue };
+        let name = part[..colon].trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            continue;
+        }
+        let mut value = part[colon + 1..].trim().to_string();
+        let mut important = false;
+        if let Some(bang) = value.rfind('!')
+            && value[bang + 1..].trim().eq_ignore_ascii_case("important")
+        {
+            important = true;
+            value = value[..bang].trim().to_string();
+        }
+        if value.is_empty() {
+            continue;
+        }
+        let name = if name.starts_with("--") {
+            name.to_string()
+        } else {
+            name.to_ascii_lowercase()
+        };
+        out.push(Declaration {
+            name,
+            value,
+            important,
+        });
+    }
+    out
+}
+
+struct Parser<'a> {
+    s: &'a [char],
+    pos: usize,
+    ctx: &'a MediaContext,
+    faces: Vec<FontFaceRule>,
+}
+
+impl Parser<'_> {
+    fn eof(&self) -> bool {
+        self.pos >= self.s.len()
+    }
+
