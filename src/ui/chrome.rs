@@ -281,3 +281,63 @@ impl App {
         }
     }
 
+    /// Abas em pílulas no topo (layout "Cápsulas").
+    fn draw_tab_chips(&self, p: &mut Painter, t: &Theme, r: Rect, hits: &mut Hits) {
+        self.logo(p, t, r.x + 12.0, r.y + 2.0, 32.0, false);
+        let start = r.x + 56.0;
+        let avail = r.w - start - 100.0;
+        let cw = (avail / self.tabs.len().max(1) as f32).clamp(72.0, 220.0);
+        for i in 0..self.tabs.len() {
+            let chip = rect(start + i as f32 * cw, r.y + 2.0, cw - 8.0, 32.0);
+            let tab = &self.tabs[i];
+            let active = i == self.active;
+            let hovered = matches!(self.hover, Some(Hit::Tab(j) | Hit::CloseTab(j)) if j == i);
+            if active {
+                if !t.dark {
+                    p.shadow(chip, 16.0, 14);
+                }
+                p.rrect(chip, 16.0, t.row_selected());
+                p.stroke(chip, 16.0, 1.0, t.border);
+            } else if hovered {
+                p.rrect(chip, 16.0, hover_bg(t));
+            }
+            hits.push((chip, Hit::Tab(i)));
+            let ic = if tab.loading {
+                t.accent
+            } else if active {
+                t.text
+            } else {
+                t.muted
+            };
+            p.icon(chip.x + 18.0, chip.y + 16.0, tab.icon(), 16.0, ic);
+            let show_close = (active || hovered) && chip.w > 90.0;
+            let right = chip.x + chip.w - if show_close { 32.0 } else { 12.0 };
+            if right - (chip.x + 34.0) > 14.0 {
+                let title = p.ellipsize(&tab.title(), 13.0, Weight::Regular, right - (chip.x + 34.0));
+                let c = if active { t.text } else { t.muted };
+                p.text(chip.x + 34.0, Painter::baseline(chip.y + 16.0, 13.0), &title, 13.0, c, Weight::Regular);
+            }
+            if show_close {
+                let cb = rect(chip.x + chip.w - 27.0, chip.y + 6.0, 20.0, 20.0);
+                if self.hover == Some(Hit::CloseTab(i)) {
+                    p.rrect(cb, 10.0, t.field_hover);
+                }
+                p.icon(cb.x + 10.0, cb.y + 10.0, Icon::Close, 12.0, t.muted);
+                hits.push((cb, Hit::CloseTab(i)));
+            }
+        }
+        let nb = rect(start + self.tabs.len() as f32 * cw, r.y + 2.0, 32.0, 32.0);
+        if self.hover == Some(Hit::NewTab) {
+            p.rrect(nb, 16.0, hover_bg(t));
+        }
+        p.icon(nb.x + 16.0, nb.y + 16.0, Icon::Plus, 18.0, t.text);
+        hits.push((nb, Hit::NewTab));
+
+        let sb = rect(r.x + r.w - 44.0, r.y + 2.0, 32.0, 32.0);
+        if self.hover == Some(Hit::Settings) {
+            p.rrect(sb, 16.0, hover_bg(t));
+        }
+        p.icon(sb.x + 16.0, sb.y + 16.0, Icon::Settings, 19.0, t.text);
+        hits.push((sb, Hit::Settings));
+    }
+
