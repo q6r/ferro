@@ -1070,3 +1070,66 @@ fn syntax<T>(msg: impl Into<String>, line: u32) -> CResult<T> {
 
 // ------------------------------------------------------------ entradas
 
+/// Compila um script inteiro.
+pub fn compile_script(prog: &Program, file: &str) -> CResult<Rc<Code>> {
+    let t = std::time::Instant::now();
+    let mut r = Resolver::new(prog.strict);
+    r.program(prog);
+    if std::env::var_os("FERRO_TEMPOS_JS").is_some() && t.elapsed().as_millis() > 20 {
+        eprintln!("[js] capturas: {:.0} ms ({} entradas)", t.elapsed().as_secs_f64() * 1000.0, r.out.len());
+    }
+    let mut c = Compiler {
+        fns: Vec::new(),
+        file: file.into(),
+        captures: r.out,
+        imports: prog.imports.clone(),
+    };
+    let code = c.script(prog)?;
+    // depuração: FERRO_BYTECODE=1 mostra as instruções de cada função
+    if std::env::var_os("FERRO_BYTECODE").is_some() {
+        fn dump(c: &Code, depth: usize) {
+            eprintln!("{}== {} ({} regs)", "  ".repeat(depth), c.name, c.nregs);
+            for (i, op) in c.ops.iter().enumerate() {
+                eprintln!("{}{i:4} {op:?}", "  ".repeat(depth));
+            }
+            for f in &c.functions {
+                dump(f, depth + 1);
+            }
+        }
+        dump(&code, 0);
+    }
+    Ok(code)
+}
+
+/// Compila uma função isolada no escopo global (`new Function`).
+pub fn compile_standalone(def: &FunctionDef, file: &str) -> CResult<Rc<Code>> {
+    let mut r = Resolver::new(false);
+    r.function(def, def.name.is_some());
+    let mut c = Compiler {
+        fns: Vec::new(),
+        file: file.into(),
+        captures: r.out,
+        imports: Default::default(),
+    };
+    c.fns.push(FnState::new(FnKind::Normal, false, FxHashSet::default(), true));
+    c.push_scope(ScopeKind::Script, 0);
+    let idx = c.function(def, None, None, def.name.is_some())?;
+    let st = c.fns.pop().unwrap();
+    Ok(st.functions[idx as usize].clone())
+}
+
+impl Compiler {
+    fn f(&mut self) -> &mut FnState {
+        self.fns.last_mut().unwrap()
+    }
+
+    fn fr(&self) -> &FnState {
+        self.fns.last().unwrap()
+    }
+
+    fn emit(&mut self, op: Op) -> usize {
+        let f = self.f();
+        f.ops.push(op);
+        f.ops.len() - 1
+    }
+
