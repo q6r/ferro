@@ -2075,3 +2075,43 @@ function sheetOf(el) {
   }
   return sh;
 }
+const SHEET_OF = new WeakMap();
+accessor(HTMLStyleElement.prototype, 'sheet', function () { return this.isConnected ? sheetOf(this) : null; });
+hidden(G, 'CSSStyleSheet', CSSStyleSheet);
+accessor(Document.prototype, 'styleSheets', function () {
+  return [...this.querySelectorAll('style, link[rel~=stylesheet]')].map((e) => e.sheet).filter(Boolean);
+});
+// adoptedStyleSheets: as folhas viram um <style> dentro da raiz (ou do <head>)
+const ADOPTED = new WeakMap();
+function adoptedAccessor(P, place) {
+  accessor(P, 'adoptedStyleSheets', function () { return (ADOPTED.get(this) || {}).list || []; }, function (list) {
+    let st = ADOPTED.get(this);
+    if (!st) {
+      st = { list: [], el: document.createElement('style') };
+      st.el.setAttribute('data-ferro-adopted', '');
+      place(this).appendChild(st.el);
+      ADOPTED.set(this, st);
+    }
+    st.list = [...list];
+    st.el.textContent = st.list.map((sh) => SHEETS.get(sh) ? SHEETS.get(sh).rules.join('\n') : '').join('\n');
+  });
+}
+adoptedAccessor(Document.prototype, (d) => d.head || d.documentElement);
+adoptedAccessor(ShadowRoot.prototype, (r) => r);
+
+// ---------------------------------------------------- Document (JS)
+const DP = Document.prototype;
+accessor(DP, 'cookie', () => N.cookie(), (v) => N.setCookie(String(v)));
+accessor(DP, 'referrer', () => '');
+accessor(DP, 'domain', () => N.urlParse(N.href())?.hostname ?? '', () => {});
+accessor(DP, 'characterSet', () => 'UTF-8');
+accessor(DP, 'charset', () => 'UTF-8');
+accessor(DP, 'inputEncoding', () => 'UTF-8');
+accessor(DP, 'contentType', () => 'text/html');
+accessor(DP, 'compatMode', function () { return this.doctype ? 'CSS1Compat' : 'BackCompat'; });
+accessor(DP, 'visibilityState', () => 'visible');
+accessor(DP, 'hidden', () => false);
+accessor(DP, 'fullscreenElement', () => N.fullscreenElement());
+accessor(DP, 'webkitFullscreenElement', () => N.fullscreenElement());
+accessor(DP, 'webkitCurrentFullScreenElement', () => N.fullscreenElement());
+accessor(DP, 'fullscreen', () => !!N.fullscreenElement());
