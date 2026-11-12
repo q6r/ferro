@@ -523,3 +523,123 @@ fn sym_search(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     vm.get_str(&res, "index")
 }
 
+fn sym_replace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let r = a.this.clone();
+    if !matches!(r, Value::Object(_)) {
+        return Err(vm.type_error("RegExp.prototype[Symbol.replace] called on non-object"));
+    }
+    let s = vm.to_string(&a.arg(0))?;
+    let replace_value = a.arg(1);
+    let functional = replace_value.is_callable();
+    let template = if functional { JsStr::empty() } else { vm.to_string(&replace_value)? };
+    let fl = rx_flags(vm, &r)?;
+    let global = fl.contains('g');
+    let unicode = fl.contains('u') || fl.contains('v');
+    if global {
+        set_last_index(vm, &r, 0)?;
+    }
+    // (casado, posição, capturas, grupos)
+    let mut results: Vec<(JsStr, usize, Vec<Value>, Value)> = Vec::new();
+    let fast = builtin_exec_of(vm, &r)?;
+    if let Some(prog) = fast.as_ref().filter(|p| global && !p.flags.sticky) {
+        // caminho rápido: percorre as ocorrências direto, sem passar por lastIndex
+        let mut pos = 0usize;
+        while pos <= s.len() {
+            let Some(caps) = prog.search(s.units(), pos, false) else { break };
+            let matched = s.slice(caps[0], caps[1]);
+            let cap_vals: Vec<Value> = (1..=prog.ngroups as usize).map(|g| slice_or_undef(&s, caps[2 * g], caps[2 * g + 1])).collect();
+            let groups = if prog.names.is_empty() {
+                Value::Undefined
+            } else {
+                let g = ObjRef::new(Object::new(None, Kind::Ordinary));
+                for (name, idx) in &prog.names {
+                    vm.define_data(&g, PropKey::Str(JsStr::new(name)), cap_vals[*idx as usize - 1].clone());
+                }
+                Value::Object(g)
+            };
+            pos = if caps[1] == caps[0] { advance(&s, caps[1], unicode) } else { caps[1] };
+            results.push((matched, caps[0], cap_vals, groups));
+        }
+        set_last_index(vm, &r, 0)?;
+    } else if let Some(prog) = fast {
+        while let Some(hit) = builtin_match(vm, &r, &prog, &s)? {
+            let matched = s.slice(hit.caps[0], hit.caps[1]);
+            let caps: Vec<Value> = (1..=prog.ngroups as usize).map(|g| slice_or_undef(&s, hit.caps[2 * g], hit.caps[2 * g + 1])).collect();
+            let groups = if prog.names.is_empty() {
+                Value::Undefined
+            } else {
+                let g = ObjRef::new(Object::new(None, Kind::Ordinary));
+                for (name, idx) in &prog.names {
+                    vm.define_data(&g, PropKey::Str(JsStr::new(name)), caps[*idx as usize - 1].clone());
+                }
+                Value::Object(g)
+            };
+            let empty = matched.is_empty();
+            results.push((matched, hit.caps[0], caps, groups));
+            if !global {
+                break;
+            }
+            if empty {
+                let li = last_index(vm, &r)?;
+                set_last_index(vm, &r, advance(&s, li, unicode))?;
+            }
+        }
+    } else {
+        loop {
+            let res = regexp_exec(vm, &r, &s)?;
+            if matches!(res, Value::Null) {
+                break;
+            }
+            let n = {
+                let l = vm.get_str(&res, "length")?;
+                vm.to_integer(&l)?.max(0.0) as usize
+            };
+            let m0 = vm.get_index(&res, &Value::Number(0.0))?;
+            let matched = vm.to_string(&m0)?;
+            let pos_v = vm.get_str(&res, "index")?;
+            let pos = vm.to_integer(&pos_v)?.clamp(0.0, s.len() as f64) as usize;
+            let mut caps = Vec::new();
+            for k in 1..n {
+                let c = vm.get_index(&res, &Value::Number(k as f64))?;
+                caps.push(if c.is_undefined() { c } else { Value::String(vm.to_string(&c)?) });
+            }
+            let groups = vm.get_str(&res, "groups")?;
+            let empty = matched.is_empty();
+            results.push((matched, pos, caps, groups));
+            if !global {
+                break;
+            }
+            if empty {
+                let li = last_index(vm, &r)?;
+                set_last_index(vm, &r, advance(&s, li, unicode))?;
+            }
+        }
+    }
+    let mut out: Vec<u16> = Vec::with_capacity(s.len());
+    let mut next = 0usize;
+    for (matched, pos, caps, groups) in results {
+        let pos = pos.min(s.len());
+        let repl = if functional {
+            let mut args = vec![Value::String(matched.clone())];
+            args.extend(caps.iter().cloned());
+            args.push(Value::Number(pos as f64));
+            args.push(Value::String(s.clone()));
+            if !groups.is_undefined() {
+                args.push(groups.clone());
+            }
+            let rv = vm.call(&replace_value, Value::Undefined, args)?;
+            vm.to_string(&rv)?
+        } else {
+            let groups = if groups.is_undefined() { groups } else { Value::Object(vm.to_object(&groups)?) };
+            get_substitution(vm, &matched, &s, pos, &caps, &groups, &template)?
+        };
+        if pos >= next {
+            out.extend_from_slice(&s.units()[next..pos]);
+            out.extend_from_slice(repl.units());
+            next = (pos + matched.len()).min(s.len());
+        }
+    }
+    out.extend_from_slice(&s.units()[next.min(s.len())..]);
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
