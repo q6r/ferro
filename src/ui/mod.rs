@@ -650,3 +650,51 @@ impl App {
         self.request_redraw();
     }
 
+    fn close_tab(&mut self, i: usize, el: &ActiveEventLoop) {
+        if self.tabs.len() <= 1 {
+            el.exit();
+            return;
+        }
+        self.tabs.remove(i);
+        if i < self.active || self.active >= self.tabs.len() {
+            self.active = self.active.saturating_sub(1);
+        }
+        let a = self.active;
+        self.activate(a);
+    }
+
+    fn activate(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        self.active = i;
+        self.close_palette();
+        self.hover_link = None;
+        self.sync_viewport();
+        self.request_redraw();
+    }
+
+    /// Começa a carregar a entrada atual do histórico da aba `i`.
+    fn load(&mut self, i: usize) {
+        self.next_nav += 1;
+        let nav = self.next_nav;
+        let tab = &mut self.tabs[i];
+        tab.error = None;
+        let url = tab.url().clone();
+        if url.scheme() == "ferro" {
+            tab.engine.stop();
+            tab.frame = None;
+            tab.loading = false;
+            return;
+        }
+        tab.nav = nav;
+        tab.sent_scroll = -1.0;
+        tab.editing = false;
+        tab.loading = true;
+        tab.progress = 0.12;
+        tab.fresh = true;
+        tab.fragment = url.fragment().map(str::to_string);
+        let post = tab.pending_post.take();
+        tab.engine.navigate_post(nav, url, post);
+    }
+
