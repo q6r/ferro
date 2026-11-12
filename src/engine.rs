@@ -740,3 +740,46 @@ impl Drop for EngineHandle {
     }
 }
 
+fn make_frame(loaded: &Loaded, page: Page, width: f32, complete: bool) -> Box<Frame> {
+    Box::new(Frame {
+        url: loaded.url.clone(),
+        base: loaded.base.clone(),
+        title: loaded.current_title(),
+        status: loaded.status,
+        items: page.items,
+        height: page.height,
+        background: page.background,
+        links: page.links,
+        fixed_links: page.fixed_links,
+        anchors: page.anchors,
+        width,
+        complete,
+        videos: HashMap::new(),
+        scrollers: page.scrollers,
+        paused: Default::default(),
+    })
+}
+
+/// A página aberta numa aba: a sessão JS e o estado do carregamento.
+struct Current {
+    nav: u64,
+    session: crate::script::Session,
+    /// Ainda carregando recursos (o `load` da janela não disparou).
+    loading: bool,
+    started: std::time::Instant,
+    /// Último estado de foco avisado à interface.
+    editing: bool,
+    /// Último ponteiro avisado à interface.
+    cursor: crate::style::Cursor,
+}
+
+/// Desenha a sessão e manda o quadro para a interface.
+fn send_frame(cur: &mut Current, send: &impl Fn(Update), width: f32) {
+    let page = cur.session.render();
+    let complete = !cur.loading;
+    let mut frame = make_frame(&cur.session.host.borrow().page, page, width, complete);
+    frame.videos = cur.session.video_frames();
+    frame.paused = cur.session.paused_videos();
+    send(Update::Frame { nav: cur.nav, frame });
+}
+
