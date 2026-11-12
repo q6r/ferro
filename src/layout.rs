@@ -3279,3 +3279,66 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    /// Achata a subárvore em linha numa sequência de itens (texto, quebras,
+    /// caixas atômicas, floats), levando junto decorações e links herdados.
+    fn flatten(&self, b: &'a LayoutBox, out: &mut Vec<Item<'a>>, inh: &Inherited, avail: f32) {
+        for c in &b.children {
+            match c.kind {
+                BoxKind::Text(n) => {
+                    if let Some(t) = &c.text {
+                        out.push(Item::Text {
+                            text: t.to_string(),
+                            style: c.style.clone(),
+                            inh: inh.clone(),
+                        });
+                    } else if let NodeData::Text(t) = &self.doc.node(n).data {
+                        out.push(Item::Text {
+                            text: t.clone(),
+                            style: c.style.clone(),
+                            inh: inh.clone(),
+                        });
+                    }
+                }
+                BoxKind::Inline(n) => {
+                    if self.doc.tag(n) == Some("br") && !c.generated {
+                        out.push(Item::Break);
+                        continue;
+                    }
+                    if !c.generated
+                        && let Some(el) = self.doc.element(n)
+                        && let Some(name) = el.id().or(if el.tag == "a" { el.attr("name") } else { None })
+                    {
+                        out.push(Item::Anchor(name.to_string()));
+                    }
+                    let mut inner = inh.enter(self.doc, Some(n), &c.style);
+                    inner.elem = if c.generated { inh.elem } else { Some(n) };
+                    let st = &c.style;
+                    let decorated = st.visible
+                        && (!st.background.is_transparent()
+                            || matches!(st.bg_image, Some(BgImage::Linear(_)))
+                            || st.border(LEFT) + st.border(RIGHT) + st.border(TOP) + st.border(BOTTOM) > 0.0
+                            || px(st.padding[LEFT]) + px(st.padding[RIGHT]) > 0.0
+                            || px(st.margin[LEFT]) != 0.0
+                            || px(st.margin[RIGHT]) != 0.0);
+                    if decorated {
+                        let id = out.len();
+                        out.push(Item::InlineStart(c.style.clone(), id));
+                        self.flatten(c, out, &inner, avail);
+                        out.push(Item::InlineEnd(c.style.clone(), id));
+                    } else {
+                        self.flatten(c, out, &inner, avail);
+                    }
+                }
+                BoxKind::InlineBlock(_) => out.push(Item::InlineBlock(c, inh.clone())),
+                BoxKind::Atomic(n) => self.atomic_item(n, c, out, inh, avail),
+                BoxKind::Block(_) | BoxKind::Anonymous => {
+                    if c.is_out_of_flow() {
+                        out.push(Item::OutOfFlow(c, inh.clone()));
+                    } else if c.is_float() {
+                        out.push(Item::Float(c, inh.clone()));
+                    }
+                }
+            }
+        }
+    }
+
