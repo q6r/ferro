@@ -948,3 +948,49 @@ mod tests {
         vec![Cmd::Move(x, y), Cmd::Line(x + w, y), Cmd::Line(x + w, y + h), Cmd::Line(x, y + h), Cmd::Close]
     }
 
+    #[test]
+    fn preenche_traca_e_le() {
+        let mut b = Bitmap::new(20, 20);
+        b.fill_path(&rect(2.0, 2.0, 6.0, 6.0), false, &solid([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(&b.get_image_data(4, 4, 1, 1), &[255, 0, 0, 255]);
+        assert_eq!(&b.get_image_data(10, 10, 1, 1), &[0, 0, 0, 0]);
+        // meio pixel de borda: metade da cobertura
+        b.fill_path(&rect(10.5, 0.0, 5.0, 5.0), false, &solid([0.0, 0.0, 1.0, 1.0]));
+        assert!((120..=135).contains(&b.get_image_data(10, 2, 1, 1)[3]));
+        // traço horizontal de 2px
+        let st = StrokeStyle { width: 2.0, cap: Cap::Butt, join: Join::Miter, miter_limit: 10.0, dash: vec![], dash_offset: 0.0 };
+        b.stroke_path(&[Cmd::Move(0.0, 15.0), Cmd::Line(20.0, 15.0)], &st, &solid([0.0, 1.0, 0.0, 1.0]));
+        assert_eq!(&b.get_image_data(5, 14, 1, 1), &[0, 255, 0, 255]);
+        assert_eq!(b.get_image_data(5, 17, 1, 1)[3], 0);
+        // destination-out apaga
+        let mut p = solid([0.0, 0.0, 0.0, 1.0]);
+        p.op = Op::DestinationOut;
+        b.fill_path(&rect(0.0, 0.0, 5.0, 20.0), false, &p);
+        assert_eq!(b.get_image_data(3, 4, 1, 1)[3], 0);
+        // recorte
+        let mut c = Bitmap::new(10, 10);
+        c.clip_path(&rect(0.0, 0.0, 5.0, 10.0), false);
+        c.fill_path(&rect(0.0, 0.0, 10.0, 10.0), false, &solid([1.0, 1.0, 1.0, 1.0]));
+        assert_eq!(c.get_image_data(2, 2, 1, 1)[3], 255);
+        assert_eq!(c.get_image_data(7, 2, 1, 1)[3], 0);
+    }
+
+    #[test]
+    fn gradiente_e_imagem() {
+        let mut b = Bitmap::new(10, 1);
+        let p = Paint {
+            style: Style::Linear { p0: (0.0, 0.0), p1: (10.0, 0.0), stops: vec![(0.0, [0.0, 0.0, 0.0, 1.0]), (1.0, [1.0, 1.0, 1.0, 1.0])] },
+            inv: Mat::IDENTITY,
+            alpha: 1.0,
+            op: Op::SourceOver,
+        };
+        b.fill_path(&rect(0.0, 0.0, 10.0, 1.0), false, &p);
+        let px = b.get_image_data(0, 0, 10, 1);
+        assert!(px[0] < 20 && px[36] > 230, "{px:?}");
+        let img = ImageData { width: 2, height: 1, rgba: vec![255, 0, 0, 255, 0, 0, 255, 255] };
+        let mut c = Bitmap::new(4, 2);
+        c.draw_image(&img, (0.0, 0.0, 2.0, 1.0), (0.0, 0.0, 4.0, 2.0), Mat::IDENTITY, 1.0, Op::SourceOver, false);
+        assert_eq!(&c.get_image_data(0, 0, 1, 1), &[255, 0, 0, 255]);
+        assert_eq!(&c.get_image_data(3, 1, 1, 1), &[0, 0, 255, 255]);
+    }
+}
