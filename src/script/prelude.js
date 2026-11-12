@@ -544,3 +544,43 @@ accessor(CSSStyleDeclaration.prototype, 'cssText', function () {
   if (!s.computed) s.el.setAttribute('style', serializeStyle(parseStyle(String(v))));
 });
 accessor(CSSStyleDeclaration.prototype, 'parentRule', () => null);
+const CSS_PROPS = ('align-content align-items align-self all animation animation-delay animation-direction ' +
+  'animation-duration animation-fill-mode animation-iteration-count animation-name animation-play-state ' +
+  'animation-timing-function appearance aspect-ratio backdrop-filter backface-visibility background ' +
+  'background-attachment background-blend-mode background-clip background-color background-image ' +
+  'background-origin background-position background-position-x background-position-y background-repeat ' +
+  'background-size block-size border border-block border-bottom border-bottom-color border-bottom-left-radius ' +
+  'border-bottom-right-radius border-bottom-style border-bottom-width border-collapse border-color border-image ' +
+  'border-inline border-left border-left-color border-left-style border-left-width border-radius border-right ' +
+  'border-right-color border-right-style border-right-width border-spacing border-style border-top ' +
+  'border-top-color border-top-left-radius border-top-right-radius border-top-style border-top-width ' +
+  'border-width bottom box-shadow box-sizing break-after break-before break-inside caption-side caret-color ' +
+  'clear clip clip-path color column-count column-gap column-rule column-span column-width columns contain ' +
+  'container content content-visibility counter-increment counter-reset cursor direction display empty-cells ' +
+  'fill fill-opacity filter flex flex-basis flex-direction flex-flow flex-grow flex-shrink flex-wrap float ' +
+  'font font-family font-feature-settings font-kerning font-size font-stretch font-style font-variant ' +
+  'font-variant-numeric font-weight gap grid grid-area grid-auto-columns grid-auto-flow grid-auto-rows ' +
+  'grid-column grid-column-end grid-column-start grid-row grid-row-end grid-row-start grid-template ' +
+  'grid-template-areas grid-template-columns grid-template-rows height hyphens image-rendering inline-size ' +
+  'inset inset-block inset-inline isolation justify-content justify-items justify-self left letter-spacing ' +
+  'line-break line-clamp line-height list-style list-style-image list-style-position list-style-type margin ' +
+  'margin-block margin-block-end margin-block-start margin-bottom margin-inline margin-inline-end ' +
+  'margin-inline-start margin-left margin-right margin-top mask mask-image max-block-size max-height ' +
+  'max-inline-size max-width min-block-size min-height min-inline-size min-width mix-blend-mode object-fit ' +
+  'object-position opacity order outline outline-color outline-offset outline-style outline-width overflow ' +
+  'overflow-anchor overflow-wrap overflow-x overflow-y overscroll-behavior padding padding-block ' +
+  'padding-block-end padding-block-start padding-bottom padding-inline padding-inline-end padding-inline-start ' +
+  'padding-left padding-right padding-top page-break-after page-break-before page-break-inside perspective ' +
+  'perspective-origin place-content place-items place-self pointer-events position quotes resize right rotate ' +
+  'row-gap scale scroll-behavior scroll-margin scroll-padding scroll-snap-align scroll-snap-type scrollbar-color ' +
+  'scrollbar-gutter scrollbar-width shape-outside stroke stroke-dasharray stroke-dashoffset stroke-linecap ' +
+  'stroke-linejoin stroke-opacity stroke-width tab-size table-layout text-align text-align-last ' +
+  'text-decoration text-decoration-color text-decoration-line text-decoration-style text-decoration-thickness ' +
+  'text-indent text-overflow text-rendering text-shadow text-transform text-underline-offset ' +
+  'text-underline-position top touch-action transform transform-origin transform-style transition ' +
+  'transition-delay transition-duration transition-property transition-timing-function translate ' +
+  'unicode-bidi user-select vertical-align visibility white-space width will-change word-break ' +
+  'word-spacing word-wrap writing-mode z-index zoom -webkit-appearance -webkit-line-clamp ' +
+  '-webkit-box-orient -webkit-font-smoothing -webkit-text-size-adjust -webkit-user-select ' +
+  '-webkit-tap-highlight-color -webkit-transform -webkit-transition -webkit-mask-image -webkit-overflow-scrolling ' +
+  '-webkit-backdrop-filter -moz-osx-font-smoothing').split(' ');
