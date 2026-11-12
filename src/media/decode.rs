@@ -210,3 +210,70 @@ impl Avc {
         })
     }
 
+    fn decode(&mut self, s: &Sample) -> Result<Vec<Frame>, String> {
+        // tamanho + NAL → código de início + NAL (Annex-B)
+        let mut au = Vec::with_capacity(s.data.len() + self.header.len() + 32);
+        if s.key {
+            au.extend_from_slice(&self.header);
+        }
+        let d = &s.data;
+        let mut i = 0;
+        while i + self.nal_len <= d.len() {
+            let mut n = 0usize;
+            for k in 0..self.nal_len {
+                n = (n << 8) | d[i + k] as usize;
+            }
+            i += self.nal_len;
+            if i + n > d.len() {
+                break;
+            }
+            au.extend_from_slice(&[0, 0, 0, 1]);
+            au.extend_from_slice(&d[i..i + n]);
+            i += n;
+        }
+        match self.dec.decode(&au) {
+            Ok(Some(f)) => {
+                let (w, h) = (f.width, f.height);
+                let frame = Frame::from_planes(s.pts, w, h, &f.y, w, &f.u, &f.v, w / 2);
+                self.dec.recycle_frame(f);
+                Ok(vec![frame])
+            }
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(format!("h264: {e:?}")),
+        }
+    }
+}
+
+/// Decodificador de vídeo de uma trilha.
+pub enum VideoDecoder {
+    Av1(av1::Av1),
+    Avc(Box<Avc>),
+}
+
+impl VideoDecoder {
+    pub fn new(codec: &Codec) -> Option<VideoDecoder> {
+        match codec {
+            Codec::Av1 { .. } => av1::Av1::new().map(VideoDecoder::Av1),
+            Codec::Avc { config } => Avc::new(config).map(|a| VideoDecoder::Avc(Box::new(a))),
+            _ => None,
+        }
+    }
+
+    pub fn decode(&mut self, s: &Sample) -> Result<Vec<Frame>, String> {
+        match self {
+            VideoDecoder::Av1(d) => d.decode(s),
+            VideoDecoder::Avc(d) => d.decode(s),
+        }
+    }
+
+    /// Antes de pular para outro ponto (busca): esquece o que estava no meio.
+    pub fn reset(&mut self) {
+        match self {
+            VideoDecoder::Av1(d) => d.reset(),
+            VideoDecoder::Avc(d) => d.dec = rusty_h264_decoder::Decoder::new(),
+        }
+    }
+}
+
+// ------------------------------------------------------------------- AAC
+
