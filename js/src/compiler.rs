@@ -3469,3 +3469,116 @@ impl Compiler {
 
     // ------------------------------------------------------------- classes
 
+    /// Compila uma classe e deixa o construtor na pilha.
+    fn class(&mut self, c: &ClassDef, name: Option<Name>) -> CResult<()> {
+        let cname = c.name.clone().or(name).unwrap_or_else(|| "".into());
+        let saved_strict = self.fr().strict;
+        self.f().strict = true;
+        self.push_scope(ScopeKind::Block, key_of(c));
+        if let Some(n) = &c.name {
+            self.declare(n.clone(), Decl::ClassInner, false, false);
+        }
+        let mut privs: Vec<Name> = Vec::new();
+        for m in &c.members {
+            if let PropKeyExpr::Private(n) = &m.key
+                && !privs.contains(n)
+            {
+                privs.push(n.clone());
+            }
+        }
+        for p in &privs {
+            self.declare(format!("#{p}").into(), Decl::Hidden, true, true);
+        }
+        for (i, m) in c.members.iter().enumerate() {
+            if matches!(m.kind, MemberKind::Field(_)) && matches!(m.key, PropKeyExpr::Computed(_)) {
+                self.declare(format!("%k{i}").into(), Decl::Hidden, true, true);
+            }
+        }
+        self.open_env();
+        for p in &privs {
+            let k = self.konst(&format!("#{p}"));
+            self.emit(Op::NewPrivate(k));
+            self.init(&format!("#{p}"));
+        }
+        if let Some(sup) = &c.superclass {
+            self.expr(sup)?;
+        }
+        let derived = c.superclass.is_some();
+        let ctor_def = match &c.constructor {
+            Some(f) => f.clone(),
+            None => Rc::new(default_constructor(&cname, derived, c.line)),
+        };
+        let ctor_idx = self.function(&ctor_def, Some(cname.clone()), Some(c.source.clone()), false)?;
+        self.emit(Op::MakeClass(ctor_idx, derived));
+        // métodos e chaves computadas, em ordem
+        for (i, m) in c.members.iter().enumerate() {
+            let private = matches!(m.key, PropKeyExpr::Private(_));
+            match &m.kind {
+                MemberKind::Method | MemberKind::Getter | MemberKind::Setter if !private => {
+                    let kind = match m.kind {
+                        MemberKind::Getter => GETTER,
+                        MemberKind::Setter => SETTER,
+                        _ => METHOD,
+                    };
+                    self.emit(if m.is_static { Op::Over } else { Op::Dup });
+                    self.prop_key(&m.key)?;
+                    let name = match &m.key {
+                        PropKeyExpr::Name(n) => Some(n.clone()),
+                        _ => None,
+                    };
+                    if let Some(f) = &m.func {
+                        let idx = self.function(f, name, None, false)?;
+                        self.emit(Op::Closure(idx));
+                    }
+                    self.emit(Op::DefineMethod(kind, false));
+                    self.emit(Op::Pop);
+                }
+                MemberKind::Field(_) => {
+                    if let PropKeyExpr::Computed(e) = &m.key {
+                        self.expr(e)?;
+                        self.emit(Op::ToPropertyKey);
+                        self.init(&format!("%k{i}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // campos de instância e métodos privados
+        let inst: Vec<(usize, &ClassMember)> = c
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                !m.is_static && (matches!(m.kind, MemberKind::Field(_)) || matches!(m.key, PropKeyExpr::Private(_)))
+            })
+            .collect();
+        if !inst.is_empty() {
+            let idx = self.init_function(&inst, &cname, class_init_key(c, false))?;
+            self.emit(Op::Closure(idx));
+            self.emit(Op::SetFields);
+        }
+        self.emit(Op::Pop);
+        if let Some(n) = &c.name {
+            self.emit(Op::Dup);
+            self.init(n);
+        }
+        let stat: Vec<(usize, &ClassMember)> = c
+            .members
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                m.is_static
+                    && (matches!(m.kind, MemberKind::Field(_) | MemberKind::StaticBlock(_)) || matches!(m.key, PropKeyExpr::Private(_)))
+            })
+            .collect();
+        if !stat.is_empty() {
+            self.emit(Op::Dup);
+            let idx = self.init_function(&stat, &cname, class_init_key(c, true))?;
+            self.emit(Op::Closure(idx));
+            self.emit(Op::CallInit);
+        }
+        self.pop_scope();
+        self.f().strict = saved_strict;
+        Ok(())
+    }
+
