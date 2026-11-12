@@ -263,3 +263,52 @@ fn concat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(out))
 }
 
+fn copy_within(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let to = rel_index(vm, &a.arg(0), len, 0)?;
+    let from = rel_index(vm, &a.arg(1), len, 0)?;
+    let end = rel_index(vm, &a.arg(2), len, len)?;
+    let count = end.saturating_sub(from).min(len - to);
+    let vals: Vec<(bool, Value)> = (0..count)
+        .map(|k| {
+            let h = has_i(vm, &o, from + k);
+            let v = if h { get_i(vm, &o, from + k) } else { Ok(Value::Undefined) };
+            v.map(|v| (h, v))
+        })
+        .collect::<Result<_, _>>()?;
+    for (k, (h, v)) in vals.into_iter().enumerate() {
+        if h {
+            set_i(vm, &o, to + k, v)?;
+        } else {
+            del_i(vm, &o, to + k)?;
+        }
+    }
+    Ok(Value::Object(o))
+}
+
+fn make_iter(vm: &mut Vm, a: &CallArgs, kind: IterKind) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let it = ObjRef::new(Object::new(
+        Some(vm.realm.array_iter_proto.clone()),
+        Kind::ArrayIter {
+            target: Value::Object(o),
+            index: 0,
+            kind,
+        },
+    ));
+    Ok(Value::Object(it))
+}
+
+fn entries(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    make_iter(vm, a, IterKind::Entries)
+}
+
+fn keys(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    make_iter(vm, a, IterKind::Keys)
+}
+
+pub fn values(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    make_iter(vm, a, IterKind::Values)
+}
+
