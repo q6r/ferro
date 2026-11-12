@@ -1,0 +1,47 @@
+[package]
+name = "ferro"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = { version = "3.7.0", default-features = false }
+ferro-js = { version = "0.1.0", path = "js" }
+fontdue = "0.9.5"
+# contornos de glifos por id (camadas dos emoji coloridos); o fontdue já usa
+ttf-parser = "0.25.1"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+jiff = "0.2.43"
+png = "0.18.1"
+rustls-rustcrypto = "0.1.0-pre.0"
+softbuffer = "0.4.8"
+ureq = { version = "3.5.1", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots", "gzip"] }
+url = "2.5.8"
+winit = "0.30"
+wuff = "0.2.10"
+# mídia (tudo em Rust, sem assembly nem C)
+rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8"] }
+rusty_h264-decoder = { version = "0.17.2", default-features = false, features = ["std"] }
+symphonia-core = "0.6.1"
+symphonia-codec-aac = "0.6.1"
+cpal = "0.18.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
+
+# só para o perfilador (examples/perfil.rs)
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_SystemInformation",
+    "Win32_System_Kernel",
+] }
+
+# release com símbolos (perfilador)
+[profile.perfil]
+inherits = "release"
+debug = "limited"
+
+[workspace]
+members = ["js"]
