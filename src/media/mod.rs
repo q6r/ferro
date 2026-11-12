@@ -53,3 +53,73 @@ pub struct SourceBuffer {
 }
 
 impl SourceBuffer {
+    /// Intervalos [início, fim) com dados (as amostras de uma trilha).
+    pub fn buffered(&self) -> Vec<(f64, f64)> {
+        let mut out: Vec<(f64, f64)> = Vec::new();
+        // a trilha com menos dados define (vídeo e áudio no mesmo buffer: raro no YouTube)
+        let mut ranges_per_track: Vec<Vec<(f64, f64)>> = Vec::new();
+        for list in self.samples.values() {
+            let list = list.lock().unwrap();
+            let mut iv: Vec<(f64, f64)> = list.iter().map(|s| (s.pts, s.pts + s.duration.max(0.001))).collect();
+            iv.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let mut merged: Vec<(f64, f64)> = Vec::new();
+            for (s, e) in iv {
+                match merged.last_mut() {
+                    // tolera buracos pequenos entre amostras
+                    Some(last) if s <= last.1 + 0.15 => last.1 = last.1.max(e),
+                    _ => merged.push((s, e)),
+                }
+            }
+            ranges_per_track.push(merged);
+        }
+        if let Some(first) = ranges_per_track.first() {
+            out = first.clone();
+            for other in &ranges_per_track[1..] {
+                out = intersect(&out, other);
+            }
+        }
+        out
+    }
+}
+
+fn intersect(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for &(s1, e1) in a {
+        for &(s2, e2) in b {
+            let (s, e) = (s1.max(s2), e1.min(e2));
+            if e > s {
+                out.push((s, e));
+            }
+        }
+    }
+    out
+}
+
+pub struct MediaSource {
+    pub duration: f64,
+    pub buffers: Vec<u32>,
+    pub ended: bool,
+}
+
+/// Estado de reprodução de um elemento de mídia.
+pub struct Playback {
+    pub source: Option<u32>,
+    pub paused: bool,
+    pub seeking: bool,
+    pub ended: bool,
+    /// Esperando dados (tocando, mas sem o que mostrar).
+    pub waiting: bool,
+    pub ready_state: u8,
+    pub rate: f64,
+    pub volume: f64,
+    pub muted: bool,
+    /// Tempo da mídia em `since` (o relógio anda a partir daí quando toca).
+    base: f64,
+    since: Instant,
+    last_timeupdate: Instant,
+    pub width: u32,
+    pub height: u32,
+    /// Decodificadores e o quadro atual.
+    pub pipeline: player::Pipeline,
+}
+
