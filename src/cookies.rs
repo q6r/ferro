@@ -107,3 +107,63 @@ pub fn parse_http_date(s: &str) -> Option<f64> {
     parse_date(s)
 }
 
+/// Interpreta um `Set-Cookie` (ou uma atribuição a `document.cookie`).
+fn parse(line: &str, url: &Url, from_http: bool) -> Option<Cookie> {
+    let mut parts = line.split(';');
+    let (name, value) = parts.next()?.split_once('=').unwrap_or(("", line.split(';').next()?));
+    let (name, value) = (name.trim(), value.trim());
+    if name.is_empty() && value.is_empty() {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let mut c = Cookie {
+        name: name.into(),
+        value: value.into(),
+        domain: host.clone(),
+        host_only: true,
+        path: default_path(url),
+        secure: false,
+        http_only: false,
+        expires: None,
+        created: 0,
+    };
+    let mut max_age = None;
+    for attr in parts {
+        let (k, v) = attr.split_once('=').unwrap_or((attr, ""));
+        let (k, v) = (k.trim().to_ascii_lowercase(), v.trim());
+        match k.as_str() {
+            "expires" => {
+                if let Some(t) = parse_date(v) {
+                    c.expires = Some(t);
+                }
+            }
+            "max-age" => max_age = v.parse::<f64>().ok(),
+            "domain" => {
+                let d = v.trim_start_matches('.').to_ascii_lowercase();
+                if !d.is_empty() {
+                    // um site não pode criar cookie para outro domínio
+                    if !domain_match(&host, &d) {
+                        return None;
+                    }
+                    c.domain = d;
+                    c.host_only = false;
+                }
+            }
+            "path" if v.starts_with('/') => c.path = v.to_string(),
+            "secure" => c.secure = true,
+            "httponly" => c.http_only = true,
+            _ => {}
+        }
+    }
+    if let Some(s) = max_age {
+        c.expires = Some(now() + s);
+    }
+    if c.http_only && !from_http {
+        return None;
+    }
+    if c.secure && url.scheme() != "https" && host != "localhost" {
+        return None;
+    }
+    Some(c)
+}
+
