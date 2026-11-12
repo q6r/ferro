@@ -2613,3 +2613,276 @@ impl<'a> Ctx<'a> {
 
     // ---------------------------------------------------------------- grid
 
+    fn layout_grid(&mut self, b: &'a LayoutBox, x: f32, y: f32, w: f32, inh: &Inherited) -> (f32, Option<f32>) {
+        let s = &b.style;
+        let cgap = s.column_gap.resolve_or_zero(w);
+        let rgap = s.row_gap.resolve_or_zero(w);
+        let mut kids: Vec<&'a LayoutBox> = Vec::new();
+        for c in &b.children {
+            if c.is_out_of_flow() {
+                self.add_pending(c, x, y, inh);
+            } else {
+                kids.push(c);
+            }
+        }
+        kids.sort_by_key(|c| c.style.order);
+        if kids.is_empty() {
+            return (0.0, None);
+        }
+
+        // trilhas das colunas (com repeat(auto-fill, ...))
+        let mut tracks: Vec<TrackSize> = s.grid_columns.tracks.clone();
+        if let Some(rep) = &s.grid_columns.auto_fill {
+            let unit: f32 = rep
+                .iter()
+                .map(|t| track_fixed(t.min, w).or(track_fixed(t.max, w)).unwrap_or(0.0).max(1.0))
+                .sum::<f32>()
+                + cgap * rep.len() as f32;
+            let fixed: f32 = tracks.iter().filter_map(|t| track_fixed(t.max, w)).sum();
+            let n = (((w - fixed + cgap) / unit).floor() as usize).clamp(1, 64);
+            for _ in 0..n {
+                tracks.extend(rep.iter().copied());
+            }
+        }
+        let areas = s.grid_areas.clone();
+        let area_cols = areas.as_ref().map_or(0, |a| a.iter().map(Vec::len).max().unwrap_or(0));
+        let ncols = tracks.len().max(area_cols).max(1);
+        let auto = TrackSize {
+            min: Track::Auto,
+            max: Track::Auto,
+        };
+        tracks.resize(ncols, auto);
+
+        // posiciona os itens
+        let mut occupied: Vec<Vec<bool>> = Vec::new();
+        let mut items: Vec<GridItem<'a>> = Vec::new();
+        let mut cursor = (0usize, 0usize);
+        let resolve = |line: GridLine, end: GridLine, n: usize| -> (Option<usize>, usize) {
+            let idx = |v: i32| -> usize {
+                if v > 0 {
+                    (v - 1) as usize
+                } else {
+                    (n as i32 + 1 + v).max(0) as usize
+                }
+            };
+            match (line, end) {
+                (GridLine::Line(a), GridLine::Line(b)) => {
+                    let (a, b) = (idx(a), idx(b));
+                    (Some(a.min(b)), (a.max(b) - a.min(b)).max(1))
+                }
+                (GridLine::Line(a), GridLine::Span(sp)) => (Some(idx(a)), sp as usize),
+                (GridLine::Line(a), GridLine::Auto) => (Some(idx(a)), 1),
+                (GridLine::Span(sp), GridLine::Line(b)) => (Some(idx(b).saturating_sub(sp as usize)), sp as usize),
+                (GridLine::Span(sp), _) => (None, sp as usize),
+                (GridLine::Auto, GridLine::Span(sp)) => (None, sp as usize),
+                (GridLine::Auto, GridLine::Line(b)) => (Some(idx(b).saturating_sub(1)), 1),
+                _ => (None, 1),
+            }
+        };
+        let mark_cells = |occupied: &mut Vec<Vec<bool>>, r: usize, c: usize, rs: usize, cs: usize| {
+            while occupied.len() < r + rs {
+                occupied.push(vec![false; ncols]);
+            }
+            for row in occupied.iter_mut().skip(r).take(rs) {
+                for cell in row.iter_mut().skip(c).take(cs) {
+                    *cell = true;
+                }
+            }
+        };
+        for &c in &kids {
+            let cs = &c.style;
+            // área nomeada
+            if let (Some(name), Some(areas)) = (&cs.grid_area, &areas) {
+                let mut found: Option<(usize, usize, usize, usize)> = None;
+                for (r, row) in areas.iter().enumerate() {
+                    for (col, cell) in row.iter().enumerate() {
+                        if cell == name {
+                            found = Some(match found {
+                                None => (r, col, r, col),
+                                Some((r0, c0, r1, c1)) => (r0.min(r), c0.min(col), r1.max(r), c1.max(col)),
+                            });
+                        }
+                    }
+                }
+                if let Some((r0, c0, r1, c1)) = found {
+                    mark_cells(&mut occupied, r0, c0, r1 - r0 + 1, c1 - c0 + 1);
+                    items.push(GridItem {
+                        b: c,
+                        row: r0,
+                        col: c0,
+                        rspan: r1 - r0 + 1,
+                        cspan: c1 - c0 + 1,
+                    });
+                    continue;
+                }
+            }
+            let (col, cspan) = resolve(cs.grid_col.0, cs.grid_col.1, ncols);
+            let (row, rspan) = resolve(cs.grid_row.0, cs.grid_row.1, usize::MAX / 4);
+            let cspan = cspan.min(ncols);
+            let (row, col) = match (row, col) {
+                (Some(r), Some(c)) => (r, c.min(ncols - cspan)),
+                (r, c) => {
+                    // posicionamento automático, linha por linha
+                    let mut pos = match r {
+                        Some(r) => (r, 0),
+                        None => cursor,
+                    };
+                    loop {
+                        // coluna explícita além da grade: fica na última que cabe
+                        let c0 = c.map_or(pos.1, |c| c.min(ncols.saturating_sub(cspan)));
+                        if c0 + cspan > ncols {
+                            pos = (pos.0 + 1, 0);
+                            continue;
+                        }
+                        let free = (0..rspan).all(|dr| {
+                            (0..cspan).all(|dc| {
+                                occupied
+                                    .get(pos.0 + dr)
+                                    .is_none_or(|row| !row.get(c0 + dc).copied().unwrap_or(false))
+                            })
+                        });
+                        if free {
+                            break (pos.0, c0);
+                        }
+                        pos = if c.is_some() || pos.1 + 1 >= ncols { (pos.0 + 1, 0) } else { (pos.0, pos.1 + 1) };
+                    }
+                }
+            };
+            mark_cells(&mut occupied, row, col, rspan, cspan);
+            if s.grid_area.is_none() {
+                cursor = (row, col + cspan);
+            }
+            items.push(GridItem {
+                b: c,
+                row,
+                col,
+                rspan,
+                cspan,
+            });
+        }
+
+        // larguras das colunas
+        let avail = (w - cgap * (ncols - 1) as f32).max(0.0);
+        // mínimo de cada trilha (minmax(45%, max-content) nunca fica abaixo de 45%)
+        let min_w: Vec<f32> = tracks.iter().map(|t| track_fixed(t.min, w).unwrap_or(0.0).max(0.0)).collect();
+        let mut widths = min_w.clone();
+        let mut fr = vec![0.0f32; ncols];
+        for (i, t) in tracks.iter().enumerate() {
+            if let Some(v) = track_fixed(t.max, w) {
+                widths[i] = v.max(track_fixed(t.min, w).unwrap_or(0.0));
+            } else if let Track::Fr(f) = t.max {
+                fr[i] = f;
+                widths[i] = track_fixed(t.min, w).unwrap_or(0.0);
+            }
+        }
+        // trilhas auto/min-content/max-content: pelo conteúdo dos itens
+        for i in 0..ncols {
+            let t = tracks[i];
+            let content_track = matches!(t.max, Track::Auto | Track::MinContent | Track::MaxContent);
+            let auto_min = matches!(t.min, Track::Auto | Track::MinContent) && fr[i] > 0.0;
+            if !content_track && !auto_min {
+                continue;
+            }
+            let mut need = 0.0f32;
+            for it in items.iter().filter(|it| it.col == i && it.cspan == 1) {
+                let (mn, mx) = self.intrinsic(it.b);
+                let m = px(it.b.style.margin[LEFT]) + px(it.b.style.margin[RIGHT]);
+                need = need.max(if t.max == Track::MinContent || auto_min { mn } else { mx } + m);
+            }
+            widths[i] = widths[i].max(need);
+        }
+        let used: f32 = widths.iter().sum();
+        let fr_total: f32 = fr.iter().sum();
+        if fr_total > 0.0 {
+            let fixed_used: f32 = (0..ncols).filter(|&i| fr[i] == 0.0).map(|i| widths[i]).sum();
+            let unit = ((avail - fixed_used) / fr_total).max(0.0);
+            for i in 0..ncols {
+                if fr[i] > 0.0 {
+                    widths[i] = widths[i].max(unit * fr[i]);
+                }
+            }
+        } else if used > avail {
+            // trilhas auto encolhem até o min-content
+            let auto_cols: Vec<usize> = (0..ncols).filter(|&i| track_fixed(tracks[i].max, w).is_none()).collect();
+            let over = used - avail;
+            // só encolhe o que está acima do mínimo da trilha
+            let room: f32 = auto_cols.iter().map(|&i| (widths[i] - min_w[i]).max(0.0)).sum();
+            if room > 0.0 {
+                let cut = over.min(room);
+                for &i in &auto_cols {
+                    let r = (widths[i] - min_w[i]).max(0.0);
+                    widths[i] -= cut * r / room;
+                }
+            }
+        } else if used < avail {
+            // sobra espaço: trilhas auto crescem por igual (justify-content: normal)
+            let auto_cols: Vec<usize> = (0..ncols).filter(|&i| tracks[i].max == Track::Auto).collect();
+            if !auto_cols.is_empty() {
+                let each = (avail - used) / auto_cols.len() as f32;
+                for &i in &auto_cols {
+                    widths[i] += each;
+                }
+            }
+        }
+        let mut col_x = vec![x; ncols + 1];
+        for i in 0..ncols {
+            col_x[i + 1] = col_x[i] + widths[i] + cgap;
+        }
+
+        // linhas: altura pelo conteúdo, item a item
+        items.sort_by_key(|it| (it.row, it.col));
+        let nrows = items.iter().map(|it| it.row + 1).max().unwrap_or(0);
+        let mut row_y = y;
+        let mut first_baseline = None;
+        let mut k = 0;
+        for r in 0..nrows {
+            let mut placed: Vec<(Mark, BlockResult, usize)> = Vec::new();
+            while k < items.len() && items[k].row == r {
+                let it = &items[k];
+                let cw = col_x[it.col + it.cspan] - col_x[it.col] - cgap;
+                let bm = match it.b.kind {
+                    BoxKind::Anonymous => BoxModel::anonymous(cw),
+                    _ => self.box_model(&it.b.style, cw),
+                };
+                let m = self.mark();
+                let res = self.layout_block(it.b, &bm, col_x[it.col], row_y + bm.margin[TOP], inh, Opts::bfc());
+                placed.push((m, res, k));
+                k += 1;
+            }
+            let fixed_row = s.grid_rows.tracks.get(r).and_then(|t| track_fixed(t.max, w));
+            let row_h = placed
+                .iter()
+                .filter(|p| items[p.2].rspan == 1)
+                .map(|p| {
+                    let it = &items[p.2];
+                    p.1.height + px(it.b.style.margin[TOP]) + px(it.b.style.margin[BOTTOM])
+                })
+                .fold(fixed_row.unwrap_or(0.0), f32::max);
+            for p in &placed {
+                let it = &items[p.2];
+                let align = it.b.style.align_self.unwrap_or(s.align_items);
+                let mt = px(it.b.style.margin[TOP]);
+                let outer = p.1.height + mt + px(it.b.style.margin[BOTTOM]);
+                match align {
+                    Align::Stretch if it.b.style.height == Len::Auto && it.rspan == 1 => {
+                        self.stretch(p.1.deco, row_h - (outer - p.1.height));
+                    }
+                    Align::Center | Align::End => {
+                        let dy = if align == Align::Center { (row_h - outer) / 2.0 } else { row_h - outer };
+                        let idx = placed.iter().position(|q| q.2 == p.2).unwrap();
+                        let next = placed.get(idx + 1).map(|q| &q.0);
+                        self.shift_between(&p.0, next, 0.0, dy.max(0.0));
+                    }
+                    _ => {}
+                }
+                if first_baseline.is_none() {
+                    first_baseline = p.1.first_baseline;
+                }
+            }
+            row_y += row_h + if row_h > 0.0 { rgap } else { 0.0 };
+        }
+        ((row_y - y - rgap).max(0.0), first_baseline)
+    }
+
+    // -------------------------------------------------------------- tabelas
+
