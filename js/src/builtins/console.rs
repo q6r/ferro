@@ -739,3 +739,28 @@ fn group_entries(output: &[String], indent: usize, total_entries: usize) -> Vec<
     tmp
 }
 
+fn reduce(output: &[String], head: &str, open: &str, close: &str, indent: usize, levels: usize, grouped: bool) -> String {
+    let base = if head.is_empty() { String::new() } else { format!("{head} ") };
+    if levels < 3 && !grouped {
+        let start = output.len() + indent + open.len() + head.len() + 10;
+        let mut total = output.len() + start;
+        let mut fits = total + output.len() <= 80;
+        if fits {
+            for s in output {
+                total += s.chars().count();
+                if total > 80 {
+                    fits = false;
+                    break;
+                }
+            }
+        }
+        if fits && !head.contains('\n') {
+            let joined = output.join(", ");
+            if !joined.contains('\n') {
+                return format!("{base}{open} {joined} {close}");
+            }
+        }
+    }
+    let ind = format!("\n{}", " ".repeat(indent));
+    format!("{base}{open}{ind}  {}{ind}{close}", output.join(&format!(",{ind}  ")))
+}
