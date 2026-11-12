@@ -128,3 +128,59 @@ fn parse_args() -> Result<Args, String> {
     Ok(a)
 }
 
+fn main() {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if raw.first().map(String::as_str) == Some("--js") {
+        let file = raw.get(1).cloned();
+        // pilha grande: o interpretador é recursivo nas chamadas de função
+        let code = std::thread::Builder::new()
+            .stack_size(1 << 30)
+            .spawn(move || run_js(file))
+            .map(|h| h.join().unwrap_or(70))
+            .unwrap_or(70);
+        std::process::exit(code);
+    }
+    // FERRO_DADOS=pasta: cookies e localStorage gravados nessa pasta (modo PNG)
+    if let Some(dir) = std::env::var_os("FERRO_DADOS") {
+        ferro::dados::enable(PathBuf::from(dir));
+    }
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{e}\n\n{HELP}");
+            std::process::exit(2);
+        }
+    };
+    let headless = args.out.is_some() || args.dump_dom || args.dump_boxes;
+    let result = if headless {
+        render_png(&args)
+    } else {
+        let url = match args.target.as_deref().map(resolve_target).transpose() {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("erro: {e}");
+                std::process::exit(2);
+            }
+        };
+        let extra_tabs: Vec<Url> = args.extra_tabs.iter().filter_map(|t| resolve_target(t).ok()).collect();
+        let capture = args.capture.clone().map(|out| ferro::ui::Capture {
+            out,
+            width: args.width,
+            height: if args.height == 800.0 { 860.0 } else { args.height },
+            theme: args.theme.clone(),
+            layout: args.layout.clone(),
+            typed: args.typed.clone(),
+            extra_tabs,
+            find: args.find.clone(),
+            select_all: args.select_all,
+            scroll: args.scroll,
+        });
+        ferro::ui::run(url, capture)
+    };
+    ferro::dados::flush();
+    if let Err(e) = result {
+        eprintln!("erro: {e}");
+        std::process::exit(1);
+    }
+}
+
