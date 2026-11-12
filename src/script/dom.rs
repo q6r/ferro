@@ -1434,3 +1434,38 @@ fn rect_of(vm: &mut Vm, n: NodeId) -> Option<Rect> {
     out
 }
 
+fn viewport_size(vm: &Vm) -> (f32, f32, f32) {
+    read(vm, |h| (h.width, h.height, h.scroll_y))
+}
+
+fn rect_value(vm: &mut Vm, r: Rect) -> Value {
+    let make = read(vm, |h| h.hooks.get("rect").cloned());
+    let args = vec![
+        Value::Number(r.x as f64),
+        Value::Number(r.y as f64),
+        Value::Number(r.w as f64),
+        Value::Number(r.h as f64),
+    ];
+    match make {
+        Some(f) => vm.call(&f, Value::Undefined, args).unwrap_or(Value::Undefined),
+        None => Value::Undefined,
+    }
+}
+
+fn get_bounding_client_rect(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let (_, _, scroll) = viewport_size(vm);
+    let r = rect_of(vm, n).map(|r| Rect { y: r.y - scroll, ..r }).unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
+    Ok(rect_value(vm, r))
+}
+
+fn get_client_rects(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let (_, _, scroll) = viewport_size(vm);
+    let items = match rect_of(vm, n) {
+        Some(r) => vec![rect_value(vm, Rect { y: r.y - scroll, ..r })],
+        None => Vec::new(),
+    };
+    Ok(vm.array_value(items))
+}
+
