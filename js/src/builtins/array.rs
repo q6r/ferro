@@ -13,8 +13,11 @@ pub fn install(r: &Realm) {
     let proto = &r.array_proto;
     let c = r.ctor("Array", 1, array_ctor, proto);
     r.method(&c, "isArray", 1, is_array);
-    r.method(&c, "of", 0, of);
-    r.method(&c, "from", 1, from);
+    // of e from guardam o Array original (atalho quando `this` é ele)
+    let of_f = r.method(&c, "of", 0, of);
+    super::set_native_data(&of_f, Value::Object(c.clone()));
+    let from_f = r.method(&c, "from", 1, from);
+    super::set_native_data(&from_f, Value::Object(c.clone()));
     r.method(&c, "fromAsync", 1, super::array_async::from_async);
     r.getter_sym(&c, &r.sym_species, "[Symbol.species]", species);
 
@@ -164,8 +167,51 @@ fn is_array(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(vm.is_array(&a.arg(0))?))
 }
 
+/// Destino de Array.from/of: um array novo (None) quando `this` é o Array
+/// original ou não é construtor; senão o objeto construído por `this`.
+fn from_target(vm: &mut Vm, a: &CallArgs, args: Option<Vec<Value>>) -> Result<Option<Value>, Value> {
+    let Value::Object(c) = &a.this else { return Ok(None) };
+    let intrinsic = matches!(super::native_data(&a.callee), Value::Object(x) if x.ptr_eq(c));
+    if intrinsic || !c.is_constructor() {
+        return Ok(None);
+    }
+    Ok(Some(vm.construct(c, args.unwrap_or_default(), c)?))
+}
+
+/// CreateDataPropertyOrThrow no destino (direto no vetor quando é array novo).
+fn put_elem(vm: &mut Vm, target: &Option<Value>, out: &mut Vec<Value>, k: usize, v: Value) -> Result<(), Value> {
+    match target {
+        Some(Value::Object(o)) => super::iterator::create_data_or_throw(vm, o, index_key(k), v),
+        Some(other) => {
+            let d = vm.describe(other);
+            Err(vm.type_error(format!("Cannot add property {k}, {d} is not an object")))
+        }
+        None => {
+            out.push(v);
+            Ok(())
+        }
+    }
+}
+
+/// Fim de Array.from/of: Set(A, "length", len, true).
+fn from_finish(vm: &mut Vm, target: Option<Value>, out: Vec<Value>, len: usize) -> Result<Value, Value> {
+    match target {
+        Some(t) => {
+            vm.put(&t, PropKey::str("length"), Value::Number(len as f64), true)?;
+            Ok(t)
+        }
+        None => Ok(vm.array_value(out)),
+    }
+}
+
 fn of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    Ok(vm.array_value(a.args.clone()))
+    let len = a.args.len();
+    let target = from_target(vm, a, Some(vec![Value::Number(len as f64)]))?;
+    let mut out = Vec::with_capacity(if target.is_none() { len } else { 0 });
+    for (k, v) in a.args.clone().into_iter().enumerate() {
+        put_elem(vm, &target, &mut out, k, v)?;
+    }
+    from_finish(vm, target, out, len)
 }
 
 fn from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -173,45 +219,63 @@ fn from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let map = a.arg(1);
     let this_arg = a.arg(2);
     if !map.is_undefined() && !map.is_callable() {
-        return Err(vm.type_error("Array.from: when provided, the second argument must be a function"));
+        let d = vm.describe(&map);
+        return Err(vm.type_error(format!("{d} is not a function")));
     }
-    if src.is_nullish() {
-        return Err(vm.type_error(format!("{} is not iterable", vm.describe(&src))));
-    }
+    let mapping = !map.is_undefined();
     let key = PropKey::Sym(vm.realm.sym_iterator.clone());
-    let iter = vm.get(&src, &key)?;
-    let mut items = if !iter.is_nullish() {
-        vm.iterate_to_vec(&src)?
-    } else {
-        let o = vm.to_object(&src)?;
-        let len = vm.length_of(&o)?;
-        let mut v = Vec::with_capacity(len.min(1 << 16));
-        for i in 0..len {
-            v.push(get_i(vm, &o, i)?);
+    if let Some(m) = super::iterator::get_method(vm, &src, &key)? {
+        let target = from_target(vm, a, None)?;
+        let it = vm.call(&m, src.clone(), Vec::new())?;
+        if !matches!(it, Value::Object(_)) {
+            return Err(vm.type_error("Result of the Symbol.iterator method is not an object"));
         }
-        v
-    };
-    if map.is_callable() {
-        for (i, item) in items.iter_mut().enumerate() {
-            *item = vm.call(&map, this_arg.clone(), vec![item.clone(), Value::Number(i as f64)])?;
-        }
-    }
-    // subclasses: new this() quando this é um construtor diferente de Array
-    if let Value::Object(c) = &a.this
-        && c.is_constructor()
-        && !matches!(vm.realm.global.borrow().props.get(&PropKey::str("Array")), Some(Property { slot: Slot::Data { value: Value::Object(x), .. }, .. }) if x.ptr_eq(c))
-    {
-        let obj = vm.construct(c, Vec::new(), c)?;
-        if let Value::Object(o) = &obj {
-            let n = items.len();
-            for (i, v) in items.into_iter().enumerate() {
-                vm.define_data(o, index_key(i), v);
+        let mut rec = super::iterator::get_iterator_direct(vm, &it)?;
+        // iterador de array padrão: lê o vetor direto, sem objetos de resultado
+        let fast = match (&rec.iter, &rec.next) {
+            (Value::Object(_), Value::Object(n)) => n.ptr_eq(&vm.realm.array_iter_next),
+            _ => false,
+        };
+        let mut out = Vec::new();
+        let mut k = 0usize;
+        loop {
+            let next = match (&rec.iter, fast) {
+                (Value::Object(io), true) => match vm.array_iter_fast(&io.clone()) {
+                    Some(r) => r,
+                    None => rec.step_value(vm)?,
+                },
+                _ => rec.step_value(vm)?,
+            };
+            let Some(v) = next else { break };
+            let v = if mapping {
+                match vm.call(&map, this_arg.clone(), vec![v, Value::Number(k as f64)]) {
+                    Ok(v) => v,
+                    Err(e) => return Err(super::iterator::close_with_error(vm, &rec.iter, e)),
+                }
+            } else {
+                v
+            };
+            if let Err(e) = put_elem(vm, &target, &mut out, k, v) {
+                return Err(super::iterator::close_with_error(vm, &rec.iter, e));
             }
-            set_len(vm, o, n)?;
+            k += 1;
         }
-        return Ok(obj);
+        return from_finish(vm, target, out, k);
     }
-    Ok(vm.array_value(items))
+    // não é iterável: array-like
+    let o = vm.to_object(&src)?;
+    let len = vm.length_of(&o)?;
+    let target = from_target(vm, a, Some(vec![Value::Number(len as f64)]))?;
+    if target.is_none() && len as f64 > 4294967295.0 {
+        return Err(vm.range_error("Invalid array length"));
+    }
+    let mut out = Vec::with_capacity(len.min(1 << 16));
+    for k in 0..len {
+        let v = get_i(vm, &o, k)?;
+        let v = if mapping { vm.call(&map, this_arg.clone(), vec![v, Value::Number(k as f64)])? } else { v };
+        put_elem(vm, &target, &mut out, k, v)?;
+    }
+    from_finish(vm, target, out, len)
 }
 
 // ------------------------------------------------------ métodos

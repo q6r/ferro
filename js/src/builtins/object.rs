@@ -634,13 +634,28 @@ fn is(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn from_entries(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let items = a.arg(0);
+    if items.is_nullish() {
+        let d = vm.describe(&items);
+        return Err(vm.type_error(format!("{d} is not iterable")));
+    }
     let o = vm.new_object();
-    let items = vm.iterate_to_vec(&a.arg(0))?;
-    for item in items {
-        let k = vm.get_index(&item, &Value::Number(0.0))?;
-        let v = vm.get_index(&item, &Value::Number(1.0))?;
-        let key = vm.to_property_key(&k)?;
-        vm.define_data(&o, key, v);
+    let mut rec = super::iterator::get_iterator(vm, &items)?;
+    while let Some(item) = rec.step_value(vm)? {
+        let r = (|| -> Result<(), Value> {
+            if !matches!(item, Value::Object(_)) {
+                let d = vm.describe(&item);
+                return Err(vm.type_error(format!("Iterator value {d} is not an entry object")));
+            }
+            let k = vm.get_index(&item, &Value::Number(0.0))?;
+            let v = vm.get_index(&item, &Value::Number(1.0))?;
+            let key = vm.to_property_key(&k)?;
+            vm.define_data(&o, key, v);
+            Ok(())
+        })();
+        if let Err(e) = r {
+            return Err(super::iterator::close_with_error(vm, &rec.iter, e));
+        }
     }
     Ok(Value::Object(o))
 }
@@ -652,12 +667,28 @@ fn has_own(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn group_by(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let items = vm.iterate_to_vec(&a.arg(0))?;
+    let items = a.arg(0);
+    if items.is_nullish() {
+        let d = vm.describe(&items);
+        return Err(vm.type_error(format!("{d} is not iterable")));
+    }
     let f = a.arg(1);
+    if !f.is_callable() {
+        let d = vm.describe(&f);
+        return Err(vm.type_error(format!("{d} is not a function")));
+    }
     let out = ObjRef::new(Object::new(None, Kind::Ordinary));
-    for (i, item) in items.into_iter().enumerate() {
-        let k = vm.call(&f, Value::Undefined, vec![item.clone(), Value::Number(i as f64)])?;
-        let key = vm.to_property_key(&k)?;
+    let mut rec = super::iterator::get_iterator(vm, &items)?;
+    let mut i = 0usize;
+    while let Some(item) = rec.step_value(vm)? {
+        let key = vm
+            .call(&f, Value::Undefined, vec![item.clone(), Value::Number(i as f64)])
+            .and_then(|k| vm.to_property_key(&k));
+        let key = match key {
+            Ok(k) => k,
+            Err(e) => return Err(super::iterator::close_with_error(vm, &rec.iter, e)),
+        };
+        i += 1;
         let existing = out.borrow().own(&key);
         match existing {
             Some(Property {
