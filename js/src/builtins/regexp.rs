@@ -352,3 +352,47 @@ fn slice_or_undef(s: &JsStr, a: usize, b: usize) -> Value {
     if a == NONE || b == NONE { Value::Undefined } else { Value::String(s.slice(a, b)) }
 }
 
+/// Monta o array de resultado de exec (com index, input, groups, indices).
+fn hit_to_array(vm: &mut Vm, prog: &Program, s: &JsStr, hit: &Hit) -> Value {
+    let n = prog.ngroups as usize + 1;
+    let items: Vec<Value> = (0..n).map(|g| slice_or_undef(s, hit.caps[2 * g], hit.caps[2 * g + 1])).collect();
+    let arr = vm.new_array(items.clone());
+    vm.define_data(&arr, PropKey::str("index"), Value::Number(hit.caps[0] as f64));
+    vm.define_data(&arr, PropKey::str("input"), Value::String(s.clone()));
+    let groups = if prog.names.is_empty() {
+        Value::Undefined
+    } else {
+        let g = ObjRef::new(Object::new(None, Kind::Ordinary));
+        for (name, idx) in &prog.names {
+            vm.define_data(&g, PropKey::Str(JsStr::new(name)), items[*idx as usize].clone());
+        }
+        Value::Object(g)
+    };
+    vm.define_data(&arr, PropKey::str("groups"), groups);
+    if prog.flags.has_indices {
+        let pairs: Vec<Value> = (0..n)
+            .map(|g| {
+                let (a, b) = (hit.caps[2 * g], hit.caps[2 * g + 1]);
+                if a == NONE || b == NONE {
+                    Value::Undefined
+                } else {
+                    vm.array_value(vec![Value::Number(a as f64), Value::Number(b as f64)])
+                }
+            })
+            .collect();
+        let ind = vm.new_array(pairs.clone());
+        let ig = if prog.names.is_empty() {
+            Value::Undefined
+        } else {
+            let g = ObjRef::new(Object::new(None, Kind::Ordinary));
+            for (name, idx) in &prog.names {
+                vm.define_data(&g, PropKey::Str(JsStr::new(name)), pairs[*idx as usize].clone());
+            }
+            Value::Object(g)
+        };
+        vm.define_data(&ind, PropKey::str("groups"), ig);
+        vm.define_data(&arr, PropKey::str("indices"), Value::Object(ind));
+    }
+    Value::Object(arr)
+}
+
