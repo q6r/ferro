@@ -131,3 +131,72 @@ fn apply(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     vm.call(&a.this.clone(), a.arg(0), args)
 }
 
+fn bind(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(target) = &a.this else {
+        return Err(vm.type_error("Bind must be called on a function"));
+    };
+    if !target.is_callable() {
+        return Err(vm.type_error("Bind must be called on a function"));
+    }
+    let bthis = a.arg(0);
+    let bargs = if a.args.len() > 1 { a.args[1..].to_vec() } else { Vec::new() };
+    let name = match vm.get_obj(target, &PropKey::str("name"))? {
+        Value::String(s) => s.to_rust(),
+        _ => String::new(),
+    };
+    let len = match vm.get_obj(target, &PropKey::str("length"))? {
+        Value::Number(n) => (n - bargs.len() as f64).max(0.0),
+        _ => 0.0,
+    };
+    let proto = target.proto();
+    let o = ObjRef::new(Object::new(
+        proto,
+        Kind::Function(Func::Bound {
+            target: target.clone(),
+            this: bthis,
+            args: bargs,
+        }),
+    ));
+    {
+        let mut b = o.borrow_mut();
+        b.props.insert(PropKey::str("length"), crate::ops::readonly(Value::Number(len)));
+        b.props.insert(PropKey::str("name"), crate::ops::readonly(Value::str(&format!("bound {name}"))));
+    }
+    Ok(Value::Object(o))
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(o) = &a.this else {
+        return Err(vm.type_error("Function.prototype.toString requires that 'this' be a Function"));
+    };
+    let name = match data_in_chain(o, "name") {
+        Some(Value::String(s)) => s.to_rust(),
+        _ => String::new(),
+    };
+    let text = match &o.borrow().kind {
+        Kind::Function(Func::Closure(c)) => {
+            if c.code.source.is_empty() {
+                format!("function {name}() {{ [native code] }}")
+            } else {
+                c.code.source.to_string()
+            }
+        }
+        Kind::Function(_) => format!("function {name}() {{ [native code] }}"),
+        _ => return Err(vm.type_error("Function.prototype.toString requires that 'this' be a Function")),
+    };
+    Ok(Value::String(JsStr::new(&text)))
+}
+
+pub fn has_instance(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(f) = &a.this else { return Ok(Value::Bool(false)) };
+    let f = f.clone();
+    Ok(Value::Bool(vm.ordinary_has_instance(&f, &a.arg(0))?))
+}
+
+#[allow(dead_code)]
+fn closure_code(o: &ObjRef) -> Option<Rc<crate::compiler::Code>> {
+    match &o.borrow().kind {
+        Kind::Function(Func::Closure(c)) => Some(c.code.clone()),
+        _ => None,
+    }
+}
