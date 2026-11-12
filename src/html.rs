@@ -682,3 +682,58 @@ impl TreeBuilder {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(doc: &Document, parent: NodeId) -> Vec<String> {
+        doc.node(parent)
+            .children
+            .iter()
+            .filter_map(|&c| doc.tag(c).map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn cria_html_head_body() {
+        let doc = parse("<title>Oi</title><p>texto");
+        let html = doc.find_first("html").unwrap();
+        assert_eq!(tags(&doc, html), vec!["head", "body"]);
+        let title = doc.find_first("title").unwrap();
+        assert_eq!(doc.text_content(title), "Oi");
+    }
+
+    #[test]
+    fn fecha_p_e_li_implicitamente() {
+        let doc = parse("<p>um<p>dois<ul><li>a<li>b</ul>");
+        let body = doc.find_first("body").unwrap();
+        assert_eq!(tags(&doc, body), vec!["p", "p", "ul"]);
+        let ul = doc.find_first("ul").unwrap();
+        assert_eq!(tags(&doc, ul), vec!["li", "li"]);
+    }
+
+    #[test]
+    fn script_e_texto_bruto() {
+        let doc = parse("<script>if (a < b && c) { x = '</div>'; }</script><div>ok</div>");
+        let s = doc.find_first("script").unwrap();
+        assert_eq!(doc.text_content(s), "if (a < b && c) { x = '</div>'; }");
+        let div = doc.find_first("div").unwrap();
+        assert_eq!(doc.text_content(div), "ok");
+    }
+
+    #[test]
+    fn entidades() {
+        assert_eq!(decode_entities("a &amp; b &lt;3 &#233;&#x41; &naoexiste;"), "a & b <3 éA &naoexiste;");
+        assert_eq!(decode_entities("S&atilde;o Paulo"), "São Paulo");
+    }
+
+    #[test]
+    fn atributos() {
+        let doc = parse(r#"<a href="/x?a=1&amp;b=2" class=link data-x='y'>z</a>"#);
+        let a = doc.find_first("a").unwrap();
+        let e = doc.element(a).unwrap();
+        assert_eq!(e.attr("href"), Some("/x?a=1&b=2"));
+        assert_eq!(e.attr("class"), Some("link"));
+        assert_eq!(e.attr("data-x"), Some("y"));
+    }
+}
