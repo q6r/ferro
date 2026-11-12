@@ -110,3 +110,55 @@ pub(crate) fn image_of_node(h: &Host, n: NodeId) -> Option<Arc<ImageData>> {
     }
 }
 
+fn stops(vm: &mut Vm, g: &Value) -> Result<Vec<(f32, Rgba)>, Value> {
+    let list = get(vm, g, "_stops")?;
+    let lv = get(vm, &list, "length")?;
+    let len = vm.to_number(&lv)? as usize;
+    let mut out = Vec::new();
+    for i in 0..len.min(256) {
+        let s = vm.get_index(&list, &Value::Number(i as f64))?;
+        let ov = vm.get_index(&s, &Value::Number(0.0))?;
+        let off = vm.to_number(&ov)? as f32;
+        let c = vm.get_index(&s, &Value::Number(1.0))?;
+        let c = vm.to_rust_string(&c)?;
+        if let Some(c) = parse_color(&c) {
+            out.push((off.clamp(0.0, 1.0), c));
+        }
+    }
+    // estáveis por posição (paradas na mesma posição mantêm a ordem)
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Ok(out)
+}
+
+/// O estilo (cor, gradiente ou padrão) de fillStyle/strokeStyle.
+fn style(vm: &mut Vm, v: &Value) -> Result<Option<Style>, Value> {
+    if let Value::String(s) = v {
+        return Ok(parse_color(&s.to_rust()).map(Style::Solid));
+    }
+    if !matches!(v, Value::Object(_)) {
+        return Ok(None);
+    }
+    let ty = get(vm, v, "_type")?;
+    let ty = vm.to_rust_string(&ty)?;
+    let args = get(vm, v, "_args")?;
+    let n = array_nums(vm, &args)?;
+    let n = |i: usize| n.get(i).copied().unwrap_or(0.0);
+    Ok(Some(match ty.as_str() {
+        "linear" => Style::Linear { p0: (n(0), n(1)), p1: (n(2), n(3)), stops: stops(vm, v)? },
+        "radial" => Style::Radial { c0: (n(0), n(1)), r0: n(2), c1: (n(3), n(4)), r1: n(5), stops: stops(vm, v)? },
+        "conic" => Style::Conic { center: (n(1), n(2)), angle: n(0), stops: stops(vm, v)? },
+        "pattern" => {
+            let src = get(vm, v, "_img")?;
+            let Some(img) = source_image(vm, &src)? else { return Ok(None) };
+            let rep = get(vm, v, "_rep")?;
+            let rep = vm.to_rust_string(&rep)?;
+            Style::Pattern {
+                img,
+                repeat_x: matches!(rep.as_str(), "" | "repeat" | "repeat-x"),
+                repeat_y: matches!(rep.as_str(), "" | "repeat" | "repeat-y"),
+            }
+        }
+        _ => return Ok(None),
+    }))
+}
+
