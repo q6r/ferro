@@ -281,3 +281,57 @@ impl Vm {
         Ok((fo, proto))
     }
 
+    pub fn make_arguments(&mut self, args: &[Value], callee: Option<ObjRef>, strict: bool) -> ObjRef {
+        let o = ObjRef::new(Object::new(Some(self.realm.object_proto.clone()), Kind::Arguments));
+        {
+            let mut b = o.borrow_mut();
+            for (i, a) in args.iter().enumerate() {
+                b.props.insert(index_key(i), Property::data(a.clone()));
+            }
+            b.props.insert(PropKey::str("length"), Property::hidden(Value::Number(args.len() as f64)));
+            b.props.insert(
+                PropKey::Sym(self.realm.sym_iterator.clone()),
+                Property::hidden(Value::Object(self.realm.array_values.clone())),
+            );
+            if !strict && let Some(c) = callee {
+                b.props.insert(PropKey::str("callee"), Property::hidden(Value::Object(c)));
+            }
+        }
+        o
+    }
+
+    pub fn new_regexp(&mut self, source: JsStr, flags: JsStr) -> Result<Value, Value> {
+        crate::builtins::regexp::create(self, source, flags, None)
+    }
+
+    // --------------------------------------------------- conversões
+
+    pub fn to_primitive(&mut self, v: &Value, hint: Hint) -> Result<Value, Value> {
+        let Value::Object(o) = v else { return Ok(v.clone()) };
+        let key = PropKey::Sym(self.realm.sym_to_primitive.clone());
+        let exotic = self.get_obj(o, &key)?;
+        if !exotic.is_nullish() {
+            let h = match hint {
+                Hint::Default => "default",
+                Hint::Number => "number",
+                Hint::String => "string",
+            };
+            let r = self.call(&exotic, v.clone(), vec![Value::str(h)])?;
+            if matches!(r, Value::Object(_)) {
+                return Err(self.type_error("Cannot convert object to primitive value"));
+            }
+            return Ok(r);
+        }
+        let order = if hint == Hint::String { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
+        for name in order {
+            let m = self.get_obj(o, &PropKey::str(name))?;
+            if m.is_callable() {
+                let r = self.call(&m, v.clone(), Vec::new())?;
+                if !matches!(r, Value::Object(_)) {
+                    return Ok(r);
+                }
+            }
+        }
+        Err(self.type_error("Cannot convert object to primitive value"))
+    }
+
