@@ -912,3 +912,76 @@ fn child_element_count(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Number(read(vm, |h| element_children(&h.page.doc, n).len()) as f64))
 }
 
+fn previous_element_sibling(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| sibling(&h.page.doc, n, -1, true));
+    Ok(wrap_opt(vm, c))
+}
+
+fn next_element_sibling(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| sibling(&h.page.doc, n, 1, true));
+    Ok(wrap_opt(vm, c))
+}
+
+fn append(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let nodes = nodes_from_args(vm, a)?;
+    insert_all(vm, p, nodes, None)?;
+    Ok(Value::Undefined)
+}
+
+fn prepend(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let nodes = nodes_from_args(vm, a)?;
+    let first = read(vm, |h| h.page.doc.node(p).children.first().copied());
+    let first = first.filter(|f| !nodes.contains(f));
+    insert_all(vm, p, nodes, first)?;
+    Ok(Value::Undefined)
+}
+
+fn replace_children(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let p = this(vm, a)?;
+    let nodes = nodes_from_args(vm, a)?;
+    removing_children(vm, p);
+    write(vm, |h| {
+        let kids = h.page.doc.node(p).children.clone();
+        for k in kids {
+            if !nodes.contains(&k) {
+                h.page.doc.detach(k);
+            }
+        }
+    });
+    insert_all(vm, p, nodes, None)?;
+    Ok(Value::Undefined)
+}
+
+// -------------------------------------------------------------- ChildNode
+
+fn before(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let nodes = nodes_from_args(vm, a)?;
+    let Some(p) = read(vm, |h| h.page.doc.node(n).parent) else { return Ok(Value::Undefined) };
+    insert_all(vm, p, nodes, Some(n))?;
+    Ok(Value::Undefined)
+}
+
+fn after(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let nodes = nodes_from_args(vm, a)?;
+    let Some(p) = read(vm, |h| h.page.doc.node(n).parent) else { return Ok(Value::Undefined) };
+    // o próximo irmão que não está sendo movido
+    let next = read(vm, |h| {
+        let mut x = sibling(&h.page.doc, n, 1, false);
+        while let Some(c) = x {
+            if !nodes.contains(&c) {
+                break;
+            }
+            x = sibling(&h.page.doc, c, 1, false);
+        }
+        x
+    });
+    insert_all(vm, p, nodes, next)?;
+    Ok(Value::Undefined)
+}
+
