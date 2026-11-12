@@ -470,3 +470,35 @@ impl Session {
         }
     }
 
+    /// Chama uma função do prelúdio; erros viram "Uncaught ..." no console.
+    fn hook(&mut self, name: &str, args: Vec<Value>) -> Value {
+        let f = self.host.borrow().hooks.get(name).cloned();
+        let Some(f) = f else { return Value::Undefined };
+        match self.js.vm.call(&f, Value::Undefined, args) {
+            Ok(v) => {
+                self.js.vm.run_microtasks();
+                v
+            }
+            Err(e) => {
+                self.js.vm.report_uncaught(&e);
+                Value::Undefined
+            }
+        }
+    }
+
+    /// Roda os `<script>` do documento, na ordem, e dispara DOMContentLoaded.
+    pub fn run_scripts(&mut self, cancel: &(dyn Fn() -> bool + Sync)) {
+        self.start_scripts();
+        while !self.step_scripts(Duration::from_secs(3600)) {
+            if cancel() {
+                return;
+            }
+            // espera o próximo script chegar pela rede
+            let got = self.host.borrow().rx.recv_timeout(Duration::from_millis(20));
+            if let Ok(done) = got {
+                self.host.borrow_mut().in_flight -= 1;
+                self.on_done(done);
+            }
+        }
+    }
+
