@@ -1674,3 +1674,84 @@ fn relative_format(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::str(&pattern.replace("{n}", &ns).replace("{u}", &word)))
 }
 
+fn list_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.new_target.is_none() {
+        return Err(vm.type_error("Constructor Intl.ListFormat requires 'new'"));
+    }
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let kind = opt_str(vm, &a.arg(1), "type", &["conjunction", "disjunction", "unit"])?.unwrap_or_else(|| "conjunction".into());
+    let style = opt_str(vm, &a.arg(1), "style", &["long", "short", "narrow"])?.unwrap_or_else(|| "long".into());
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::ListFormat { locale, kind, style })
+}
+
+fn list_format(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (locale, kind, style) = with_intl(vm, &a.this, |x| match x {
+        IntlObj::ListFormat { locale, kind, style } => Some((locale.clone(), kind.clone(), style.clone())),
+        _ => None,
+    })?;
+    let items: Vec<String> = vm.iterate_to_vec(&a.arg(0))?.iter().map(|v| match v {
+        Value::String(s) => Ok(s.to_rust()),
+        _ => Err(()),
+    }).collect::<Result<_, _>>().map_err(|_| vm.type_error("Iterable yielded a non-String value"))?;
+    let d = data_for(&locale);
+    let word = match kind.as_str() {
+        "disjunction" => d.list_or,
+        "unit" => "",
+        _ => {
+            if d.lang == "en" && style != "long" {
+                "&"
+            } else {
+                d.list_and
+            }
+        }
+    };
+    let out = match items.len() {
+        0 => String::new(),
+        1 => items[0].clone(),
+        n => {
+            if word.is_empty() {
+                items.join(if style == "narrow" { " " } else { ", " })
+            } else {
+                let head = items[..n - 1].join(", ");
+                let comma = if d.oxford && n > 2 { "," } else { "" };
+                format!("{head}{comma} {word} {}", items[n - 1])
+            }
+        }
+    };
+    Ok(Value::str(&out))
+}
+
+// ----------------------------------------------------------- comparação
+
+/// Letra base (sem acento) para comparação.
+fn base_char(c: char) -> char {
+    let s = match c {
+        'à'..='å' | 'ā' | 'ă' | 'ą' => 'a',
+        'À'..='Å' | 'Ā' | 'Ă' | 'Ą' => 'A',
+        'ç' | 'ć' | 'č' => 'c',
+        'Ç' | 'Ć' | 'Č' => 'C',
+        'è'..='ë' | 'ē' | 'ę' | 'ě' => 'e',
+        'È'..='Ë' | 'Ē' | 'Ę' | 'Ě' => 'E',
+        'ì'..='ï' | 'ī' => 'i',
+        'Ì'..='Ï' | 'Ī' => 'I',
+        'ñ' | 'ń' | 'ň' => 'n',
+        'Ñ' | 'Ń' | 'Ň' => 'N',
+        'ò'..='ö' | 'ø' | 'ō' | 'ő' => 'o',
+        'Ò'..='Ö' | 'Ø' | 'Ō' | 'Ő' => 'O',
+        'ù'..='ü' | 'ū' | 'ů' | 'ű' => 'u',
+        'Ù'..='Ü' | 'Ū' | 'Ů' | 'Ű' => 'U',
+        'ý' | 'ÿ' => 'y',
+        'Ý' => 'Y',
+        'ś' | 'š' => 's',
+        'Ś' | 'Š' => 'S',
+        'ź' | 'ż' | 'ž' => 'z',
+        'Ź' | 'Ż' | 'Ž' => 'Z',
+        'ł' => 'l',
+        'Ł' => 'L',
+        other => other,
+    };
+    s
+}
+
+/// Comparação "humana": letras primeiro sem acento/caixa, depois acento, depois caixa.
+pub fn collate(a: &str, b: &str, numeric: bool, sensitivity: &str) -> Ordering {
