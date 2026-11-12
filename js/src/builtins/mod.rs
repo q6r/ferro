@@ -252,3 +252,71 @@ impl Realm {
         );
     }
 
+    pub fn getter_sym(&self, target: &ObjRef, s: &Sym, name: &str, f: NativeFn) {
+        let fo = self.native(&format!("get {name}"), 0, f);
+        target.borrow_mut().props.insert(
+            PropKey::Sym(s.clone()),
+            Property {
+                slot: Slot::Accessor { get: Some(fo), set: None },
+                enumerable: false,
+                configurable: true,
+            },
+        );
+    }
+
+    /// Construtor global ligado ao seu protótipo.
+    pub fn ctor(&self, name: &str, len: u32, f: NativeFn, proto: &ObjRef) -> ObjRef {
+        let c = native_fn(&self.function_proto, name, len, f, true);
+        c.borrow_mut().props.insert(
+            PropKey::str("prototype"),
+            Property {
+                slot: Slot::Data {
+                    value: Value::Object(proto.clone()),
+                    writable: false,
+                },
+                enumerable: false,
+                configurable: false,
+            },
+        );
+        proto.borrow_mut().props.insert(PropKey::str("constructor"), Property::hidden(Value::Object(c.clone())));
+        self.global.borrow_mut().props.insert(PropKey::str(name), Property::hidden(Value::Object(c.clone())));
+        c
+    }
+
+    /// Valor constante (não gravável, não enumerável).
+    pub fn constant(&self, target: &ObjRef, name: &str, v: Value) {
+        target.borrow_mut().props.insert(
+            PropKey::str(name),
+            Property {
+                slot: Slot::Data { value: v, writable: false },
+                enumerable: false,
+                configurable: false,
+            },
+        );
+    }
+
+    pub fn tag(&self, target: &ObjRef, tag: &str) {
+        target.borrow_mut().props.insert(
+            PropKey::Sym(self.sym_to_string_tag.clone()),
+            Property {
+                slot: Slot::Data {
+                    value: Value::str(tag),
+                    writable: false,
+                },
+                enumerable: false,
+                configurable: true,
+            },
+        );
+    }
+
+    pub fn global_value(&self, name: &str, v: Value) {
+        self.global.borrow_mut().props.insert(PropKey::str(name), Property::hidden(v));
+    }
+}
+
+impl Default for Realm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
