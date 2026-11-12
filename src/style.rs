@@ -115,6 +115,8 @@ pub enum Len {
     Auto,
     Px(f32),
     Percent(f32),
+    /// `calc()` com px e %: px + %/100 × base (ex.: `calc(100% - 20px)`).
+    Calc(f32, f32),
 }
 
 impl Len {
@@ -123,6 +125,7 @@ impl Len {
             Len::Auto => None,
             Len::Px(v) => Some(v),
             Len::Percent(p) => Some(p / 100.0 * base),
+            Len::Calc(px, p) => Some(px + p / 100.0 * base),
         }
     }
 
@@ -835,8 +838,8 @@ fn parse_len(v: &str, u: &Units) -> Option<Len> {
     if v == "auto" {
         return Some(Len::Auto);
     }
-    if let Some(inner) = v.strip_prefix("calc(").and_then(|s| s.strip_suffix(')')) {
-        return parse_calc(inner, u);
+    if ["calc(", "min(", "max(", "clamp(", "-webkit-calc("].iter().any(|f| v.starts_with(f)) {
+        return parse_calc(&v, u);
     }
     let num_end = v
         .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e'))
@@ -861,30 +864,242 @@ fn parse_len(v: &str, u: &Units) -> Option<Len> {
         "cm" => n * 96.0 / 2.54,
         "mm" => n * 96.0 / 25.4,
         "q" => n * 96.0 / 101.6,
-        "vw" => n * u.vw / 100.0,
-        "vh" => n * u.vh / 100.0,
-        "vmin" => n * u.vw.min(u.vh) / 100.0,
-        "vmax" => n * u.vw.max(u.vh) / 100.0,
+        "vw" | "svw" | "lvw" | "dvw" => n * u.vw / 100.0,
+        "vh" | "svh" | "lvh" | "dvh" => n * u.vh / 100.0,
+        "vmin" | "svmin" | "dvmin" => n * u.vw.min(u.vh) / 100.0,
+        "vmax" | "svmax" | "dvmax" => n * u.vw.max(u.vh) / 100.0,
         _ => return None,
     };
     Some(Len::Px(px))
 }
 
-/// calc() simples: soma/subtração de termos em px/em/rem/vw (sem %).
-fn parse_calc(inner: &str, u: &Units) -> Option<Len> {
-    let mut total = 0.0;
-    let mut sign = 1.0;
-    for tok in inner.split_whitespace() {
-        match tok {
-            "+" => sign = 1.0,
-            "-" => sign = -1.0,
-            _ => match parse_len(tok, u)? {
-                Len::Px(v) => total += sign * v,
-                _ => return None,
-            },
+/// Valor no meio de um `calc()`: número puro ou medida (px + %).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CalcVal {
+    Num(f32),
+    Len { px: f32, pct: f32 },
+}
+
+/// `calc()`, `min()`, `max()`, `clamp()` (aninhados, com `+ - * /` e
+/// parênteses). Medidas com px e % viram `Len::Calc`; `min/max/clamp` só
+/// quando dá para decidir sem saber a base (tudo em px, ou tudo em %).
+fn parse_calc(v: &str, u: &Units) -> Option<Len> {
+    let mut p = CalcParser { s: v.as_bytes(), i: 0, u };
+    let r = p.factor()?;
+    p.ws();
+    if p.i != p.s.len() {
+        return None;
+    }
+    match r {
+        CalcVal::Num(0.0) => Some(Len::Px(0.0)),
+        CalcVal::Num(_) => None,
+        CalcVal::Len { px, pct: 0.0 } => Some(Len::Px(px)),
+        CalcVal::Len { px: 0.0, pct } => Some(Len::Percent(pct)),
+        CalcVal::Len { px, pct } => Some(Len::Calc(px, pct)),
+    }
+}
+
+struct CalcParser<'a> {
+    s: &'a [u8],
+    i: usize,
+    u: &'a Units,
+}
+
+impl CalcParser<'_> {
+    fn ws(&mut self) {
+        while self.i < self.s.len() && self.s[self.i].is_ascii_whitespace() {
+            self.i += 1;
         }
     }
-    Some(Len::Px(total))
+
+    fn eat(&mut self, c: u8) -> bool {
+        self.ws();
+        if self.s.get(self.i) == Some(&c) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// soma e subtração
+    fn expr(&mut self) -> Option<CalcVal> {
+        let mut a = self.term()?;
+        loop {
+            self.ws();
+            match self.s.get(self.i) {
+                Some(b'+') => {
+                    self.i += 1;
+                    let b = self.term()?;
+                    a = add(a, b, 1.0)?;
+                }
+                Some(b'-') => {
+                    self.i += 1;
+                    let b = self.term()?;
+                    a = add(a, b, -1.0)?;
+                }
+                _ => return Some(a),
+            }
+        }
+    }
+
+    /// multiplicação e divisão
+    fn term(&mut self) -> Option<CalcVal> {
+        let mut a = self.factor()?;
+        loop {
+            self.ws();
+            match self.s.get(self.i) {
+                Some(b'*') => {
+                    self.i += 1;
+                    let b = self.factor()?;
+                    a = match (a, b) {
+                        (CalcVal::Num(x), CalcVal::Num(y)) => CalcVal::Num(x * y),
+                        (CalcVal::Num(k), CalcVal::Len { px, pct }) | (CalcVal::Len { px, pct }, CalcVal::Num(k)) => {
+                            CalcVal::Len { px: px * k, pct: pct * k }
+                        }
+                        _ => return None,
+                    };
+                }
+                Some(b'/') => {
+                    self.i += 1;
+                    let CalcVal::Num(k) = self.factor()? else { return None };
+                    if k == 0.0 {
+                        return None;
+                    }
+                    a = match a {
+                        CalcVal::Num(x) => CalcVal::Num(x / k),
+                        CalcVal::Len { px, pct } => CalcVal::Len { px: px / k, pct: pct / k },
+                    };
+                }
+                _ => return Some(a),
+            }
+        }
+    }
+
+    fn factor(&mut self) -> Option<CalcVal> {
+        self.ws();
+        let rest = &self.s[self.i..];
+        for (name, kind) in [("-webkit-calc(", 0), ("calc(", 0), ("min(", 1), ("max(", 2), ("clamp(", 3)] {
+            if rest.starts_with(name.as_bytes()) {
+                self.i += name.len();
+                return self.function(kind);
+            }
+        }
+        if self.eat(b'(') {
+            let v = self.expr()?;
+            return self.eat(b')').then_some(v);
+        }
+        // número com unidade
+        let start = self.i;
+        let s = self.s;
+        let mut j = self.i;
+        if j < s.len() && (s[j] == b'+' || s[j] == b'-') {
+            j += 1;
+        }
+        let digits = j;
+        while j < s.len() && (s[j].is_ascii_digit() || s[j] == b'.') {
+            j += 1;
+        }
+        if j == digits {
+            return None;
+        }
+        // expoente: "e" seguido de dígito (ou sinal e dígito); senão é unidade (em, ex)
+        if j < s.len() && s[j] == b'e' {
+            let k = if j + 1 < s.len() && (s[j + 1] == b'+' || s[j + 1] == b'-') { j + 2 } else { j + 1 };
+            if k < s.len() && s[k].is_ascii_digit() {
+                j = k;
+                while j < s.len() && s[j].is_ascii_digit() {
+                    j += 1;
+                }
+            }
+        }
+        let n: f32 = std::str::from_utf8(&s[start..j]).ok()?.parse().ok()?;
+        let mut k = j;
+        while k < s.len() && (s[k].is_ascii_alphabetic() || s[k] == b'%') {
+            k += 1;
+        }
+        let unit = std::str::from_utf8(&s[j..k]).ok()?;
+        self.i = k;
+        Some(match unit {
+            "" => CalcVal::Num(n),
+            "%" => CalcVal::Len { px: 0.0, pct: n },
+            _ => match parse_len(&format!("1{unit}"), self.u)? {
+                Len::Px(one) => CalcVal::Len { px: n * one, pct: 0.0 },
+                _ => return None,
+            },
+        })
+    }
+
+    /// Dentro de calc()/min()/max()/clamp(), depois do "(".
+    fn function(&mut self, kind: u8) -> Option<CalcVal> {
+        let mut args = vec![self.expr()?];
+        while self.eat(b',') {
+            args.push(self.expr()?);
+        }
+        if !self.eat(b')') {
+            return None;
+        }
+        match kind {
+            0 if args.len() == 1 => Some(args[0]),
+            1 | 2 if !args.is_empty() => pick(&args, kind == 1),
+            3 if args.len() == 3 => {
+                // clamp(mín, valor, máx) = max(mín, min(valor, máx))
+                let inner = pick(&args[1..], true)?;
+                pick(&[args[0], inner], false)
+            }
+            _ => None,
+        }
+    }
+}
+
+fn add(a: CalcVal, b: CalcVal, sign: f32) -> Option<CalcVal> {
+    match (a, b) {
+        (CalcVal::Num(x), CalcVal::Num(y)) => Some(CalcVal::Num(x + sign * y)),
+        (CalcVal::Len { px: a1, pct: a2 }, CalcVal::Len { px: b1, pct: b2 }) => {
+            Some(CalcVal::Len { px: a1 + sign * b1, pct: a2 + sign * b2 })
+        }
+        // 0 sem unidade conta como medida
+        (CalcVal::Len { px, pct }, CalcVal::Num(0.0)) => Some(CalcVal::Len { px, pct }),
+        (CalcVal::Num(0.0), CalcVal::Len { px, pct }) => Some(CalcVal::Len { px: sign * px, pct: sign * pct }),
+        _ => None,
+    }
+}
+
+/// min (`smallest`) ou max dos argumentos, se dá para comparar sem a base.
+fn pick(args: &[CalcVal], smallest: bool) -> Option<CalcVal> {
+    let better = |x: f32, y: f32| if smallest { x < y } else { x > y };
+    if args.iter().all(|a| matches!(a, CalcVal::Num(_))) {
+        let mut best = f32::NAN;
+        for a in args {
+            if let CalcVal::Num(n) = a
+                && (best.is_nan() || better(*n, best))
+            {
+                best = *n;
+            }
+        }
+        return Some(CalcVal::Num(best));
+    }
+    let lens: Vec<(f32, f32)> = args
+        .iter()
+        .map(|a| match *a {
+            CalcVal::Len { px, pct } => Some((px, pct)),
+            CalcVal::Num(0.0) => Some((0.0, 0.0)),
+            CalcVal::Num(_) => None,
+        })
+        .collect::<Option<_>>()?;
+    let all_px = lens.iter().all(|l| l.1 == 0.0);
+    let all_pct = lens.iter().all(|l| l.0 == 0.0);
+    if !all_px && !all_pct {
+        return None;
+    }
+    let key = |l: &(f32, f32)| if all_px { l.0 } else { l.1 };
+    let mut best = lens[0];
+    for l in &lens[1..] {
+        if better(key(l), key(&best)) {
+            best = *l;
+        }
+    }
+    Some(CalcVal::Len { px: best.0, pct: best.1 })
 }
 
 /// 1 a 4 valores → [top, right, bottom, left].
@@ -2946,4 +3161,29 @@ fn parse_translate(name: &str, v: &str) -> Option<[f32; 4]> {
         rest = &rest[open + close + 1..];
     }
     if any && out.iter().any(|&x| x != 0.0) { Some(out) } else { None }
+}
+
+#[cfg(test)]
+mod calc_tests {
+    use super::*;
+
+    #[test]
+    fn calc_com_porcentagem_aninhado_e_funcoes() {
+        let u = Units { em: 16.0, rem: 16.0, vw: 1280.0, vh: 800.0 };
+        let l = |s: &str| parse_len(s, &u);
+        assert_eq!(l("calc(100% - 20px)"), Some(Len::Calc(-20.0, 100.0)));
+        assert_eq!(l("calc(8px + 8px + calc(1rem + 4px))"), Some(Len::Px(36.0)));
+        assert_eq!(l("calc((100% - 2 * 10px) / 4)"), Some(Len::Calc(-5.0, 25.0)));
+        assert_eq!(l("calc(50%)"), Some(Len::Percent(50.0)));
+        assert_eq!(l("calc(2.5em*2)"), Some(Len::Px(80.0)));
+        assert_eq!(l("calc(1e1px + 1em)"), Some(Len::Px(26.0)));
+        assert_eq!(l("min(10px, 2em)"), Some(Len::Px(10.0)));
+        assert_eq!(l("max(10px, 2em, 1vw)"), Some(Len::Px(32.0)));
+        assert_eq!(l("clamp(10px, 5vw, 40px)"), Some(Len::Px(40.0)));
+        assert_eq!(l("min(100%, 50%)"), Some(Len::Percent(50.0)));
+        assert_eq!(l("calc(100% / 0)"), None);
+        assert_eq!(l("calc(10px + 2)"), None);
+        assert_eq!(l("calc(-1 * 5px)"), Some(Len::Px(-5.0)));
+        assert_eq!(l("calc(100vh - 56px)"), Some(Len::Px(744.0)));
+    }
 }

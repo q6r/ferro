@@ -896,12 +896,7 @@ fn set_rect(it: &mut DisplayItem, top: Option<f32>, h: f32) {
 /// Raio dos cantos, resolvido contra a caixa.
 fn radius_of(s: &ComputedStyle, r: Rect) -> f32 {
     let m = r.w.min(r.h);
-    match s.border_radius {
-        Len::Px(v) => v,
-        Len::Percent(p) => p / 100.0 * m,
-        Len::Auto => 0.0,
-    }
-    .clamp(0.0, m / 2.0)
+    s.border_radius.resolve(m).unwrap_or(0.0).clamp(0.0, m / 2.0)
 }
 
 fn colspan(doc: &Document, b: &LayoutBox) -> usize {
@@ -1313,11 +1308,7 @@ impl<'a> Ctx<'a> {
                         _ => (iw, ih),
                     },
                 };
-                let pos = |l: Len, free: f32| match l {
-                    Len::Percent(p) => free * p / 100.0,
-                    Len::Px(v) => v,
-                    Len::Auto => 0.0,
-                };
+                let pos = |l: Len, free: f32| l.resolve(free).unwrap_or(0.0);
                 Rect {
                     x: r.x + pos(at.0, r.w - tw),
                     y: r.y + pos(at.1, r.h - th),
@@ -1686,7 +1677,7 @@ impl<'a> Ctx<'a> {
         let fixed = |l: Len| {
             let v = match l {
                 Len::Px(v) => v,
-                Len::Percent(p) => p / 100.0 * parent_h?,
+                Len::Percent(_) | Len::Calc(..) => l.resolve(parent_h?)?,
                 Len::Auto => return None,
             };
             Some(if s.border_box { (v - vert_extra).max(0.0) } else { v })
@@ -2242,14 +2233,16 @@ impl<'a> Ctx<'a> {
                         }
                     }
                 }
-                Item::Atomic { w, margin, .. } => {
-                    let w = w + margin[1] + margin[3];
+                Item::Atomic { w, margin, pct, .. } => {
+                    let m = margin[1] + margin[3];
+                    let w = w + m;
                     if space_before && line > 0.0 {
                         line += space_w;
                         run = if space_breaks { 0.0 } else { run + space_w };
                     }
                     line += w;
-                    run += w;
+                    // largura em % (campo com width:100%) encolhe até 0
+                    run += if *pct { m } else { w };
                     min = min.max(run);
                     space_before = false;
                 }
@@ -3076,7 +3069,7 @@ impl<'a> Ctx<'a> {
             match item {
                 Item::Text { text, style, inh } => lb.push_text(&text, &style, &inh),
                 Item::Break => lb.break_line(true),
-                Item::Atomic { w, h, margin, paint, label, style, inh } => lb.push_box(w, h, margin, paint, label, &style, &inh),
+                Item::Atomic { w, h, margin, paint, label, style, inh, .. } => lb.push_box(w, h, margin, paint, label, &style, &inh),
                 Item::InlineStart(style, id) => lb.open_inline(id, style),
                 Item::InlineEnd(_, id) => lb.close_inline(id),
                 Item::InlineBlock(ib, inh) => {
@@ -3425,7 +3418,10 @@ impl<'a> Ctx<'a> {
             el.attr(name)
                 .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
         };
-        let w = s.width.resolve(avail).or_else(|| attr_px("width"));
+        // medindo a largura natural (contêiner sem largura definida): % vale
+        // como auto, senão um campo com width:100% mediria 100% de "infinito"
+        let pct = matches!(s.width, Len::Percent(_) | Len::Calc(..));
+        let w = if pct && avail >= 1.0e6 { None } else { s.width.resolve(avail) }.or_else(|| attr_px("width"));
         let h = px(s.height).or_else(|| attr_px("height"));
         let font = self.fonts.for_style(s);
         let text_w = |t: &str| self.fonts.measure(font, fs, t);
@@ -3458,17 +3454,14 @@ impl<'a> Ctx<'a> {
             own.no_hit = !s.pointer_events || !s.visible;
         }
         // margens (auto vale 0 em linha; % é da largura do contêiner)
-        let m = |l: Len| match l {
-            Len::Px(v) => v,
-            Len::Percent(p) => p / 100.0 * avail,
-            Len::Auto => 0.0,
-        };
+        let m = |l: Len| l.resolve(avail).unwrap_or(0.0);
         let margin = [m(s.margin[TOP]), m(s.margin[RIGHT]), m(s.margin[BOTTOM]), m(s.margin[LEFT])];
         let push = |out: &mut Vec<Item<'a>>, w: f32, h: f32, paint: AtomicPaint, label: Option<(String, Color)>| {
             out.push(Item::Atomic {
                 w,
                 h,
                 margin,
+                pct,
                 paint,
                 label,
                 style: s.clone(),
@@ -3626,6 +3619,8 @@ enum Item<'a> {
         h: f32,
         /// Margens (topo, direita, baixo, esquerda), fora de `w` e `h`.
         margin: [f32; 4],
+        /// Largura em %: na medida mínima (min-content) conta como 0.
+        pct: bool,
         paint: AtomicPaint,
         label: Option<(String, Color)>,
         style: Rc<ComputedStyle>,

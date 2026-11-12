@@ -734,6 +734,9 @@ fn len_css(l: crate::style::Len) -> String {
         crate::style::Len::Auto => "auto".into(),
         crate::style::Len::Px(v) => format!("{}px", trim_num(v)),
         crate::style::Len::Percent(p) => format!("{}%", trim_num(p)),
+        crate::style::Len::Calc(px, p) => {
+            format!("calc({}% {} {}px)", trim_num(p), if px < 0.0 { '-' } else { '+' }, trim_num(px.abs()))
+        }
     }
 }
 
