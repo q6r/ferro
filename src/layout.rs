@@ -1202,3 +1202,46 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn stretch(&mut self, d: Deco, h: f32) {
+        self.stretch_to(d, None, h);
+    }
+
+    fn add_pending(&mut self, b: &'a LayoutBox, x: f32, y: f32, inh: &Inherited) {
+        let order = self.next_layer;
+        self.next_layer += 1;
+        let p = Pending {
+            b,
+            x,
+            y,
+            inh: inh.clone(),
+            order,
+        };
+        if b.style.position == Position::Fixed {
+            self.abs[0].push(p);
+        } else {
+            self.abs.last_mut().unwrap().push(p);
+        }
+    }
+
+    // -------------------------------------------------------------- fundos
+
+    /// A imagem dessa URL já chegou? (Registra o que falta baixar.)
+    fn url_ready(&mut self, u: &str) -> bool {
+        if self.images.urls.contains_key(u) {
+            return true;
+        }
+        if !self.missing.iter().any(|m| m == u) && self.missing.len() < 150 {
+            self.missing.push(u.to_string());
+        }
+        false
+    }
+
+    /// O fundo-imagem/gradiente pode ser pintado agora?
+    fn bg_ready(&mut self, s: &ComputedStyle) -> bool {
+        match &s.bg_image {
+            None => false,
+            Some(BgImage::Linear(_)) => true,
+            Some(BgImage::Url(u)) => self.url_ready(u),
+        }
+    }
+
