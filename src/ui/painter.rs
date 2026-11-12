@@ -44,6 +44,7 @@ pub enum Icon {
     Home,
     Panel,
     Download,
+    Star,
 }
 
 impl Icon {
@@ -58,6 +59,7 @@ impl Icon {
             Icon::Lock => include_str!("../../assets/icons/mage/lock.svg"),
             Icon::Unlocked => include_str!("../../assets/icons/mage/unlocked.svg"),
             Icon::Globe => include_str!("../../assets/icons/mage/globe.svg"),
+            Icon::Star => include_str!("../../assets/icons/mage/star.svg"),
             Icon::Settings => include_str!("../../assets/icons/mage/settings.svg"),
             Icon::Info => include_str!("../../assets/icons/mage/info.svg"),
             Icon::Swatch => include_str!("../../assets/icons/mage/swatch.svg"),

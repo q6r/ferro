@@ -136,6 +136,9 @@ enum MenuAction {
     Reload,
     Find,
     Fullscreen,
+    Bookmark,
+    History,
+    Bookmarks,
 }
 
 type Hits = Vec<(Rect, Hit)>;
@@ -198,6 +201,8 @@ impl Tab {
             return Kind::Web;
         }
         match u.host_str() {
+            // páginas internas feitas em HTML pelo motor
+            Some("historico" | "favoritos") => Kind::Web,
             Some("configuracoes") => Kind::Settings(match u.fragment() {
                 Some("sobre") => Section::About,
                 Some("layout") => Section::Layout,
@@ -230,6 +235,8 @@ impl Tab {
             Kind::NewTab => Icon::Home,
             Kind::Settings(_) => Icon::Settings,
             Kind::Web if self.error.is_some() => Icon::Warning,
+            Kind::Web if self.url().scheme() == "ferro" && self.url().host_str() == Some("historico") => Icon::Clock,
+            Kind::Web if self.url().scheme() == "ferro" && self.url().host_str() == Some("favoritos") => Icon::Star,
             Kind::Web => Icon::Globe,
         }
     }
@@ -679,12 +686,14 @@ impl App {
 
     /// Começa a carregar a entrada atual do histórico da aba `i`.
     fn load(&mut self, i: usize) {
+        // as páginas internas em HTML seguem o tema claro/escuro da interface
+        crate::internal::set_dark(self.theme().dark);
         self.next_nav += 1;
         let nav = self.next_nav;
         let tab = &mut self.tabs[i];
         tab.error = None;
         let url = tab.url().clone();
-        if url.scheme() == "ferro" {
+        if url.scheme() == "ferro" && tab.kind() != Kind::Web {
             tab.engine.stop();
             tab.frame = None;
             tab.loading = false;
@@ -808,6 +817,9 @@ impl App {
     }
 
     fn remember(&mut self, url: &Url, title: &str) {
+        if matches!(url.scheme(), "http" | "https") {
+            crate::dados::add_history(url.as_str(), title);
+        }
         self.history.retain(|(u, _)| u != url);
         self.history.insert(0, (url.clone(), title.to_string()));
         self.history.truncate(300);
@@ -1389,6 +1401,13 @@ impl App {
             Some(Hit::Theme(i)) => {
                 self.theme = i;
                 save_config(self.theme, self.layout);
+                // histórico e favoritos abertos trocam de cores junto
+                let internal: Vec<usize> = (0..self.tabs.len())
+                    .filter(|&k| self.tabs[k].url().scheme() == "ferro" && self.tabs[k].kind() == Kind::Web)
+                    .collect();
+                for k in internal {
+                    self.load(k);
+                }
                 self.request_redraw();
             }
             Some(Hit::Layout(mode)) => self.set_layout(mode),
@@ -1537,6 +1556,8 @@ impl App {
                     "b" => return self.toggle_panel(),
                     "r" => return self.reload(),
                     "f" => return self.open_find(),
+                    "h" => return self.open_internal("ferro://historico"),
+                    "d" => return self.toggle_bookmark(),
                     "=" | "+" => return self.set_zoom(self.zoom * 1.1),
                     "-" => return self.set_zoom(self.zoom / 1.1),
                     "0" => return self.set_zoom(1.0),
@@ -1630,6 +1651,26 @@ impl App {
         self.request_redraw();
     }
 
+    /// Ctrl+D: salva (ou tira) a página nos favoritos.
+    fn toggle_bookmark(&mut self) {
+        let tab = self.tab();
+        if tab.kind() != Kind::Web || tab.url().scheme() == "ferro" {
+            return;
+        }
+        let (url, title) = (tab.url().to_string(), tab.title());
+        let saved = crate::dados::toggle_bookmark(&url, &title);
+        self.toast = Some(pagetools::Toast {
+            text: if saved { format!("Salvo nos favoritos: {title}") } else { format!("Removido dos favoritos: {title}") },
+            since: Instant::now(),
+        });
+        let proxy = self.proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5100));
+            let _ = proxy.send_event(UserEvent::Redraw);
+        });
+        self.request_redraw();
+    }
+
     /// Abre o menu de contexto onde está o mouse.
     fn open_menu(&mut self) {
         let (x, y) = self.mouse;
@@ -1663,6 +1704,13 @@ impl App {
             items.push(("Avançar", Some(MenuAction::Forward)));
         }
         items.push(("Recarregar", Some(MenuAction::Reload)));
+        if self.tab().kind() == Kind::Web && self.tab().url().scheme() != "ferro" {
+            let marked = crate::dados::is_bookmarked(self.tab().url().as_str());
+            items.push((if marked { "Tirar dos favoritos" } else { "Salvar nos favoritos" }, Some(MenuAction::Bookmark)));
+        }
+        items.push(("", None));
+        items.push(("Histórico", Some(MenuAction::History)));
+        items.push(("Favoritos", Some(MenuAction::Bookmarks)));
         items.push((if self.fullscreen.is_some() { "Sair da tela cheia" } else { "Tela cheia" }, Some(MenuAction::Fullscreen)));
         self.menu = Some(((x, y), items));
         self.request_redraw();
@@ -1692,6 +1740,9 @@ impl App {
             MenuAction::Reload => self.reload(),
             MenuAction::Find => self.open_find(),
             MenuAction::Fullscreen => self.toggle_fullscreen(FullscreenBy::User),
+            MenuAction::Bookmark => self.toggle_bookmark(),
+            MenuAction::History => self.open_internal("ferro://historico"),
+            MenuAction::Bookmarks => self.open_internal("ferro://favoritos"),
         }
         self.request_redraw();
     }

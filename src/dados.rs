@@ -80,6 +80,78 @@ fn write_atomic(path: PathBuf, text: &str) {
     }
 }
 
+const HISTORY_FILE: &str = "historico.txt";
+const BOOKMARKS_FILE: &str = "favoritos.txt";
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Guarda uma visita no histórico (uma linha: quando, endereço, título).
+pub fn add_history(url: &str, title: &str) {
+    let Some(dir) = dir() else { return };
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join(HISTORY_FILE)) {
+        let _ = writeln!(f, "{}\t{}\t{}", now_secs(), escape(url), escape(title));
+    }
+}
+
+/// Histórico, do mais recente para o mais antigo: (quando, endereço, título).
+pub fn read_history() -> Vec<(u64, String, String)> {
+    let Some(dir) = dir() else { return Vec::new() };
+    let text = std::fs::read_to_string(dir.join(HISTORY_FILE)).unwrap_or_default();
+    let mut out: Vec<(u64, String, String)> = text
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            Some((f.next()?.parse().ok()?, unescape(f.next()?), unescape(f.next().unwrap_or(""))))
+        })
+        .collect();
+    out.reverse();
+    out
+}
+
+/// Apaga o histórico.
+pub fn clear_history() {
+    if let Some(dir) = dir() {
+        let _ = std::fs::remove_file(dir.join(HISTORY_FILE));
+    }
+}
+
+/// Favoritos: (endereço, título), na ordem em que foram salvos.
+pub fn read_bookmarks() -> Vec<(String, String)> {
+    let Some(dir) = dir() else { return Vec::new() };
+    let text = std::fs::read_to_string(dir.join(BOOKMARKS_FILE)).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let (u, t) = l.split_once('\t').unwrap_or((l, ""));
+            (!u.is_empty()).then(|| (unescape(u), unescape(t)))
+        })
+        .collect()
+}
+
+pub fn is_bookmarked(url: &str) -> bool {
+    read_bookmarks().iter().any(|(u, _)| u == url)
+}
+
+/// Põe ou tira dos favoritos. Devolve se ficou salvo.
+pub fn toggle_bookmark(url: &str, title: &str) -> bool {
+    let Some(dir) = dir() else { return false };
+    let mut list = read_bookmarks();
+    let had = list.iter().any(|(u, _)| u == url);
+    if had {
+        list.retain(|(u, _)| u != url);
+    } else {
+        list.push((url.to_string(), title.to_string()));
+    }
+    let text: String = list.iter().map(|(u, t)| format!("{}\t{}\n", escape(u), escape(t))).collect();
+    write_atomic(dir.join(BOOKMARKS_FILE), &text);
+    !had
+}
+
 /// Escapa um campo (tabulação, quebra de linha e barra invertida).
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());

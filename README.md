@@ -31,8 +31,9 @@ tudo feito aqui. Meta: abrir YouTube e Gmail.
   `:hover`/`:focus`, variáveis, `@font-face`, `::before`/`::after`, rolagem dentro de elementos.
 - **Plataforma web**: DOM, eventos de mouse e teclado, `fetch`/XHR, cookies, localStorage, Custom Elements,
   Shadow DOM, Canvas 2D, MSE, tela cheia, `postMessage` entre quadros.
-- **Navegador**: abas, histórico, busca na página, seleção e cópia de texto, menu de contexto, downloads,
-  `<select>` com lista, tela cheia, temas, zoom, cache HTTP e perfil (login continua depois de fechar).
+- **Navegador**: abas com o ícone de cada site, histórico (`ferro://historico`) e favoritos (`ferro://favoritos`)
+  salvos no perfil, busca na página, seleção e cópia de texto, menu de contexto, downloads, `<select>` com lista,
+  tela cheia, temas, zoom, cache HTTP e perfil (login continua depois de fechar).
 
 ## Uso
 
@@ -49,6 +50,7 @@ cargo run --release -- --help
 Atalhos: Ctrl+K busca, Ctrl+L / F6 / Alt+D edita o endereço, Ctrl+T nova aba, Ctrl+W fecha, Ctrl+B mostra/esconde a lista
 de abas, Ctrl+Tab e Ctrl+1..9 trocam de aba, F5 / Ctrl+R recarrega, Alt+← / Alt+→ histórico, Ctrl + / − / 0 zoom,
 Espaço / PgDn / setas / Home / End rolam. Ctrl+clique ou clique do meio abre o link em outra aba.
+Ctrl+H abre o histórico; Ctrl+D salva (ou tira) a página nos favoritos.
 Na nova aba, é só começar a digitar. Ctrl+F busca na página (Enter / Shift+Enter / F3 andam pelas ocorrências),
 arrastar o mouse seleciona texto, Ctrl+A / Ctrl+C selecionam e copiam, F11 tela cheia (Esc sai). Arquivos que não
 são página vão para a pasta Downloads.

@@ -12,6 +12,7 @@ pub mod engine;
 pub mod fonts;
 pub mod html;
 pub mod httpcache;
+pub mod internal;
 pub mod jshost;
 pub mod layout;
 pub mod media;

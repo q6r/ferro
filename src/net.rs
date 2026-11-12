@@ -184,6 +184,16 @@ impl Net {
                     headers: Vec::new(),
                 })
             }
+            "ferro" => {
+                let html = crate::internal::page(url).ok_or_else(|| format!("página interna desconhecida: {url}"))?;
+                Ok(Response {
+                    url: url.clone(),
+                    status: 200,
+                    content_type: Some("text/html; charset=utf-8".into()),
+                    body: html.into_bytes(),
+                    headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
+                })
+            }
             "data" => {
                 let (content_type, body) = decode_data_url(url.as_str())?;
                 Ok(Response {
