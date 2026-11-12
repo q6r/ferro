@@ -868,3 +868,73 @@ pub fn make_num_opts(vm: &mut Vm, locale: String, o: &Value) -> Result<NumOpts, 
     })
 }
 
+/// Arredonda "meio para longe do zero" com `frac` casas e devolve (inteiro, fração).
+fn round_digits(x: f64, frac: usize) -> (String, String) {
+    let s = to_fixed(x.abs(), frac);
+    match s.split_once('.') {
+        Some((i, f)) => (i.to_string(), f.to_string()),
+        None => (s, String::new()),
+    }
+}
+
+fn round_sig(x: f64, sig: usize) -> f64 {
+    if x == 0.0 || !x.is_finite() {
+        return x;
+    }
+    let e = x.abs().log10().floor() as i32;
+    let scale = 10f64.powi(sig as i32 - 1 - e);
+    (x * scale).round() / scale
+}
+
+fn group_int(int: &str, sep: &str, min_grouping: usize) -> String {
+    if int.len() < 4 || int.len() < 3 + min_grouping {
+        return int.to_string();
+    }
+    let mut out = String::new();
+    for (i, ch) in int.chars().enumerate() {
+        if i > 0 && (int.len() - i) % 3 == 0 {
+            out.push_str(sep);
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn plural_cardinal(lang: &str, n: f64) -> &'static str {
+    let i = n.abs().trunc();
+    let int = n.fract() == 0.0;
+    match lang {
+        "pt" | "fr" => {
+            if i == 0.0 || i == 1.0 {
+                "one"
+            } else {
+                "other"
+            }
+        }
+        _ => {
+            if n.abs() == 1.0 && int {
+                "one"
+            } else {
+                "other"
+            }
+        }
+    }
+}
+
+fn plural_ordinal(lang: &str, n: f64) -> &'static str {
+    if lang != "en" {
+        return "other";
+    }
+    let n = n.abs();
+    let (m10, m100) = (n % 10.0, n % 100.0);
+    if m10 == 1.0 && m100 != 11.0 {
+        "one"
+    } else if m10 == 2.0 && m100 != 12.0 {
+        "two"
+    } else if m10 == 3.0 && m100 != 13.0 {
+        "few"
+    } else {
+        "other"
+    }
+}
+
