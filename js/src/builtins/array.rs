@@ -329,7 +329,17 @@ pub fn array_iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let Value::Object(t) = &target else {
         return Ok(iter_result(vm, Value::Undefined, true));
     };
-    let len = if index == usize::MAX { 0 } else { vm.length_of(t)? };
+    let len = if index == usize::MAX {
+        0
+    } else if let Some(st) = super::typed::ta_state(t) {
+        // typed array: fora dos limites (ou desanexado) é erro
+        match st {
+            Some(n) => n,
+            None => return Err(vm.type_error("Cannot perform %ArrayIteratorPrototype%.next on a detached ArrayBuffer")),
+        }
+    } else {
+        vm.length_of(t)?
+    };
     if index >= len {
         if let Kind::ArrayIter { index, .. } = &mut it.borrow_mut().kind {
             *index = usize::MAX;

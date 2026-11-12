@@ -239,6 +239,22 @@ pub fn define_own_property(vm: &mut Vm, o: &ObjRef, key: PropKey, d: Descriptor)
     if super::proxy::is_proxy(o) {
         return vm.proxy_define(o, key, d);
     }
+    // typed arrays: chaves numéricas são os elementos
+    let numeric = o.borrow().ta_numeric(&key);
+    if let Some(n) = numeric {
+        if !vm.ta_valid_index(o, n)
+            || d.configurable == Some(false)
+            || d.enumerable == Some(false)
+            || d.is_accessor()
+            || d.writable == Some(false)
+        {
+            return Ok(false);
+        }
+        if let Some(v) = &d.value {
+            vm.typed_set_num(o, n, v)?;
+        }
+        return Ok(true);
+    }
     // arrays: índices e length
     let is_array = matches!(o.borrow().kind, Kind::Array(_));
     if is_array {
@@ -561,17 +577,34 @@ pub fn freeze_obj(o: &ObjRef, freeze: bool) {
     }
 }
 
-fn freeze(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+/// Typed arrays: elementos não podem ser congelados nem selados.
+fn check_typed_integrity(vm: &mut Vm, o: &ObjRef, what: &str) -> Result<(), Value> {
+    let len = match &o.borrow().kind {
+        Kind::TypedArray(t) => t.len(),
+        _ => return Ok(()),
+    };
+    if !vm.prevent_extensions(o)? {
+        return Err(vm.type_error("Cannot prevent extensions"));
+    }
+    if len > 0 {
+        return Err(vm.type_error(format!("Cannot {what} array buffer views with elements")));
+    }
+    Ok(())
+}
+
+fn freeze(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let v = a.arg(0);
     if let Value::Object(o) = &v {
+        check_typed_integrity(vm, o, "freeze")?;
         freeze_obj(o, true);
     }
     Ok(v)
 }
 
-fn seal(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+fn seal(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let v = a.arg(0);
     if let Value::Object(o) = &v {
+        check_typed_integrity(vm, o, "seal")?;
         freeze_obj(o, false);
     }
     Ok(v)
@@ -579,8 +612,10 @@ fn seal(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn prevent_extensions(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let v = a.arg(0);
-    if let Value::Object(o) = &v {
-        vm.prevent_extensions(o)?;
+    if let Value::Object(o) = &v
+        && !vm.prevent_extensions(o)?
+    {
+        return Err(vm.type_error("Cannot prevent extensions"));
     }
     Ok(v)
 }
@@ -588,6 +623,11 @@ fn prevent_extensions(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 fn test_integrity(o: &ObjRef, frozen: bool) -> bool {
     let b = o.borrow();
     if b.extensible {
+        return false;
+    }
+    if let Kind::TypedArray(t) = &b.kind
+        && !t.is_empty()
+    {
         return false;
     }
     if let Kind::Array(v) = &b.kind
