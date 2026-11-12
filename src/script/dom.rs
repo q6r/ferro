@@ -208,3 +208,47 @@ fn iface_for_tag(tag: &str) -> &'static str {
     }
 }
 
+/// Interfaces HTML com protótipo próprio (todas herdam de HTMLElement).
+const HTML_IFACES: &[&str] = &[
+    "HTMLAnchorElement", "HTMLAreaElement", "HTMLMediaElement", "HTMLBaseElement", "HTMLBodyElement",
+    "HTMLBRElement", "HTMLButtonElement", "HTMLCanvasElement", "HTMLDialogElement", "HTMLDivElement",
+    "HTMLDListElement", "HTMLFormElement", "HTMLHeadingElement", "HTMLHeadElement", "HTMLHRElement",
+    "HTMLHtmlElement", "HTMLIFrameElement", "HTMLImageElement", "HTMLInputElement", "HTMLLabelElement",
+    "HTMLLIElement", "HTMLLinkElement", "HTMLMetaElement", "HTMLOListElement", "HTMLOptGroupElement",
+    "HTMLOptionElement", "HTMLParagraphElement", "HTMLPictureElement", "HTMLPreElement", "HTMLScriptElement",
+    "HTMLSelectElement", "HTMLSourceElement", "HTMLSpanElement", "HTMLStyleElement", "HTMLTableElement",
+    "HTMLTableSectionElement", "HTMLTableCellElement", "HTMLTableRowElement", "HTMLTemplateElement",
+    "HTMLTextAreaElement", "HTMLTitleElement", "HTMLUListElement", "HTMLUnknownElement", "HTMLFontElement",
+    "HTMLFieldSetElement", "HTMLLegendElement", "HTMLTableCaptionElement", "HTMLTableColElement",
+    "HTMLEmbedElement", "HTMLObjectElement", "HTMLProgressElement", "HTMLSlotElement", "HTMLOutputElement",
+    "HTMLTimeElement", "HTMLDataElement", "HTMLMeterElement", "HTMLMapElement", "HTMLTrackElement",
+    "HTMLQuoteElement", "HTMLModElement", "HTMLMenuElement",
+];
+
+// ---------------------------------------------------- efeitos das mutações
+
+/// Chama um gancho do prelúdio (erros viram "Uncaught ..." no console).
+fn call_hook(vm: &mut Vm, name: &str, args: Vec<Value>) {
+    let f = read(vm, |h| h.hooks.get(name).cloned());
+    if let Some(f) = f
+        && let Err(e) = vm.call(&f, Value::Undefined, args)
+    {
+        vm.report_uncaught(&e);
+    }
+}
+
+/// Avisa os MutationObserver (só se algum estiver ativo).
+fn notify(vm: &mut Vm, kind: &str, target: NodeId, added: &[NodeId], removed: &[NodeId], attr: Option<&str>, old: Option<String>) {
+    if !read(vm, |h| h.observing) {
+        return;
+    }
+    let target = wrap(vm, target);
+    let added: Vec<Value> = added.iter().map(|&n| wrap(vm, n)).collect();
+    let removed: Vec<Value> = removed.iter().map(|&n| wrap(vm, n)).collect();
+    let added = vm.array_value(added);
+    let removed = vm.array_value(removed);
+    let attr = attr.map_or(Value::Null, s);
+    let old = old.map_or(Value::Null, |o| s(&o));
+    call_hook(vm, "mutation", vec![s(kind), target, added, removed, attr, old]);
+}
+
