@@ -974,3 +974,54 @@ impl Vm {
             .collect())
     }
 
+    /// Copia propriedades próprias enumeráveis (spread de objeto, Object.assign).
+    pub fn copy_data_props(&mut self, target: &ObjRef, src: &Value, excluded: &[PropKey]) -> Result<(), Value> {
+        let src_obj = match src {
+            Value::Undefined | Value::Null | Value::Empty => return Ok(()),
+            Value::Object(o) => o.clone(),
+            other => self.to_object(other)?,
+        };
+        for k in self.own_keys(&src_obj)? {
+            if excluded.contains(&k) {
+                continue;
+            }
+            if !self.is_enumerable_own(&src_obj, &k)? {
+                continue;
+            }
+            let v = self.get_with(&src_obj, &k, src)?;
+            self.define_data(target, k, v);
+        }
+        Ok(())
+    }
+
+    // --------------------------------------------------------- globais
+
+    pub fn get_global(&mut self, name: &JsStr) -> Result<Value, Value> {
+        if let Some(cell) = self.lex.get(name) {
+            let v = cell.borrow().value.clone();
+            if matches!(v, Value::Empty) {
+                return Err(self.reference_error(format!("Cannot access '{name}' before initialization")));
+            }
+            return Ok(v);
+        }
+        let g = self.realm.global.clone();
+        let key = PropKey::Str(name.clone());
+        {
+            let b = g.borrow();
+            if let Some(Property {
+                slot: Slot::Data { value, .. },
+                ..
+            }) = b.props.get(&key)
+            {
+                return Ok(value.clone());
+            }
+        }
+        match self.get_opt(&g, &key)? {
+            Some(v) => Ok(v),
+            None => match self.global_miss.and_then(|f| f(self, name)) {
+                Some(v) => Ok(v),
+                None => Err(self.reference_error(format!("{name} is not defined"))),
+            },
+        }
+    }
+
