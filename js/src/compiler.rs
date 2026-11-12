@@ -1971,3 +1971,59 @@ impl Compiler {
         }
     }
 
+    fn for_loop(&mut self, init: &Option<ForInit>, test: &Option<Expr>, update: &Option<Expr>, body: &Stmt) -> CResult<()> {
+        let labels = self.take_labels();
+        let mut scoped = false;
+        let mut per_iter = false;
+        if let Some(ForInit::Var(kind, decls)) = init
+            && *kind != VarKind::Var
+        {
+            let mut names = Vec::new();
+            for d in decls {
+                bound_names(&d.target, &mut names);
+            }
+            self.push_scope(ScopeKind::Block, key_of(init));
+            let decl = if *kind == VarKind::Let { Decl::Let } else { Decl::Const };
+            for n in names {
+                self.declare(n, decl, false, false);
+            }
+            self.open_env();
+            per_iter = *kind == VarKind::Let && self.fr().scopes.last().unwrap().has_env;
+            scoped = true;
+        }
+        match init {
+            Some(ForInit::Var(kind, decls)) => self.var_decls(*kind, decls, 0)?,
+            Some(ForInit::Expr(e)) => {
+                self.expr(e)?;
+                self.emit(Op::Pop);
+            }
+            None => {}
+        }
+        if per_iter {
+            self.emit(Op::CopyEnv);
+        }
+        let top = self.here();
+        let exit = match test {
+            Some(t) => {
+                self.expr(t)?;
+                Some(self.emit(Op::JumpIfFalse(0)))
+            }
+            None => None,
+        };
+        self.push_loop(labels, LoopKind::Plain);
+        self.stmt(body)?;
+        let cont = self.here();
+        if per_iter {
+            self.emit(Op::CopyEnv);
+        }
+        if let Some(u) = update {
+            self.expr_void(u)?;
+        }
+        self.emit(Op::Jump(top as u32));
+        self.pop_loop(cont, exit);
+        if scoped {
+            self.pop_scope();
+        }
+        Ok(())
+    }
+
