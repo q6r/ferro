@@ -573,3 +573,48 @@ fn index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Number((start..len).find(|&i| strict_equals(&elem(&o, i), &target)).map_or(-1.0, |i| i as f64)))
 }
 
+fn last_index_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    if len == 0 {
+        return Ok(Value::Number(-1.0));
+    }
+    let start = if a.args.len() > 1 {
+        let n = vm.to_integer(&a.arg(1))?;
+        if n < 0.0 {
+            let k = len as f64 + n;
+            if k < 0.0 {
+                return Ok(Value::Number(-1.0));
+            }
+            k as usize
+        } else {
+            (n as usize).min(len - 1)
+        }
+    } else {
+        len - 1
+    };
+    let target = a.arg(0);
+    Ok(Value::Number((0..=start).rev().find(|&i| strict_equals(&elem(&o, i), &target)).map_or(-1.0, |i| i as f64)))
+}
+
+fn join(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let sep = if a.arg(0).is_undefined() { ",".to_string() } else { vm.to_rust_string(&a.arg(0))? };
+    let mut parts = Vec::with_capacity(len);
+    for i in 0..len {
+        parts.push(vm.to_rust_string(&elem(&o, i))?);
+    }
+    Ok(Value::str(&parts.join(&sep)))
+}
+
+fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let mut parts = Vec::with_capacity(len);
+    for i in 0..len {
+        let v = elem(&o, i);
+        let f = vm.get_str(&v, "toLocaleString")?;
+        let s = vm.call(&f, v, Vec::new())?;
+        parts.push(vm.to_rust_string(&s)?);
+    }
+    Ok(Value::str(&parts.join(",")))
+}
+
