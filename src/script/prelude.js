@@ -3222,3 +3222,62 @@ function ioMargin(m, w, h) {
   const [t, r = t, b = t, l = r] = parts;
   return [t, r, b, l];
 }
+class IntersectionObserver {
+  constructor(cb, opts = {}) {
+    if (typeof cb !== 'function') throw new TypeError("Failed to construct 'IntersectionObserver': The callback provided as parameter 1 is not a function.");
+    this._cb = cb;
+    this.root = opts.root || null;
+    this.rootMargin = opts.rootMargin || '0px';
+    this.thresholds = [].concat(opts.threshold ?? 0);
+    this.scrollMargin = '0px';
+    this.delay = 0;
+    this.trackVisibility = false;
+    this._targets = new Map();
+    this._queued = false;
+  }
+  observe(el) {
+    if (!(el instanceof Element)) throw new TypeError("Failed to execute 'observe' on 'IntersectionObserver': parameter 1 is not of type 'Element'.");
+    if (this._targets.has(el)) return;
+    this._targets.set(el, undefined);
+    IO_ALL.add(this);
+    this._schedule();
+  }
+  unobserve(el) { this._targets.delete(el); }
+  disconnect() { this._targets.clear(); IO_ALL.delete(this); }
+  takeRecords() { return []; }
+  _schedule() {
+    if (this._queued) return;
+    this._queued = true;
+    setTimeout(() => { this._queued = false; this._check(); }, 0);
+  }
+  _check() {
+    const vw = G.innerWidth, vh = G.innerHeight;
+    const [mt, mr, mb, ml] = ioMargin(this.rootMargin, vw, vh);
+    let root = new DOMRect(-ml, -mt, vw + ml + mr, vh + mt + mb);
+    if (this.root && this.root.getBoundingClientRect) {
+      const rr = this.root.getBoundingClientRect();
+      if (rr.width && rr.height) root = new DOMRect(rr.x - ml, rr.y - mt, rr.width + ml + mr, rr.height + mt + mb);
+    }
+    const out = [];
+    for (const [el, prev] of this._targets) {
+      if (!el.isConnected) continue;
+      const r = el.getBoundingClientRect();
+      // sem tamanho ainda (ex.: <img> esperando o src): conta como 1×1
+      const w = Math.max(1, r.width), h = Math.max(1, r.height);
+      const x0 = Math.max(r.x, root.x), y0 = Math.max(r.y, root.y);
+      const x1 = Math.min(r.x + w, root.x + root.width), y1 = Math.min(r.y + h, root.y + root.height);
+      const hit = x1 > x0 && y1 > y0 || (x1 >= x0 && y1 >= y0 && (r.width === 0 || r.height === 0));
+      const ir = hit ? new DOMRect(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0)) : new DOMRect(0, 0, 0, 0);
+      const ratio = hit ? Math.min(1, (ir.width * ir.height) / (w * h)) : 0;
+      if (prev !== undefined && prev === hit) continue;
+      this._targets.set(el, hit);
+      out.push(new IntersectionObserverEntry({
+        target: el, isIntersecting: hit, intersectionRatio: ratio, time: N.now(),
+        boundingClientRect: r, intersectionRect: ir, rootBounds: root, isVisible: hit,
+      }));
+    }
+    if (out.length) {
+      try { this._cb(out, this); } catch (e) { N.reportError(e); }
+    }
+  }
+}
