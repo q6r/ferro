@@ -733,3 +733,58 @@ impl Svg {
         self.render_with(w, h, color, Color::BLACK)
     }
 
+    /// Como `render`, com a cor de `currentColor` (a cor CSS do elemento).
+    pub fn render_with(&self, w: u32, h: u32, color: Option<Color>, current: Color) -> ImageData {
+        let (wu, hu) = (w as usize, h as usize);
+        let (vx, vy, vw, vh) = self.view_box;
+        let s = (w as f32 / vw).min(h as f32 / vh);
+        let tx = (w as f32 - vw * s) / 2.0 - vx * s;
+        let ty = (h as f32 - vh * s) / 2.0 - vy * s;
+        let map = |(x, y): (f32, f32)| (x * s + tx, y * s + ty);
+
+        // RGBA pré-multiplicado em f32
+        let mut acc = vec![[0.0f32; 4]; wu * hu];
+        let mut cov = vec![0.0f32; wu * hu];
+        for shape in &self.shapes {
+            let polys = flatten(&shape.segs, map);
+            for (paint, is_fill) in [(shape.fill, true), (shape.stroke, false)] {
+                let c = match (paint, color) {
+                    (Paint::None, _) => continue,
+                    (_, Some(c)) => c,
+                    (Paint::Color(c), None) => c,
+                    (Paint::Current, None) => current,
+                };
+                cov.iter_mut().for_each(|v| *v = 0.0);
+                if is_fill {
+                    fill_coverage(&polys, shape.evenodd, wu, hu, &mut cov);
+                } else {
+                    stroke_coverage(&polys, shape.stroke_width * s, wu, hu, &mut cov);
+                }
+                let alpha = c.a as f32 / 255.0 * shape.opacity;
+                let col = [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0];
+                for (dst, &cv) in acc.iter_mut().zip(cov.iter()) {
+                    let a = cv.min(1.0) * alpha;
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    for k in 0..3 {
+                        dst[k] = col[k] * a + dst[k] * (1.0 - a);
+                    }
+                    dst[3] = a + dst[3] * (1.0 - a);
+                }
+            }
+        }
+        let mut rgba = Vec::with_capacity(wu * hu * 4);
+        for p in acc {
+            let a = p[3];
+            let un = |v: f32| if a > 0.0 { (v / a * 255.0).round().clamp(0.0, 255.0) as u8 } else { 0 };
+            rgba.extend_from_slice(&[un(p[0]), un(p[1]), un(p[2]), (a * 255.0).round() as u8]);
+        }
+        ImageData {
+            width: w,
+            height: h,
+            rgba,
+        }
+    }
+}
+
