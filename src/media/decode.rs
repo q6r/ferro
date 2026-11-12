@@ -155,3 +155,58 @@ mod av1 {
         }
     }
 
+    impl Drop for Av1 {
+        fn drop(&mut self) {
+            unsafe { d::dav1d_close(NonNull::new(&mut self.ctx)) }
+        }
+    }
+
+    unsafe fn convert(pic: &Dav1dPicture) -> Option<Frame> {
+        let (w, h) = (pic.p.w as usize, pic.p.h as usize);
+        if pic.p.bpc != 8 || pic.p.layout != DAV1D_PIXEL_LAYOUT_I420 || w == 0 || h == 0 {
+            return None;
+        }
+        let (ys, cs) = (pic.stride[0] as usize, pic.stride[1] as usize);
+        let y = unsafe { std::slice::from_raw_parts(pic.data[0]?.as_ptr() as *const u8, ys * h) };
+        let ch = h.div_ceil(2);
+        let u = unsafe { std::slice::from_raw_parts(pic.data[1]?.as_ptr() as *const u8, cs * ch) };
+        let v = unsafe { std::slice::from_raw_parts(pic.data[2]?.as_ptr() as *const u8, cs * ch) };
+        Some(Frame::from_planes(pic.m.timestamp as f64 / 1_000_000.0, w, h, y, ys, u, v, cs))
+    }
+}
+
+// ----------------------------------------------------------------- H.264
+
+pub struct Avc {
+    dec: rusty_h264_decoder::Decoder,
+    nal_len: usize,
+    /// SPS e PPS do avcC, em Annex-B (vão antes de cada quadro-chave).
+    header: Vec<u8>,
+}
+
+impl Avc {
+    fn new(avcc: &[u8]) -> Option<Avc> {
+        if avcc.len() < 7 {
+            return None;
+        }
+        let nal_len = (avcc[4] & 3) as usize + 1;
+        let mut header = Vec::new();
+        let mut i = 5;
+        for kind in 0..2 {
+            let count = if kind == 0 { (avcc.get(i)? & 31) as usize } else { *avcc.get(i)? as usize };
+            i += 1;
+            for _ in 0..count {
+                let n = u16::from_be_bytes([*avcc.get(i)?, *avcc.get(i + 1)?]) as usize;
+                i += 2;
+                header.extend_from_slice(&[0, 0, 0, 1]);
+                header.extend_from_slice(avcc.get(i..i + n)?);
+                i += n;
+            }
+        }
+        Some(Avc {
+            dec: rusty_h264_decoder::Decoder::new(),
+            nal_len,
+            header,
+        })
+    }
+
