@@ -271,3 +271,60 @@ pub enum Op {
     JumpIfStrictEq(u32),
 }
 
+impl Op {
+    fn set_target(&mut self, t: u32) {
+        match self {
+            Op::Jump(x)
+            | Op::JumpIfFalse(x)
+            | Op::JumpIfTrue(x)
+            | Op::JumpIfFalseKeep(x)
+            | Op::JumpIfTrueKeep(x)
+            | Op::JumpIfNotNullishKeep(x)
+            | Op::JumpIfNullish(x)
+            | Op::JumpIfNotUndef(x)
+            | Op::Try(x)
+            | Op::IterStep(x)
+            | Op::ForInNext(x)
+            | Op::GenResume(x)
+            | Op::DelegateStep(x)
+            | Op::IterResultValue(x)
+            | Op::AsyncIterClose(x)
+            | Op::JumpIfNotLt(x)
+            | Op::JumpIfNotLe(x)
+            | Op::JumpIfNotGt(x)
+            | Op::JumpIfNotGe(x)
+            | Op::JumpIfNotStrictEq(x)
+            | Op::JumpIfStrictEq(x) => *x = t,
+            _ => {}
+        }
+    }
+
+    /// Destino de pulo da instrução, se houver.
+    fn target(&self) -> Option<u32> {
+        match *self {
+            Op::Jump(x)
+            | Op::JumpIfFalse(x)
+            | Op::JumpIfTrue(x)
+            | Op::JumpIfFalseKeep(x)
+            | Op::JumpIfTrueKeep(x)
+            | Op::JumpIfNotNullishKeep(x)
+            | Op::JumpIfNullish(x)
+            | Op::JumpIfNotUndef(x)
+            | Op::Try(x)
+            | Op::IterStep(x)
+            | Op::ForInNext(x)
+            | Op::GenResume(x)
+            | Op::DelegateStep(x)
+            | Op::IterResultValue(x)
+            | Op::AsyncIterClose(x)
+            | Op::JumpIfNotLt(x)
+            | Op::JumpIfNotLe(x)
+            | Op::JumpIfNotGt(x)
+            | Op::JumpIfNotGe(x)
+            | Op::JumpIfNotStrictEq(x)
+            | Op::JumpIfStrictEq(x) => Some(x),
+            _ => None,
+        }
+    }
+}
+
