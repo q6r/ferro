@@ -202,3 +202,79 @@ fn count(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
+fn count_reset(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let l = label(vm, a)?;
+    vm.console_counts.insert(l, 0);
+    Ok(Value::Undefined)
+}
+
+fn group(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !a.args.is_empty() {
+        let s = format_args(vm, &a.args)?;
+        emit(vm, Out::Log, &s);
+    }
+    vm.console_indent += 2;
+    Ok(Value::Undefined)
+}
+
+fn group_end(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    vm.console_indent = vm.console_indent.saturating_sub(2);
+    Ok(Value::Undefined)
+}
+
+fn clear(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Undefined)
+}
+
+// ---------------------------------------------------------------- inspect
+
+/// Representação legível de um valor (como `util.inspect` do Node).
+pub fn inspect(_vm: &Vm, v: &Value, depth: usize) -> String {
+    let mut ins = Inspector {
+        seen: Vec::new(),
+        max_depth: depth,
+        refs: Vec::new(),
+    };
+    ins.fmt(v, 0, 0, false).0
+}
+
+struct Inspector {
+    seen: Vec<usize>,
+    max_depth: usize,
+    /// Objetos referenciados circularmente (para "<ref *1>").
+    refs: Vec<usize>,
+}
+
+fn quote_str(s: &str) -> String {
+    let q = if !s.contains('\'') {
+        '\''
+    } else if !s.contains('"') {
+        '"'
+    } else if !s.contains('`') {
+        '`'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(q);
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\u{b}' => out.push_str("\\v"),
+            '\\' => out.push_str("\\\\"),
+            c if c == q => {
+                out.push('\\');
+                out.push(c);
+            }
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => out.push_str(&format!("\\x{:02X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push(q);
+    out
+}
+
