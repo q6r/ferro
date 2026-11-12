@@ -1200,3 +1200,66 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
     styles
 }
 
+struct Cascade<'a> {
+    doc: &'a Document,
+    index: &'a RuleIndex,
+    media: MediaContext,
+    root_font: f32,
+    /// Filtro com as características (tag, id, classes) do próprio elemento.
+    own_bits: Vec<Option<Box<Bloom>>>,
+    /// Filtro com as características de todos os ancestrais.
+    ancestor_bits: Vec<Option<Box<Bloom>>>,
+    /// Lista de candidatas reaproveitada entre elementos.
+    scratch: std::cell::RefCell<Vec<u32>>,
+}
+
+impl Cascade<'_> {
+    fn own_bloom(&mut self, n: NodeId) -> Bloom {
+        if let Some(b) = &self.own_bits[n] {
+            return **b;
+        }
+        let mut b = [0u64; BLOOM_WORDS];
+        if let Some(el) = self.doc.element(n) {
+            bloom_set(&mut b, feature_hash(b't', &el.tag));
+            if let Some(id) = el.id() {
+                bloom_set(&mut b, feature_hash(b'#', id));
+            }
+            for c in el.classes() {
+                bloom_set(&mut b, feature_hash(b'.', c));
+            }
+        }
+        self.own_bits[n] = Some(Box::new(b));
+        b
+    }
+
+    /// Monta o filtro dos ancestrais do elemento (os do pai já estão prontos,
+    /// quase sempre: a cascata desce da raiz).
+    fn prepare_ancestors(&mut self, node: NodeId) {
+        if self.ancestor_bits[node].is_some() {
+            return;
+        }
+        let mut chain = Vec::new();
+        let mut cur = node;
+        while self.ancestor_bits[cur].is_none() {
+            chain.push(cur);
+            match self.doc.parent_element(cur) {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        for &n in chain.iter().rev() {
+            let b = match self.doc.parent_element(n) {
+                Some(p) => {
+                    let mut b = self.ancestor_bits[p].as_deref().copied().unwrap_or([0; BLOOM_WORDS]);
+                    let own = self.own_bloom(p);
+                    for (x, y) in b.iter_mut().zip(own) {
+                        *x |= y;
+                    }
+                    b
+                }
+                None => [0; BLOOM_WORDS],
+            };
+            self.ancestor_bits[n] = Some(Box::new(b));
+        }
+    }
+
