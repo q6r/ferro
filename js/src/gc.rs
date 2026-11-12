@@ -515,3 +515,10 @@ pub fn collect() -> Stats {
     Stats { examined: n, freed, ms: t.elapsed().as_secs_f64() * 1000.0 }
 }
 
+/// Quantos objetos e ambientes estão registrados agora (vivos ou à espera
+/// da limpeza do registro).
+pub fn tracked() -> usize {
+    OBJECTS.with(|l| l.borrow_mut().retain(|w| w.strong_count() > 0));
+    ENVS.with(|l| l.borrow_mut().retain(|w| w.strong_count() > 0));
+    OBJECTS.with(|l| l.borrow().len()) + ENVS.with(|l| l.borrow().len())
+}
