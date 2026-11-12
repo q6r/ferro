@@ -55,3 +55,37 @@ function criarStore(reducer, inicial) {
     inscrever(f) { inscritos.add(f); return () => inscritos.delete(f); },
   };
 }
+const reducer = (s, a) => {
+  switch (a.type) {
+    case "add": return { ...s, itens: [...s.itens, { id: s.proximo, texto: a.texto, feito: false }], proximo: s.proximo + 1 };
+    case "toggle": return { ...s, itens: s.itens.map(i => i.id === a.id ? { ...i, feito: !i.feito } : i) };
+    case "limpar": return { ...s, itens: s.itens.filter(i => !i.feito) };
+    default: return s;
+  }
+};
+const store = criarStore(reducer, { itens: [], proximo: 1 });
+const mudancas = [];
+const sair = store.inscrever((novo, velho) => mudancas.push(`${velho.itens.length}->${novo.itens.length}`));
+store.despachar({ type: "add", texto: "estudar" });
+store.despachar({ type: "add", texto: "treinar" });
+store.despachar({ type: "add", texto: "dormir" });
+store.despachar({ type: "toggle", id: 2 });
+store.despachar({ type: "desconhecida" });
+sair();
+store.despachar({ type: "limpar" });
+console.log(store.estado, mudancas);
+
+const debounceLog = [];
+function memoize(fn) {
+  const cache = new Map();
+  const wrapped = (...args) => {
+    const k = JSON.stringify(args);
+    if (cache.has(k)) { debounceLog.push("hit " + k); return cache.get(k); }
+    const v = fn(...args); cache.set(k, v); return v;
+  };
+  wrapped.cache = cache;
+  return wrapped;
+}
+const lento = memoize((a, b) => a * b);
+lento(2, 3); lento(2, 3); lento(3, 2);
+console.log(debounceLog, lento.cache.size, [...lento.cache.keys()]);
