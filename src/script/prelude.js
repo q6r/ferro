@@ -2115,3 +2115,68 @@ accessor(DP, 'fullscreenElement', () => N.fullscreenElement());
 accessor(DP, 'webkitFullscreenElement', () => N.fullscreenElement());
 accessor(DP, 'webkitCurrentFullScreenElement', () => N.fullscreenElement());
 accessor(DP, 'fullscreen', () => !!N.fullscreenElement());
+accessor(DP, 'webkitIsFullScreen', () => !!N.fullscreenElement());
+accessor(DP, 'fullscreenEnabled', () => true);
+accessor(DP, 'webkitFullscreenEnabled', () => true);
+accessor(DP, 'pointerLockElement', () => null);
+accessor(DP, 'scrollingElement', function () { return this.documentElement; });
+accessor(DP, 'lastModified', () => new Date().toLocaleString('en-US'));
+accessor(DP, 'designMode', () => 'off', () => {});
+accessor(DP, 'dir', function () { return this.documentElement?.dir ?? ''; }, function (v) { if (this.documentElement) this.documentElement.dir = v; });
+accessor(DP, 'location', () => G.location, (v) => { G.location.href = v; });
+accessor(DP, 'all', function () { return this.getElementsByTagName('*'); });
+accessor(DP, 'embeds', function () { return this.getElementsByTagName('embed'); });
+accessor(DP, 'plugins', function () { return this.getElementsByTagName('embed'); });
+const FONTS = Object.assign(new EventTarget(), {
+  ready: Promise.resolve(), status: 'loaded', size: 0,
+  check() { return true; }, load() { return Promise.resolve([]); }, add() {}, delete() {}, clear() {},
+  forEach() {}, has() { return false; }, values() { return [].values(); }, [Symbol.iterator]() { return [].values(); },
+});
+FONTS.ready = Promise.resolve(FONTS);
+accessor(DP, 'fonts', () => FONTS);
+const EVENT_CTORS = {
+  event: 'Event', events: 'Event', htmlevents: 'Event', customevent: 'CustomEvent', uievent: 'UIEvent',
+  uievents: 'UIEvent', mouseevent: 'MouseEvent', mouseevents: 'MouseEvent', keyboardevent: 'KeyboardEvent',
+  keyboardevents: 'KeyboardEvent', focusevent: 'FocusEvent', messageevent: 'MessageEvent',
+  hashchangeevent: 'HashChangeEvent', popstateevent: 'PopStateEvent', errorevent: 'ErrorEvent',
+  progressevent: 'ProgressEvent', pointerevent: 'PointerEvent', wheelevent: 'WheelEvent', inputevent: 'InputEvent',
+  storageevent: 'StorageEvent', svgevents: 'Event', touchevent: null,
+};
+methods(DP, {
+  createEvent(kind) {
+    const c = EVENT_CTORS[String(kind).toLowerCase()];
+    if (!c) throw new DOMException(`Failed to execute 'createEvent' on 'Document': The provided event type ('${kind}') is invalid.`, 'NotSupportedError');
+    return new G[c]('');
+  },
+  createRange() { return new Range(); },
+  getSelection() { return SELECTION; },
+  execCommand() { return false; },
+  queryCommandSupported() { return false; },
+  queryCommandEnabled() { return false; },
+  queryCommandState() { return false; },
+  queryCommandValue() { return ''; },
+  createTreeWalker(root, what = 0xFFFFFFFF, filter = null) { return new TreeWalker(root, what, filter); },
+  createNodeIterator(root, what = 0xFFFFFFFF, filter = null) { return new NodeIterator(root, what, filter); },
+  createAttribute(name) { return { name: String(name).toLowerCase(), value: '', specified: true }; },
+  exitFullscreen() {
+    const el = N.exitFullscreen();
+    if (!el) return Promise.reject(new TypeError('Document not active'));
+    return new Promise((res) => setTimeout(() => { hooks.fullscreenChanged(el); res(); }, 0));
+  },
+  webkitExitFullscreen() { return this.exitFullscreen(); },
+  webkitCancelFullScreen() { return this.exitFullscreen(); },
+  exitPointerLock() {},
+  startViewTransition(cb) {
+    const done = Promise.resolve().then(() => cb && cb());
+    return { finished: done, ready: done, updateCallbackDone: done, skipTransition() {} };
+  },
+  hasStorageAccess() { return Promise.resolve(true); },
+  requestStorageAccess() { return Promise.resolve(); },
+});
+hidden(G, 'getSelection', () => SELECTION);
+const SELECTION = {
+  rangeCount: 0, isCollapsed: true, type: 'None', anchorNode: null, focusNode: null, anchorOffset: 0, focusOffset: 0,
+  removeAllRanges() {}, addRange() {}, getRangeAt() { return new Range(); }, collapse() {}, empty() {},
+  selectAllChildren() {}, toString() { return ''; }, containsNode() { return false; }, extend() {}, modify() {},
+};
+
