@@ -1,0 +1,67 @@
+/* Folha de estilo do agente de usuário do Ferro.
+   Baseada na seção "Rendering" da especificação HTML. */
+
+html, address, blockquote, body, center, dialog, div, figure, figcaption,
+footer, form, header, hr, legend, listing, main, p, plaintext, pre, search,
+xmp, article, aside, h1, h2, h3, h4, h5, h6, hgroup, nav, section, dl, dt,
+dd, ol, ul, menu, dir, details, summary, fieldset, optgroup, video, canvas, iframe,
+frameset { display: block; }
+
+head, link, meta, script, style, title, template, base, noembed, noframes,
+param, rp, datalist, area, [hidden], input[type=hidden], dialog:not([open]),
+source, track { display: none; }
+
+html { color: CanvasText; font-family: serif; line-height: normal; }
+body { margin: 8px; }
+
+/* lista */
+li { display: list-item; }
+ul, menu, dir { list-style-type: disc; margin-top: 1em; margin-bottom: 1em; padding-left: 40px; }
+ol { list-style-type: decimal; margin-top: 1em; margin-bottom: 1em; padding-left: 40px; }
+ul ul, ol ul, ul menu, ol menu { list-style-type: circle; }
+ul ul ul, ul ol ul, ol ul ul, ol ol ul { list-style-type: square; }
+ul ul, ul ol, ol ul, ol ol { margin-top: 0; margin-bottom: 0; }
+dd { margin-left: 40px; }
+dl { margin-top: 1em; margin-bottom: 1em; }
+
+/* blocos de texto */
+p, blockquote, figure, listing, plaintext, pre, xmp { margin-top: 1em; margin-bottom: 1em; }
+blockquote, figure { margin-left: 40px; margin-right: 40px; }
+address, i, cite, em, var, dfn { font-style: italic; }
+center { text-align: center; }
+pre, listing, plaintext, xmp { white-space: pre; font-family: monospace; }
+code, kbd, samp, tt { font-family: monospace; }
+
+/* títulos */
+h1 { font-size: 2em; margin-top: 0.67em; margin-bottom: 0.67em; font-weight: bold; }
+h2 { font-size: 1.5em; margin-top: 0.83em; margin-bottom: 0.83em; font-weight: bold; }
+h3 { font-size: 1.17em; margin-top: 1em; margin-bottom: 1em; font-weight: bold; }
+h4 { font-size: 1em; margin-top: 1.33em; margin-bottom: 1.33em; font-weight: bold; }
+h5 { font-size: 0.83em; margin-top: 1.67em; margin-bottom: 1.67em; font-weight: bold; }
+h6 { font-size: 0.67em; margin-top: 2.33em; margin-bottom: 2.33em; font-weight: bold; }
+article h1, aside h1, nav h1, section h1 { font-size: 1.5em; margin-top: 0.83em; margin-bottom: 0.83em; }
+
+/* texto em linha */
+b, strong, th { font-weight: bold; }
+small { font-size: smaller; }
+big { font-size: larger; }
+sub, sup { font-size: smaller; }
+u, ins, abbr[title] { text-decoration: underline; }
+s, strike, del { text-decoration: line-through; }
+mark { background-color: yellow; color: black; }
+a:link { color: #0000ee; text-decoration: underline; }
+q::before { content: open-quote; }
+q::after { content: close-quote; }
+
+/* tabelas */
+table { display: table; border-spacing: 2px; box-sizing: border-box; }
+caption { display: table-caption; text-align: center; }
+thead { display: table-header-group; vertical-align: middle; }
+tbody { display: table-row-group; vertical-align: middle; }
+tfoot { display: table-footer-group; vertical-align: middle; }
+tr { display: table-row; vertical-align: inherit; }
+td, th { display: table-cell; vertical-align: inherit; padding: 1px; }
+th { text-align: center; }
+col, colgroup { display: table-column; }
+center > table, table[align=center] { margin-left: auto; margin-right: auto; }
+
