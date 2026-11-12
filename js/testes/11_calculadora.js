@@ -92,3 +92,30 @@ class Parser {
   }
 }
 
+const ambiente = new Map(Object.entries({ pi: Math.PI, e: Math.E }));
+const funcoes = { max: Math.max, min: Math.min, sqrt: Math.sqrt, abs: Math.abs, soma: (...xs) => xs.reduce((a, b) => a + b, 0) };
+function avaliar(no) {
+  switch (no.tipo) {
+    case "num": return no.v;
+    case "var": if (!ambiente.has(no.nome)) throw new ReferenceError(`${no.nome} não definida`); return ambiente.get(no.nome);
+    case "neg": return -avaliar(no.arg);
+    case "atrib": { const v = avaliar(no.valor); ambiente.set(no.nome, v); return v; }
+    case "chamada": {
+      const f = funcoes[no.nome];
+      if (typeof f !== "function") throw new TypeError(`${no.nome} não é função`);
+      return f(...no.args.map(avaliar));
+    }
+    case "bin": {
+      const a = avaliar(no.esq), b = avaliar(no.dir);
+      return { "+": a + b, "-": a - b, "*": a * b, "/": a / b, "^": a ** b }[no.op];
+    }
+  }
+}
+const linhas = ["1 + 2 * 3", "(1 + 2) * 3", "2 ^ 3 ^ 2", "-2 ^ 2", "x = 10", "x * pi", "max(1, x, 3) + soma(1, 2, 3, 4)",
+  "sqrt(16) / 0", "y + 1", "1 + ", "3 $ 4", "abs(-7.5)", "soma()", "nada(1)"];
+for (const l of linhas) {
+  try { console.log(l.padEnd(32), "=>", avaliar(new Parser(tokenizar(l)).programa())); }
+  catch (e) { console.log(l.padEnd(32), "!!", `${e.name}: ${e.message}`); }
+}
+console.log(JSON.stringify(new Parser(tokenizar("1 + f(2, 3)")).programa()));
+console.log(new Parser(tokenizar("a * (b - 1)")).programa());
