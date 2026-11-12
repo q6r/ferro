@@ -438,3 +438,64 @@ impl BigInt {
         BigInt::from_parts(self.neg, mag)
     }
 
+    /// `>>` aritmético (arredonda para baixo, como em complemento de dois).
+    pub fn shr(&self, n: u64) -> BigInt {
+        if !self.neg {
+            return self.shr_mag(n);
+        }
+        // -((|x| - 1) >> n) - 1
+        let one = BigInt::from_i64(1);
+        let m = self.clone_abs().sub(&one).shr_mag(n);
+        m.add(&one).neg()
+    }
+
+    /// Representação em complemento de dois com `n` dígitos.
+    fn twos(&self, n: usize) -> Vec<u32> {
+        let mut v = self.mag.clone();
+        v.resize(n, 0);
+        if self.neg {
+            for x in v.iter_mut() {
+                *x = !*x;
+            }
+            for x in v.iter_mut() {
+                let (s, c) = x.overflowing_add(1);
+                *x = s;
+                if !c {
+                    break;
+                }
+            }
+        }
+        v
+    }
+
+    fn from_twos(mut v: Vec<u32>) -> BigInt {
+        let neg = v.last().is_some_and(|x| x >> 31 == 1);
+        if neg {
+            for x in v.iter_mut() {
+                *x = !*x;
+            }
+            for x in v.iter_mut() {
+                let (s, c) = x.overflowing_add(1);
+                *x = s;
+                if !c {
+                    break;
+                }
+            }
+        }
+        BigInt::from_parts(neg, v)
+    }
+
+    fn bitop(&self, o: &BigInt, f: impl Fn(u32, u32) -> u32) -> BigInt {
+        let n = self.mag.len().max(o.mag.len()) + 1;
+        let (a, b) = (self.twos(n), o.twos(n));
+        BigInt::from_twos(a.iter().zip(b.iter()).map(|(x, y)| f(*x, *y)).collect())
+    }
+
+    pub fn and(&self, o: &BigInt) -> BigInt {
+        self.bitop(o, |x, y| x & y)
+    }
+
+    pub fn or(&self, o: &BigInt) -> BigInt {
+        self.bitop(o, |x, y| x | y)
+    }
+
