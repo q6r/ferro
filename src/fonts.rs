@@ -212,3 +212,66 @@ pub struct LineMetrics {
     pub normal: f32,
 }
 
+// Cada face lista caminhos em ordem de preferência (Windows, Linux, macOS).
+const FACES: &[&[&str]] = &[
+    // 0..4: sans (regular, bold, italic, bold italic)
+    &["C:/Windows/Fonts/arial.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/System/Library/Fonts/Supplemental/Arial.ttf"],
+    &["C:/Windows/Fonts/arialbd.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf"],
+    &["C:/Windows/Fonts/ariali.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf", "/System/Library/Fonts/Supplemental/Arial Italic.ttf"],
+    &["C:/Windows/Fonts/arialbi.ttf", "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf", "/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"],
+    // 4..8: serif
+    &["C:/Windows/Fonts/times.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf", "/System/Library/Fonts/Supplemental/Times New Roman.ttf"],
+    &["C:/Windows/Fonts/timesbd.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", "/System/Library/Fonts/Supplemental/Times New Roman Bold.ttf"],
+    &["C:/Windows/Fonts/timesi.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf", "/System/Library/Fonts/Supplemental/Times New Roman Italic.ttf"],
+    &["C:/Windows/Fonts/timesbi.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-BoldItalic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf", "/System/Library/Fonts/Supplemental/Times New Roman Bold Italic.ttf"],
+    // 8..12: mono
+    &["C:/Windows/Fonts/consola.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/System/Library/Fonts/Supplemental/Courier New.ttf"],
+    &["C:/Windows/Fonts/consolab.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "/System/Library/Fonts/Supplemental/Courier New Bold.ttf"],
+    &["C:/Windows/Fonts/consolai.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf", "/System/Library/Fonts/Supplemental/Courier New Italic.ttf"],
+    &["C:/Windows/Fonts/consolaz.ttf", "/usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf", "/System/Library/Fonts/Supplemental/Courier New Bold Italic.ttf"],
+    // 12..16: fonte do sistema (system-ui), usada também na interface
+    &["C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"],
+    &["C:/Windows/Fonts/segoeuib.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"],
+    &["C:/Windows/Fonts/segoeuii.ttf", "/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf"],
+    &["C:/Windows/Fonts/segoeuiz.ttf", "/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf"],
+    // 16: seminegrito; 17: ícones
+    &["C:/Windows/Fonts/seguisb.ttf", "/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf"],
+    &["C:/Windows/Fonts/SegoeIcons.ttf", "C:/Windows/Fonts/segmdl2.ttf"],
+    // 18..: fallback para caracteres que faltam (símbolos, setas, emoji em preto e branco)
+    &["C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"],
+    &["C:/Windows/Fonts/seguisym.ttf", "/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf"],
+    &["C:/Windows/Fonts/seguiemj.ttf", "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf"],
+    // chinês, japonês e coreano (só carregam quando aparece um caractere desses)
+    &["C:/Windows/Fonts/msyh.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/System/Library/Fonts/PingFang.ttc"],
+    &["C:/Windows/Fonts/YuGothM.ttc", "C:/Windows/Fonts/msgothic.ttc"],
+    &["C:/Windows/Fonts/malgun.ttf"],
+    &["C:/Windows/Fonts/Nirmala.ttc", "C:/Windows/Fonts/Nirmala.ttf"],
+    &["C:/Windows/Fonts/seguihis.ttf", "C:/Windows/Fonts/ebrima.ttf"],
+];
+const SEMIBOLD: FontId = 16;
+const ICONS: FontId = 17;
+const FALLBACK_START: usize = 18;
+/// Segoe UI Emoji / Noto Emoji.
+const EMOJI: FontId = 20;
+
+impl Fonts {
+    pub fn system() -> Result<Fonts, String> {
+        let fonts = Fonts {
+            faces: FACES
+                .iter()
+                .map(|c| Face {
+                    candidates: c,
+                    font: OnceCell::new(),
+                    colr: OnceCell::new(),
+                })
+                .collect(),
+            glyphs: RefCell::new(HashMap::new()),
+            advances: RefCell::new(HashMap::new()),
+            color_glyphs: RefCell::new(HashMap::new()),
+        };
+        if fonts.face(0).is_none() && fonts.face(4).is_none() {
+            return Err("nenhuma fonte do sistema encontrada (Arial/Times/DejaVu/Liberation)".into());
+        }
+        Ok(fonts)
+    }
+
