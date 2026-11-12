@@ -244,3 +244,40 @@ impl App {
         }
     }
 
+    fn draw_tab_row(&self, p: &mut Painter, t: &Theme, i: usize, row: Rect, hits: &mut Hits) {
+        let tab = &self.tabs[i];
+        let active = i == self.active;
+        let hovered = matches!(self.hover, Some(Hit::Tab(j) | Hit::CloseTab(j)) if j == i);
+        if active {
+            if !t.dark {
+                p.shadow(row, 12.0, 14);
+            }
+            p.rrect(row, 12.0, t.row_selected());
+            p.stroke(row, 12.0, 1.0, t.border);
+        } else if hovered {
+            p.rrect(row, 12.0, hover_bg(t));
+        }
+        hits.push((row, Hit::Tab(i)));
+        let ic = if tab.loading {
+            t.accent
+        } else if active {
+            t.text
+        } else {
+            t.muted
+        };
+        p.icon(row.x + 22.0, row.y + 20.0, tab.icon(), 17.0, ic);
+        let show_close = active || hovered;
+        let right = row.x + row.w - if show_close { 36.0 } else { 12.0 };
+        let weight = if active { Weight::Semibold } else { Weight::Regular };
+        let title = p.ellipsize(&tab.title(), 14.0, weight, right - (row.x + 42.0));
+        p.text(row.x + 42.0, Painter::baseline(row.y + 20.0, 14.0), &title, 14.0, t.text, weight);
+        if show_close {
+            let cb = rect(row.x + row.w - 30.0, row.y + 10.0, 20.0, 20.0);
+            if self.hover == Some(Hit::CloseTab(i)) {
+                p.rrect(cb, 10.0, t.field_hover);
+            }
+            p.icon(cb.x + 10.0, cb.y + 10.0, Icon::Close, 13.0, t.muted);
+            hits.push((cb, Hit::CloseTab(i)));
+        }
+    }
+
