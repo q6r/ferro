@@ -273,3 +273,45 @@ impl BigInt {
         BigInt::parse_radix(&digits, radix)
     }
 
+    pub fn parse_radix(digits: &str, radix: u32) -> Option<BigInt> {
+        if digits.is_empty() {
+            return None;
+        }
+        let mut mag: Vec<u32> = Vec::new();
+        for c in digits.chars() {
+            let d = c.to_digit(radix)?;
+            // mag = mag * radix + d
+            let mut carry = d as u64;
+            for x in mag.iter_mut() {
+                let t = *x as u64 * radix as u64 + carry;
+                *x = t as u32;
+                carry = t >> 32;
+            }
+            if carry > 0 {
+                mag.push(carry as u32);
+            }
+        }
+        Some(BigInt::from_parts(false, mag))
+    }
+
+    /// StringToBigInt (para `BigInt("...")` e comparações com strings).
+    pub fn parse_js(s: &str) -> Option<BigInt> {
+        let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
+        if t.is_empty() {
+            return Some(BigInt::zero());
+        }
+        let lower = t.to_ascii_lowercase();
+        for (p, r) in [("0x", 16), ("0o", 8), ("0b", 2)] {
+            if let Some(rest) = lower.strip_prefix(p) {
+                return BigInt::parse_radix(rest, r);
+            }
+        }
+        let (neg, digits) = match t.as_bytes()[0] {
+            b'-' => (true, &t[1..]),
+            b'+' => (false, &t[1..]),
+            _ => (false, t),
+        };
+        let v = BigInt::parse_radix(digits, 10)?;
+        Some(if neg { v.neg() } else { v })
+    }
+
