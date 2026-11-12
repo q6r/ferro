@@ -503,3 +503,79 @@ impl Lexer {
         self.end_number(Tok::Num(v))
     }
 
+    fn end_number(&self, t: Tok) -> Result<Tok, LexError> {
+        if is_id_start(self.peek()) {
+            return Err(self.err("identificador logo após número"));
+        }
+        Ok(t)
+    }
+
+    /// Escape dentro de string/template. Devolve None para "\" + quebra de linha.
+    fn read_escape(&mut self, out: &mut Vec<u16>, in_template: bool) -> Result<bool, LexError> {
+        let c = self.peek();
+        self.pos += 1;
+        let push = |out: &mut Vec<u16>, ch: char| {
+            let mut buf = [0u16; 2];
+            out.extend_from_slice(ch.encode_utf16(&mut buf));
+        };
+        match c {
+            'n' => out.push(10),
+            't' => out.push(9),
+            'r' => out.push(13),
+            'b' => out.push(8),
+            'f' => out.push(12),
+            'v' => out.push(11),
+            '0' if !self.peek().is_ascii_digit() => out.push(0),
+            'x' => {
+                let h = self.peek().to_digit(16);
+                let l = self.peek_at(1).to_digit(16);
+                match (h, l) {
+                    (Some(h), Some(l)) => {
+                        self.pos += 2;
+                        out.push((h * 16 + l) as u16);
+                    }
+                    _ => return Err(self.err("escape \\x inválido")),
+                }
+            }
+            'u' => {
+                // surrogates em escapes separados viram unidades separadas
+                if self.peek() == '{' {
+                    let ch = self.read_unicode_escape()?;
+                    push(out, ch);
+                } else {
+                    let mut v = 0u32;
+                    for _ in 0..4 {
+                        let d = self.peek().to_digit(16).ok_or_else(|| self.err("escape \\u inválido"))?;
+                        v = v * 16 + d;
+                        self.pos += 1;
+                    }
+                    out.push(v as u16);
+                }
+            }
+            '\r' => {
+                if self.peek() == '\n' {
+                    self.pos += 1;
+                }
+                self.line += 1;
+            }
+            '\n' | '\u{2028}' | '\u{2029}' => self.line += 1,
+            '0'..='7' if !in_template => {
+                // octal legado
+                let mut v = c.to_digit(8).unwrap();
+                for _ in 0..2 {
+                    match self.peek().to_digit(8) {
+                        Some(d) if v * 8 + d < 256 => {
+                            v = v * 8 + d;
+                            self.pos += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(v as u16);
+            }
+            '\0' if self.pos > self.src.len() => return Err(self.err("string sem fim")),
+            other => push(out, other),
+        }
+        Ok(true)
+    }
+
