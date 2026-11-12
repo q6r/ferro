@@ -151,3 +151,83 @@ pub fn tokenize(input: &str) -> Vec<Token> {
     tokens
 }
 
+fn parse_start_tag(chars: &[char], start: usize) -> (Token, usize) {
+    let len = chars.len();
+    let mut j = start;
+    let mut name = String::new();
+    while j < len && !chars[j].is_whitespace() && chars[j] != '>' && chars[j] != '/' {
+        name.push(chars[j].to_ascii_lowercase());
+        j += 1;
+    }
+    let mut attrs: Vec<(String, String)> = Vec::new();
+    let mut self_closing = false;
+    loop {
+        while j < len && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j >= len {
+            break;
+        }
+        match chars[j] {
+            '>' => {
+                j += 1;
+                break;
+            }
+            '/' => {
+                if chars.get(j + 1) == Some(&'>') {
+                    self_closing = true;
+                    j += 2;
+                    break;
+                }
+                j += 1;
+                continue;
+            }
+            _ => {}
+        }
+        // nome do atributo (o primeiro caractere pode ser qualquer coisa, até '=')
+        let mut attr_name = String::new();
+        attr_name.push(chars[j].to_ascii_lowercase());
+        j += 1;
+        while j < len && !chars[j].is_whitespace() && !matches!(chars[j], '=' | '>' | '/') {
+            attr_name.push(chars[j].to_ascii_lowercase());
+            j += 1;
+        }
+        while j < len && chars[j].is_whitespace() {
+            j += 1;
+        }
+        let mut value = String::new();
+        if j < len && chars[j] == '=' {
+            j += 1;
+            while j < len && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < len && (chars[j] == '"' || chars[j] == '\'') {
+                let q = chars[j];
+                j += 1;
+                while j < len && chars[j] != q {
+                    value.push(chars[j]);
+                    j += 1;
+                }
+                j += 1;
+            } else {
+                while j < len && !chars[j].is_whitespace() && chars[j] != '>' {
+                    value.push(chars[j]);
+                    j += 1;
+                }
+            }
+            value = decode_entities(&value);
+        }
+        if !attrs.iter().any(|(k, _)| *k == attr_name) {
+            attrs.push((attr_name, value));
+        }
+    }
+    (
+        Token::StartTag {
+            name,
+            attrs,
+            self_closing,
+        },
+        j.min(len),
+    )
+}
+
