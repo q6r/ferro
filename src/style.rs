@@ -1142,3 +1142,61 @@ impl std::ops::Index<NodeId> for Styles {
     }
 }
 
+/// Calcula o estilo de todos os elementos. Índice = NodeId; nós de texto
+/// recebem o estilo do pai.
+pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &MediaContext) -> Styles {
+    let index = RuleIndex::for_sheets(sheets);
+    let mut styles = Styles {
+        nodes: vec![None; doc.nodes.len()],
+        before: HashMap::new(),
+        after: HashMap::new(),
+    };
+    let root_style = Rc::new(ComputedStyle::initial());
+    let mut cx = Cascade {
+        doc,
+        index: &index,
+        media: *media,
+        root_font: 16.0,
+        own_bits: vec![None; doc.nodes.len()],
+        ancestor_bits: vec![None; doc.nodes.len()],
+        scratch: std::cell::RefCell::new(Vec::new()),
+    };
+    let mut stack: Vec<(NodeId, Rc<ComputedStyle>)> = doc
+        .node(Document::ROOT)
+        .children
+        .iter()
+        .rev()
+        .map(|&c| (c, root_style.clone()))
+        .collect();
+    while let Some((node, parent)) = stack.pop() {
+        let style = match &doc.node(node).data {
+            NodeData::Element(_) => {
+                cx.prepare_ancestors(node);
+                let s = Rc::new(cx.style_for(node, &parent, None).0);
+                if doc.node(node).parent == Some(Document::ROOT) {
+                    cx.root_font = s.font_size;
+                }
+                if index.pseudo.len > 0 && s.display != Display::None {
+                    for (pe, map) in [
+                        (css::PseudoElement::Before, &mut styles.before),
+                        (css::PseudoElement::After, &mut styles.after),
+                    ] {
+                        let (ps, matched) = cx.style_for(node, &s, Some(pe));
+                        if matched && ps.content.is_some() && ps.display != Display::None {
+                            map.insert(node, Rc::new(ps));
+                        }
+                    }
+                }
+                s
+            }
+            NodeData::Text(_) => parent.clone(),
+            _ => continue,
+        };
+        for &c in doc.flat_children(node).iter().rev() {
+            stack.push((c, style.clone()));
+        }
+        styles.nodes[node] = Some(style);
+    }
+    styles
+}
+
