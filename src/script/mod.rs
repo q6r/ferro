@@ -1167,3 +1167,66 @@ impl Session {
         );
     }
 
+    /// Há um campo de texto com o foco? (A interface deixa as teclas com a página.)
+    pub fn editing(&mut self) -> bool {
+        let ff = self.host.borrow().focused_frame;
+        if let Some(n) = ff {
+            let c = self.host.borrow_mut().frames.remove(&n);
+            if let Some(mut c) = c {
+                let e = c.session.editing();
+                self.host.borrow_mut().frames.insert(n, c);
+                return e;
+            }
+        }
+        ferro_js::vm::truthy(&self.hook("editing", Vec::new()))
+    }
+
+    pub fn resize(&mut self, width: f32, height: f32) {
+        {
+            let mut hb = self.host.borrow_mut();
+            hb.width = width;
+            hb.height = height;
+            hb.dirty = true;
+        }
+        let win = Value::Object(self.js.vm.realm.global.clone());
+        self.hook("fire", vec![win, Value::str("resize")]);
+    }
+
+    pub fn set_scroll(&mut self, y: f32) {
+        self.last_input = Some(Instant::now());
+        let changed = {
+            let mut hb = self.host.borrow_mut();
+            let c = (hb.scroll_y - y).abs() > 0.5;
+            hb.scroll_y = y;
+            c
+        };
+        if changed {
+            let doc = wrap(&mut self.js.vm, Document::ROOT);
+            self.hook("fire", vec![doc, Value::str("scroll"), Value::Bool(true)]);
+        }
+    }
+
+    /// Quadros de vídeo vão direto para `sink` (a interface), de outra thread.
+    pub fn set_frame_sink(&mut self, sink: crate::media::player::FrameSink) {
+        self.host.borrow_mut().media.frame_sink = Some(sink);
+    }
+
+    /// Quadro atual de cada `<video>` que já tem imagem (e a imagem de cada `<canvas>`).
+    pub fn video_frames(&mut self) -> HashMap<NodeId, Arc<ImageData>> {
+        self.snapshot_canvases();
+        let hb = self.host.borrow();
+        let mut out: HashMap<NodeId, Arc<ImageData>> = hb
+            .media
+            .players
+            .iter()
+            .filter_map(|(&n, p)| p.pipeline.shown.as_ref().map(|(_, img)| (n, img.clone())))
+            .collect();
+        for (n, img) in &hb.canvas_snaps {
+            out.insert(*n, img.clone());
+        }
+        for (n, img) in &hb.frame_images {
+            out.insert(*n, img.clone());
+        }
+        out
+    }
+
