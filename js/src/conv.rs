@@ -283,3 +283,44 @@ pub fn parse_int(units: &[u16], radix: i32) -> f64 {
     if neg { -v } else { v }
 }
 
+pub fn to_int32(n: f64) -> i32 {
+    if !n.is_finite() || n == 0.0 {
+        return 0;
+    }
+    if n.abs() < 2147483648.0 {
+        return n as i32;
+    }
+    let m = n.trunc().rem_euclid(4294967296.0);
+    if m >= 2147483648.0 { (m - 4294967296.0) as i32 } else { m as i32 }
+}
+
+pub fn to_uint32(n: f64) -> u32 {
+    to_int32(n) as u32
+}
+
+pub fn to_uint16(n: f64) -> u16 {
+    to_int32(n) as u16
+}
+
+/// ToIntegerOrInfinity.
+pub fn to_integer(n: f64) -> f64 {
+    if n.is_nan() {
+        return 0.0;
+    }
+    if n.is_infinite() {
+        return n;
+    }
+    n.trunc() + 0.0
+}
+
+/// Índice relativo (para slice, at, etc.): negativo conta do fim.
+pub fn relative_index(n: f64, len: usize) -> usize {
+    let len_f = len as f64;
+    let n = to_integer(n);
+    if n < 0.0 {
+        (len_f + n).max(0.0) as usize
+    } else {
+        n.min(len_f) as usize
+    }
+}
+
