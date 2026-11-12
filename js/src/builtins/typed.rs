@@ -405,3 +405,45 @@ fn ta_from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     vm.construct(&c, vec![arr], &c)
 }
 
+fn ta_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(c) = a.this.clone() else {
+        return Err(vm.type_error("TypedArray.of: this is not a constructor"));
+    };
+    let arr = vm.array_value(a.args.clone());
+    vm.construct(&c, vec![arr], &c)
+}
+
+fn callback(vm: &mut Vm, a: &CallArgs) -> Result<Value, Value> {
+    let f = a.arg(0);
+    if !f.is_callable() {
+        let d = vm.describe(&f);
+        return Err(vm.type_error(format!("{d} is not a function")));
+    }
+    Ok(f)
+}
+
+fn at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let n = vm.to_integer(&a.arg(0))?;
+    let k = if n >= 0.0 { n } else { len as f64 + n };
+    if k < 0.0 || k >= len as f64 {
+        return Ok(Value::Undefined);
+    }
+    Ok(elem(&o, k as usize))
+}
+
+fn copy_within(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let to = rel_index(vm, &a.arg(0), len, 0)?;
+    let from = rel_index(vm, &a.arg(1), len, 0)?;
+    let end = rel_index(vm, &a.arg(2), len, len)?;
+    let count = end.saturating_sub(from).min(len - to);
+    if let Kind::TypedArray(t) = &o.borrow().kind {
+        let sz = kind.size();
+        let mut d = t.data.borrow_mut();
+        let base = t.offset;
+        d.copy_within(base + from * sz..base + (from + count) * sz, base + to * sz);
+    }
+    Ok(a.this.clone())
+}
+
