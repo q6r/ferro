@@ -169,3 +169,86 @@ fn parse_transform(s: &str) -> Matrix {
     m
 }
 
+/// Arco elíptico (parametrização por extremos, SVG 1.1 apêndice F.6) → cúbicas.
+#[allow(clippy::too_many_arguments)]
+fn arc_to_cubics(
+    p0: (f32, f32),
+    mut rx: f32,
+    mut ry: f32,
+    angle: f32,
+    large: bool,
+    sweep: bool,
+    p1: (f32, f32),
+    out: &mut Vec<Seg>,
+) {
+    if rx == 0.0 || ry == 0.0 || p0 == p1 {
+        out.push(Seg::Line(p1));
+        return;
+    }
+    rx = rx.abs();
+    ry = ry.abs();
+    let (sinp, cosp) = angle.to_radians().sin_cos();
+    let dx = (p0.0 - p1.0) / 2.0;
+    let dy = (p0.1 - p1.1) / 2.0;
+    let x1p = cosp * dx + sinp * dy;
+    let y1p = -sinp * dx + cosp * dy;
+    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if lambda > 1.0 {
+        rx *= lambda.sqrt();
+        ry *= lambda.sqrt();
+    }
+    let num = rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+    let den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+    let mut coef = (num / den).max(0.0).sqrt();
+    if large == sweep {
+        coef = -coef;
+    }
+    let cxp = coef * rx * y1p / ry;
+    let cyp = -coef * ry * x1p / rx;
+    let cx = cosp * cxp - sinp * cyp + (p0.0 + p1.0) / 2.0;
+    let cy = sinp * cxp + cosp * cyp + (p0.1 + p1.1) / 2.0;
+    let ang = |ux: f32, uy: f32, vx: f32, vy: f32| {
+        let a = (ux * vy - uy * vx).atan2(ux * vx + uy * vy);
+        if a.is_nan() { 0.0 } else { a }
+    };
+    let ux = (x1p - cxp) / rx;
+    let uy = (y1p - cyp) / ry;
+    let vx = (-x1p - cxp) / rx;
+    let vy = (-y1p - cyp) / ry;
+    let theta1 = ang(1.0, 0.0, ux, uy);
+    let mut delta = ang(ux, uy, vx, vy);
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+    let n = (delta.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0) as usize;
+    let step = delta / n as f32;
+    let k = 4.0 / 3.0 * (step / 4.0).tan();
+    let point = |t: f32| {
+        let (s, c) = t.sin_cos();
+        let x = rx * c;
+        let y = ry * s;
+        (cosp * x - sinp * y + cx, sinp * x + cosp * y + cy)
+    };
+    let deriv = |t: f32| {
+        let (s, c) = t.sin_cos();
+        let x = -rx * s;
+        let y = ry * c;
+        (cosp * x - sinp * y, sinp * x + cosp * y)
+    };
+    let mut t = theta1;
+    for i in 0..n {
+        let t2 = t + step;
+        let (a, b) = (point(t), point(t2));
+        let (da, db) = (deriv(t), deriv(t2));
+        let end = if i == n - 1 { p1 } else { b };
+        out.push(Seg::Cubic(
+            (a.0 + k * da.0, a.1 + k * da.1),
+            (b.0 - k * db.0, b.1 - k * db.1),
+            end,
+        ));
+        t = t2;
+    }
+}
+
