@@ -392,3 +392,78 @@ impl Vm {
     }
 }
 
+fn async_fulfilled(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(co) = native_data(&a.callee) {
+        vm.async_step(&co, Some((a.arg(0), RESUME_NEXT)));
+    }
+    Ok(Value::Undefined)
+}
+
+fn async_rejected(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(co) = native_data(&a.callee) {
+        vm.async_step(&co, Some((a.arg(0), RESUME_THROW)));
+    }
+    Ok(Value::Undefined)
+}
+
+// ------------------------------------------------------------ nativos
+
+fn resolver_data(a: &CallArgs) -> Option<(ObjRef, Rc<Cell<bool>>)> {
+    let Value::Object(rec) = native_data(&a.callee) else { return None };
+    let b = rec.borrow();
+    match &b.kind {
+        Kind::PromiseResolver { promise, done } => Some((promise.clone(), done.clone())),
+        _ => None,
+    }
+}
+
+fn resolve_fn(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Some((p, done)) = resolver_data(a)
+        && !done.get()
+    {
+        done.set(true);
+        vm.resolve_promise(&p, a.arg(0));
+    }
+    Ok(Value::Undefined)
+}
+
+fn reject_fn(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Some((p, done)) = resolver_data(a)
+        && !done.get()
+    {
+        done.set(true);
+        vm.reject_promise(&p, a.arg(0));
+    }
+    Ok(Value::Undefined)
+}
+
+fn capability_executor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(rec) = native_data(&a.callee) else { return Ok(Value::Undefined) };
+    let has = |n: &str| !matches!(rec.borrow().props.get(&PropKey::str(n)), None | Some(Property { slot: Slot::Data { value: Value::Undefined, .. }, .. }));
+    if has("resolve") || has("reject") {
+        return Err(vm.type_error("Promise executor has already been invoked with non-undefined arguments"));
+    }
+    rec.borrow_mut().props.insert(PropKey::str("resolve"), Property::data(a.arg(0)));
+    rec.borrow_mut().props.insert(PropKey::str("reject"), Property::data(a.arg(1)));
+    Ok(Value::Undefined)
+}
+
+fn promise_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Some(nt) = a.new_target.clone() else {
+        return Err(vm.type_error("Promise constructor cannot be invoked without 'new'"));
+    };
+    let exec = a.arg(0);
+    if !exec.is_callable() {
+        let d = vm.describe(&exec);
+        return Err(vm.type_error(format!("Promise resolver {d} is not a function")));
+    }
+    let def = vm.realm.promise_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    let p = vm.new_promise_with_proto(proto);
+    let (res, rej) = vm.resolving_functions(&p);
+    if let Err(e) = vm.call(&exec, Value::Undefined, vec![Value::Object(res), Value::Object(rej.clone())]) {
+        vm.call_obj(&rej, Value::Undefined, vec![e])?;
+    }
+    Ok(Value::Object(p))
+}
+
