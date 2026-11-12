@@ -1235,3 +1235,68 @@ impl Compiler {
     }
 }
 
+/// Faixas de unidades com que o nó pode começar (None = qualquer uma / vazio).
+fn first_ranges(n: &Node, icase: bool, unicode: bool) -> Option<Vec<(u32, u32)>> {
+    match n {
+        Node::Char(c) => {
+            if *c > 0xFFFF {
+                let hi = 0xD800 + ((c - 0x10000) >> 10);
+                return Some(vec![(hi, hi)]);
+            }
+            let mut v = vec![(*c, *c)];
+            if icase {
+                for x in case_variants(*c) {
+                    if canon(x, unicode) == canon(*c, unicode) && x <= 0xFFFF {
+                        v.push((x, x));
+                    }
+                }
+            }
+            Some(v)
+        }
+        Node::Class(cs) if !cs.negated && cs.props.is_empty() && !icase => {
+            let mut v = Vec::new();
+            for &(a, b) in &cs.ranges {
+                if b > 0xFFFF {
+                    // astrais começam por um substituto alto
+                    v.push((a.min(0xD800), 0xDBFF.max(b.min(0xFFFF))));
+                } else {
+                    v.push((a, b));
+                }
+            }
+            if v.is_empty() { None } else { Some(v) }
+        }
+        Node::Concat(items) => items.first().and_then(|x| first_ranges(x, icase, unicode)),
+        Node::Group(inner, _) => first_ranges(inner, icase, unicode),
+        Node::Repeat { node, min, .. } if *min > 0 => first_ranges(node, icase, unicode),
+        Node::Alt(alts) => {
+            let mut v = Vec::new();
+            for a in alts {
+                v.extend(first_ranges(a, icase, unicode)?);
+            }
+            Some(v)
+        }
+        _ => None,
+    }
+}
+
+fn first_set(n: &Node, flags: Flags) -> Option<FirstSet> {
+    let r = first_ranges(n, flags.ignore_case, flags.full_unicode())?;
+    if r.len() == 1 && r[0].0 == r[0].1 {
+        return Some(FirstSet::One(r[0].0 as u16));
+    }
+    if r.len() > 64 {
+        return None;
+    }
+    Some(FirstSet::Ranges(r.into_iter().map(|(a, b)| (a as u16, b.min(0xFFFF) as u16)).collect()))
+}
+
+fn starts_anchored(n: &Node) -> bool {
+    match n {
+        Node::Start => true,
+        Node::Concat(items) => items.first().is_some_and(starts_anchored),
+        Node::Group(inner, _) => starts_anchored(inner),
+        Node::Alt(alts) => alts.iter().all(starts_anchored),
+        _ => false,
+    }
+}
+
