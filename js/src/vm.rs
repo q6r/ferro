@@ -1916,3 +1916,70 @@ impl Vm {
     }
 }
 
+fn env_at(env: &Option<Env>, hops: u32) -> Option<Env> {
+    let mut e = env.clone()?;
+    for _ in 0..hops {
+        let p = e.borrow().parent.clone()?;
+        e = p;
+    }
+    Some(e)
+}
+
+fn env_get(env: &Option<Env>, hops: u32, slot: u32) -> Value {
+    if hops == 0 {
+        return match env {
+            Some(e) => e.borrow().slots.get(slot as usize).cloned().unwrap_or_default(),
+            None => Value::Undefined,
+        };
+    }
+    match env_at(env, hops) {
+        Some(e) => e.borrow().slots.get(slot as usize).cloned().unwrap_or_default(),
+        None => Value::Undefined,
+    }
+}
+
+fn env_set(env: &Option<Env>, hops: u32, slot: u32, v: Value) {
+    if let Some(e) = env_at(env, hops)
+        && let Some(s) = e.borrow_mut().slots.get_mut(slot as usize)
+    {
+        *s = v;
+    }
+}
+
+pub fn set_home(fo: &ObjRef, home: &ObjRef) {
+    let mut b = fo.borrow_mut();
+    if let Kind::Function(Func::Closure(c)) = &mut b.kind {
+        let mut nc = (**c).clone();
+        nc.home = Some(home.clone());
+        *c = Rc::new(nc);
+    }
+}
+
+/// Elementos de um array criado pelo compilador (spread em chamadas).
+fn array_values(v: &Value) -> Vec<Value> {
+    match v {
+        Value::Object(o) => match &o.borrow().kind {
+            Kind::Array(v) => v
+                .iter()
+                .map(|x| match x {
+                    Value::Empty => Value::Undefined,
+                    x => x.clone(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+pub fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Undefined | Value::Null | Value::Empty => false,
+        Value::BigInt(b) => !b.is_zero(),
+        Value::Bool(b) => *b,
+        Value::Number(n) => *n != 0.0 && !n.is_nan(),
+        Value::String(s) => !s.is_empty(),
+        Value::Symbol(_) | Value::Object(_) => true,
+    }
+}
+
