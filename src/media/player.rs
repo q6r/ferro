@@ -205,3 +205,62 @@ impl Drop for AudioPipe {
 }
 
 impl AudioPipe {
+    fn start(codec: &Codec, samples: SharedSamples, clock: SharedClock) -> Option<AudioPipe> {
+        let mut dec = AudioDecoder::new(codec)?;
+        let shared = Arc::new(AudioShared {
+            pcm: Mutex::new(VecDeque::new()),
+            playing: AtomicBool::new(false),
+            volume: AtomicU32::new(1.0f32.to_bits()),
+            rate: AtomicU32::new(dec.sample_rate),
+            channels: AtomicU32::new(dec.channels as u32),
+        });
+        let (tx, rx) = mpsc::channel::<Cmd>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (sh, st) = (shared.clone(), stop.clone());
+        std::thread::Builder::new()
+            .name("ferro-audio".into())
+            .spawn(move || {
+                let mut next = clock.lock().unwrap().now();
+                while !st.load(Ordering::Relaxed) {
+                    while let Ok(Cmd::Seek(t)) = rx.try_recv() {
+                        dec.reset();
+                        sh.pcm.lock().unwrap().clear();
+                        next = t;
+                    }
+                    let t = clock.lock().unwrap().now();
+                    // no máximo ~2 s de PCM esperando
+                    let rate = sh.rate.load(Ordering::Relaxed).max(1) as usize;
+                    let ch = sh.channels.load(Ordering::Relaxed).max(1) as usize;
+                    if sh.pcm.lock().unwrap().len() > rate * ch * 2 {
+                        std::thread::sleep(Duration::from_millis(15));
+                        continue;
+                    }
+                    let batch: Vec<Sample> = {
+                        let list = samples.lock().unwrap();
+                        let start = list.partition_point(|s| s.pts + s.duration <= next);
+                        list[start..].iter().take_while(|s| s.pts <= t + AHEAD).take(16).cloned().collect()
+                    };
+                    if batch.is_empty() {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                    for s in batch {
+                        next = s.pts + s.duration;
+                        if let Ok(pcm) = dec.decode(&s) {
+                            sh.rate.store(dec.sample_rate, Ordering::Relaxed);
+                            sh.channels.store(dec.channels as u32, Ordering::Relaxed);
+                            // o começo da amostra pode estar antes do relógio (busca): descarta essa parte
+                            let skip_s = (t - s.pts).max(0.0).min(s.duration);
+                            let skip = if s.pts < t - 0.05 { (skip_s * dec.sample_rate as f64) as usize * dec.channels } else { 0 };
+                            let mut g = sh.pcm.lock().unwrap();
+                            g.extend(pcm.into_iter().skip(skip));
+                        }
+                    }
+                }
+            })
+            .ok()?;
+        let stream = open_output(shared.clone());
+        Some(AudioPipe { tx, shared, stop, _stream: stream })
+    }
+}
+
