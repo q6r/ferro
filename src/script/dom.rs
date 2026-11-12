@@ -297,3 +297,71 @@ fn custom_in(vm: &Vm, nodes: &[NodeId]) -> Vec<NodeId> {
     })
 }
 
+/// Depois de inserir nós: marca o layout como sujo, recoleta estilos e roda
+/// os `<script>` que acabaram de entrar no documento.
+pub(crate) fn inserted(vm: &mut Vm, nodes: &[NodeId], parent: NodeId) {
+    let mut scripts = Vec::new();
+    write(vm, |h| {
+        h.dirty = true;
+        let doc = &h.page.doc;
+        if !doc.is_connected(parent) {
+            return;
+        }
+        match doc.tag(parent) {
+            Some("style") => h.styles_dirty = true,
+            Some("script") if !h.started.contains(&parent) => scripts.push(parent),
+            Some("title") => h.title_changed = true,
+            _ => {}
+        }
+        for &n in nodes {
+            let mut all = vec![n];
+            all.extend(doc.descendants(n));
+            for d in all {
+                match doc.tag(d) {
+                    Some("style" | "link") => h.styles_dirty = true,
+                    Some("script") if !h.started.contains(&d) => scripts.push(d),
+                    Some("title") => h.title_changed = true,
+                    _ => {}
+                }
+            }
+        }
+    });
+    notify(vm, "childList", parent, nodes, &[], None, None);
+    // inserir no documento promove os elementos personalizados (mesmo fora da árvore)
+    try_upgrade(vm, nodes);
+    if read(vm, |h| h.page.doc.is_connected(parent)) {
+        for n in custom_in(vm, nodes) {
+            let el = wrap(vm, n);
+            call_hook(vm, "connected", vec![el]);
+        }
+    }
+    for n in scripts {
+        start_script(vm, n);
+    }
+}
+
+fn removing(vm: &mut Vm, n: NodeId) {
+    if let Some(p) = read(vm, |h| h.page.doc.node(n).parent) {
+        notify(vm, "childList", p, &[], &[n], None, None);
+        if read(vm, |h| h.page.doc.is_connected(n)) {
+            for c in custom_in(vm, &[n]) {
+                let el = wrap(vm, c);
+                call_hook(vm, "disconnected", vec![el]);
+            }
+        }
+    }
+    write(vm, |h| {
+        h.dirty = true;
+        let doc = &h.page.doc;
+        if !doc.is_connected(n) {
+            return;
+        }
+        if matches!(doc.tag(n), Some("style" | "link"))
+            || doc.descendants(n).iter().any(|&d| matches!(doc.tag(d), Some("style" | "link")))
+            || doc.node(n).parent.is_some_and(|p| doc.tag(p) == Some("style"))
+        {
+            h.styles_dirty = true;
+        }
+    });
+}
+
