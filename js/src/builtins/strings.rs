@@ -118,3 +118,48 @@ pub fn push_code_point(out: &mut Vec<u16>, cp: u32) {
     }
 }
 
+fn raw(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let strs = vm.to_object(&a.arg(0))?;
+    let raw = vm.get_obj(&strs, &PropKey::str("raw"))?;
+    let raw = vm.to_object(&raw)?;
+    let len = vm.length_of(&raw)?;
+    let mut out = Vec::new();
+    for i in 0..len {
+        let part = vm.get_obj(&raw, &crate::ops::index_key(i))?;
+        out.extend_from_slice(vm.to_string(&part)?.units());
+        if i + 1 < len && i + 1 < a.args.len() {
+            out.extend_from_slice(vm.to_string(&a.args[i + 1])?.units());
+        }
+    }
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
+fn at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "at")?;
+    let n = vm.to_integer(&a.arg(0))?;
+    let len = s.len() as f64;
+    let k = if n >= 0.0 { n } else { len + n };
+    if k < 0.0 || k >= len {
+        return Ok(Value::Undefined);
+    }
+    Ok(Value::String(s.slice(k as usize, k as usize + 1)))
+}
+
+fn char_at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "charAt")?;
+    let n = vm.to_integer(&a.arg(0))?;
+    if n < 0.0 || n >= s.len() as f64 {
+        return Ok(Value::str(""));
+    }
+    Ok(Value::String(s.slice(n as usize, n as usize + 1)))
+}
+
+fn char_code_at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "charCodeAt")?;
+    let n = vm.to_integer(&a.arg(0))?;
+    if n < 0.0 || n >= s.len() as f64 {
+        return Ok(Value::Number(f64::NAN));
+    }
+    Ok(Value::Number(s.units()[n as usize] as f64))
+}
+
