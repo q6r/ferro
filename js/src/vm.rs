@@ -1983,3 +1983,56 @@ pub fn truthy(v: &Value) -> bool {
     }
 }
 
+pub fn typeof_str(v: &Value) -> &'static str {
+    match v {
+        Value::Undefined | Value::Empty => "undefined",
+        Value::Null => "object",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Symbol(_) => "symbol",
+        Value::BigInt(_) => "bigint",
+        Value::Object(o) => {
+            if o.is_callable() {
+                "function"
+            } else {
+                "object"
+            }
+        }
+    }
+}
+
+pub fn strict_equals(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Undefined | Value::Empty, Value::Undefined | Value::Empty) => true,
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Number(x), Value::Number(y)) => x == y,
+        (Value::String(x), Value::String(y)) => x == y,
+        (Value::Symbol(x), Value::Symbol(y)) => x == y,
+        (Value::Object(x), Value::Object(y)) => x.ptr_eq(y),
+        (Value::BigInt(x), Value::BigInt(y)) => x == y,
+        _ => false,
+    }
+}
+
+pub fn same_value_zero(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y || (x.is_nan() && y.is_nan()),
+        _ => strict_equals(a, b),
+    }
+}
+
+pub fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            if x.is_nan() && y.is_nan() {
+                true
+            } else {
+                x == y && x.is_sign_negative() == y.is_sign_negative()
+            }
+        }
+        _ => strict_equals(a, b),
+    }
+}
+
