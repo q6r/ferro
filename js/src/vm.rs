@@ -1589,3 +1589,64 @@ impl Vm {
         }
     }
 
+    /// Guarda no código a célula da variável léxica global `name`, se existir.
+    /// Valor de uma propriedade de dados do objeto global já vista nessa
+    /// instrução (sem refazer a busca pelo nome).
+    #[inline]
+    fn global_prop_cached(&self, code: &Code, n: u32) -> Option<Value> {
+        let (lg, pg, idx) = *code.gobj_cache.borrow().get(n as usize)?;
+        if idx == u32::MAX || lg != self.lex_gen {
+            return None;
+        }
+        let g = self.realm.global.borrow();
+        if g.props.generation() != pg {
+            return None;
+        }
+        let (k, p) = g.props.entry_at(idx as usize)?;
+        let PropKey::Str(ks) = k else { return None };
+        if *ks != code.const_str(n) {
+            return None;
+        }
+        match &p.slot {
+            Slot::Data { value, .. } => Some(value.clone()),
+            _ => None,
+        }
+    }
+
+    fn remember_global_prop(&self, code: &Code, n: u32, name: &JsStr) {
+        if self.lex.contains_key(name) {
+            return;
+        }
+        let g = self.realm.global.borrow();
+        let key = PropKey::Str(name.clone());
+        let Some(i) = g.props.position(&key) else { return };
+        if !matches!(g.props.entry_at(i), Some((_, Property { slot: Slot::Data { .. }, .. }))) {
+            return;
+        }
+        let mut c = code.gobj_cache.borrow_mut();
+        if c.len() <= n as usize {
+            c.resize(n as usize + 1, (0, 0, u32::MAX));
+        }
+        c[n as usize] = (self.lex_gen, g.props.generation(), i as u32);
+    }
+
+    fn cache_global(&mut self, code: &Code, n: u32, name: &JsStr) {
+        if let Some(cell) = self.lex.get(name) {
+            let mut cache = code.global_cache.borrow_mut();
+            if cache.len() <= n as usize {
+                cache.resize(n as usize + 1, None);
+            }
+            cache[n as usize] = Some(cell.clone());
+        }
+    }
+
+    fn tdz_error(&mut self, code: &Code, n: u32) -> Value {
+        let name = code.const_str(n).to_rust();
+        if name == "this" {
+            return self.reference_error(
+                "Must call super constructor in derived class before accessing 'this' or returning from derived constructor",
+            );
+        }
+        self.reference_error(format!("Cannot access '{name}' before initialization"))
+    }
+
