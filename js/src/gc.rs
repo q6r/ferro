@@ -268,3 +268,32 @@ impl Graph {
         }
     }
 
+    fn closure(&self, c: &Closure, out: &mut Vec<u32>) {
+        if let Some(e) = &c.env
+            && let Some(i) = self.env(e)
+        {
+            out.push(i);
+        }
+        for x in [&c.this, &c.new_target].into_iter().flatten() {
+            self.value(x, out);
+        }
+        for o in [&c.home, &c.fields].into_iter().flatten() {
+            self.objref(o, out);
+        }
+    }
+
+    /// Marca a partir de `start` (já marcado).
+    fn mark_from(&self, start: u32, live: &mut [bool], stack: &mut Vec<u32>) {
+        stack.push(start);
+        while let Some(x) = stack.pop() {
+            let x = x as usize;
+            for &j in &self.edges[self.edge_start[x] as usize..self.edge_start[x + 1] as usize] {
+                if !live[j as usize] {
+                    live[j as usize] = true;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+}
+
