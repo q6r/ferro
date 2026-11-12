@@ -118,3 +118,79 @@ impl Default for Vm {
 }
 
 impl Vm {
+    pub fn new() -> Vm {
+        let realm = Realm::new();
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0x2545F4914F6CDD1D);
+        Vm {
+            realm,
+            lex: Default::default(),
+            lex_gen: 0,
+            trace: Vec::new(),
+            cur_pc: 0,
+            max_depth: 2000,
+            output: Box::new(|kind, text| match kind {
+                Out::Log => println!("{text}"),
+                Out::Error => eprintln!("{text}"),
+            }),
+            symbol_registry: HashMap::new(),
+            rng: seed | 1,
+            console_timers: HashMap::new(),
+            vpool: Vec::new(),
+            console_counts: HashMap::new(),
+            console_indent: 0,
+            microtasks: VecDeque::new(),
+            pending_rejections: Vec::new(),
+            timers: Vec::new(),
+            timer_seq: 0,
+            epoch: std::time::Instant::now(),
+            regex_cache: HashMap::new(),
+            locale: "en-US".into(),
+            tz: Box::new(|zone, _| match zone {
+                None | Some("UTC") | Some("Etc/UTC") | Some("GMT") | Some("Etc/GMT") => Some(TzInfo {
+                    offset_min: 0.0,
+                    short: "UTC".into(),
+                    long: "Coordinated Universal Time".into(),
+                }),
+                _ => None,
+            }),
+            host: None,
+            global_miss: None,
+        }
+    }
+
+    /// Executa um script compilado no escopo global.
+    pub fn run_script(&mut self, code: Rc<Code>) -> Result<Value, Value> {
+        let nregs = code.nregs as usize;
+        let mut regs = vec![Value::Empty; nregs];
+        for r in regs.iter_mut().take(code.var_end as usize) {
+            *r = Value::Undefined;
+        }
+        let mut frame = Frame {
+            code,
+            pc: 0,
+            regs,
+            stack: Vec::with_capacity(16),
+            env: None,
+            this: Value::Object(self.realm.global.clone()),
+            func: None,
+            home: None,
+            new_target: Value::Undefined,
+            args: Vec::new(),
+            handlers: Vec::new(),
+            suspended: false,
+            suspend_await: false,
+        };
+        self.run_frame(&mut frame)
+    }
+
+    /// Agora, em ms desde 1970 (Date.now).
+    pub fn epoch_now_ms(&self) -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as f64)
+            .unwrap_or(0.0)
+    }
+
