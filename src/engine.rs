@@ -643,3 +643,45 @@ pub enum Command {
     Quit,
 }
 
+pub enum Update {
+    Started { nav: u64, url: Url },
+    Frame { nav: u64, frame: Box<Frame> },
+    Failed { nav: u64, url: Url, error: String },
+    /// A página pediu para ir a outro endereço (link, location.href, formulário).
+    Navigate { nav: u64, url: Url, post: Option<crate::script::PostData> },
+    /// Um campo de texto ganhou ou perdeu o foco.
+    Editing { nav: u64, editing: bool },
+    /// A página pediu para rolar a janela até `y`.
+    ScrollTo { nav: u64, y: f32 },
+    /// Quadros novos de vídeo (nó do `<video>` → imagem).
+    VideoFrames { nav: u64, frames: Vec<(NodeId, Arc<ImageData>)> },
+    /// Ponteiro do mouse pedido pela página (CSS `cursor`).
+    Cursor { nav: u64, cursor: crate::style::Cursor },
+    /// A página entrou (true) ou saiu da tela cheia.
+    Fullscreen { nav: u64, on: bool },
+    /// Um `<select>` foi clicado: mostrar a lista.
+    SelectPopup { nav: u64, popup: crate::script::SelectPopup },
+    /// A navegação era um arquivo: foi salvo (ou deu erro). `keep` é a
+    /// navegação da página que continua aberta, se houver.
+    Downloaded { nav: u64, keep: Option<u64>, name: String, result: Result<std::path::PathBuf, String> },
+}
+
+/// O lado da interface de uma thread de renderização.
+pub struct EngineHandle {
+    tx: mpsc::Sender<Command>,
+    latest: Arc<AtomicU64>,
+}
+
+impl EngineHandle {
+    pub fn spawn(send: impl Fn(Update) + Send + Sync + 'static, width: f32, height: f32) -> EngineHandle {
+        let (tx, rx) = mpsc::channel();
+        let latest = Arc::new(AtomicU64::new(0));
+        let l = latest.clone();
+        std::thread::Builder::new()
+            .name("ferro-render".into())
+            .stack_size(crate::script::STACK_SIZE)
+            .spawn(move || worker(rx, l, send, width, height))
+            .expect("não foi possível criar a thread de renderização");
+        EngineHandle { tx, latest }
+    }
+
