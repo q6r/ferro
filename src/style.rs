@@ -2530,3 +2530,47 @@ fn copy_property(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
     }
 }
 
+/// Substitui var(--x, fallback). Devolve None se alguma variável não existir
+/// e não houver fallback (a declaração vira inválida, como no CSS).
+fn substitute_vars(v: &str, vars: &CustomVars, depth: u32) -> Option<String> {
+    if depth > 16 {
+        return None;
+    }
+    let mut out = String::new();
+    let mut rest = v;
+    while let Some(pos) = rest.find("var(") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + 4..];
+        // acha o ')' correspondente
+        let mut d = 1;
+        let mut end = None;
+        for (i, c) in after.char_indices() {
+            match c {
+                '(' => d += 1,
+                ')' => {
+                    d -= 1;
+                    if d == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let end = end?;
+        let inner = &after[..end];
+        let (name, fallback) = match inner.split_once(',') {
+            Some((n, f)) => (n.trim(), Some(f.trim())),
+            None => (inner.trim(), None),
+        };
+        let replacement = match vars.get(name) {
+            Some(val) => val.to_string(),
+            None => fallback?.to_string(),
+        };
+        out.push_str(&substitute_vars(&replacement, vars, depth + 1)?);
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Some(out)
+}
+
