@@ -199,3 +199,79 @@ fn escape_source(src: &JsStr) -> JsStr {
     JsStr::from_units(out)
 }
 
+fn is_proto(vm: &Vm, v: &Value) -> bool {
+    matches!(v, Value::Object(o) if o.ptr_eq(&vm.realm.regexp_proto))
+}
+
+fn source(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if is_proto(vm, &a.this) {
+        return Ok(Value::str("(?:)"));
+    }
+    Ok(Value::String(escape_source(&this_parts(vm, a, "source")?.0)))
+}
+
+fn flags(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !matches!(a.this, Value::Object(_)) {
+        return Err(vm.type_error("RegExp.prototype.flags getter called on non-object"));
+    }
+    let mut out = String::new();
+    for (c, name) in [
+        ('d', "hasIndices"),
+        ('g', "global"),
+        ('i', "ignoreCase"),
+        ('m', "multiline"),
+        ('s', "dotAll"),
+        ('u', "unicode"),
+        ('v', "unicodeSets"),
+        ('y', "sticky"),
+    ] {
+        if truthy(&vm.get_str(&a.this, name)?) {
+            out.push(c);
+        }
+    }
+    Ok(Value::str(&out))
+}
+
+fn has_flag(vm: &mut Vm, a: &CallArgs, c: char, name: &str) -> Result<Value, Value> {
+    if is_proto(vm, &a.this) {
+        return Ok(Value::Undefined);
+    }
+    Ok(Value::Bool(this_parts(vm, a, name)?.1.to_rust().contains(c)))
+}
+
+fn flag_g(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'g', "global")
+}
+fn flag_i(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'i', "ignoreCase")
+}
+fn flag_m(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'm', "multiline")
+}
+fn flag_s(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 's', "dotAll")
+}
+fn flag_u(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'u', "unicode")
+}
+fn flag_v(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'v', "unicodeSets")
+}
+fn flag_y(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'y', "sticky")
+}
+fn flag_d(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    has_flag(vm, a, 'd', "hasIndices")
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if !matches!(a.this, Value::Object(_)) {
+        return Err(vm.type_error("RegExp.prototype.toString requires that 'this' be an Object"));
+    }
+    let s = vm.get_str(&a.this, "source")?;
+    let f = vm.get_str(&a.this, "flags")?;
+    let s = vm.to_rust_string(&s)?;
+    let f = vm.to_rust_string(&f)?;
+    Ok(Value::str(&format!("/{s}/{f}")))
+}
+
