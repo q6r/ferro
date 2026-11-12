@@ -1028,3 +1028,50 @@ impl Parser {
         }
     }
 
+    fn arrow_body(
+        &mut self,
+        params: Vec<Pattern>,
+        rest: Option<Pattern>,
+        is_async: bool,
+        start: usize,
+        line: u32,
+        no_in: bool,
+    ) -> PResult<Expr> {
+        let saved_ctx = self.ctx;
+        self.ctx.in_async = is_async;
+        self.ctx.in_generator = false;
+        self.ctx.in_function = true;
+        let mut strict = self.strict;
+        let body = if self.is("{") {
+            let saved_strict = self.strict;
+            self.advance()?;
+            self.directives()?;
+            let mut stmts = Vec::new();
+            while !self.eat("}")? {
+                if self.tok.tok == Tok::Eof {
+                    return self.err("função sem '}'");
+                }
+                stmts.push(self.parse_statement()?);
+            }
+            strict = self.strict;
+            self.strict = saved_strict;
+            FnBody::Block(stmts)
+        } else {
+            FnBody::Expr(Box::new(self.parse_assign(no_in)?))
+        };
+        self.ctx = saved_ctx;
+        let source = self.lx.source_slice(start, self.prev_end);
+        Ok(Expr::Function(Rc::new(FunctionDef {
+            name: None,
+            params,
+            rest,
+            body,
+            kind: FnKind::Arrow,
+            is_async,
+            is_generator: false,
+            strict,
+            source: source.into(),
+            line,
+        })))
+    }
+
