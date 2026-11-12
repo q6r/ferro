@@ -687,3 +687,31 @@ fn iterator(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     ))))
 }
 
+fn iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(it) = &a.this else {
+        return Err(vm.type_error("next method called on incompatible receiver"));
+    };
+    let r = {
+        let mut b = it.borrow_mut();
+        match &mut b.kind {
+            Kind::StringIter { s, pos } => {
+                if *pos >= s.len() {
+                    None
+                } else {
+                    let (_, n) = code_point_at_units(s.units(), *pos);
+                    let part = s.slice(*pos, *pos + n);
+                    *pos += n;
+                    Some(part)
+                }
+            }
+            _ => {
+                drop(b);
+                return Err(vm.type_error("next method called on incompatible receiver"));
+            }
+        }
+    };
+    Ok(match r {
+        Some(p) => iter_result(vm, Value::String(p), false),
+        None => iter_result(vm, Value::Undefined, true),
+    })
+}
