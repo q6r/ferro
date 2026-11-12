@@ -252,3 +252,48 @@ fn notify(vm: &mut Vm, kind: &str, target: NodeId, added: &[NodeId], removed: &[
     call_hook(vm, "mutation", vec![s(kind), target, added, removed, attr, old]);
 }
 
+/// Nó inerte: dentro do conteúdo de um `<template>` ou de outro documento.
+fn is_inert(h: &Host, n: NodeId) -> bool {
+    let doc = &h.page.doc;
+    let mut r = n;
+    while let Some(p) = doc.node(r).parent {
+        r = p;
+    }
+    (matches!(doc.node(r).data, NodeData::Document) && r != Document::ROOT) || h.templates.values().any(|&t| t == r)
+}
+
+/// Roda o construtor dos elementos personalizados ainda não promovidos.
+fn try_upgrade(vm: &mut Vm, nodes: &[NodeId]) {
+    let list: Vec<NodeId> = custom_in(vm, nodes)
+        .into_iter()
+        .filter(|&n| read(vm, |h| !h.upgraded.contains(&n) && !is_inert(h, n)))
+        .collect();
+    for n in list {
+        let el = wrap(vm, n);
+        if let Err(e) = upgrade_custom(vm, n, &el) {
+            vm.report_uncaught(&e);
+        }
+    }
+}
+
+/// Elementos personalizados dentro de `nodes` (inclusive).
+fn custom_in(vm: &Vm, nodes: &[NodeId]) -> Vec<NodeId> {
+    read(vm, |h| {
+        if h.custom.is_empty() {
+            return Vec::new();
+        }
+        let doc = &h.page.doc;
+        let mut out = Vec::new();
+        for &n in nodes {
+            let mut all = vec![n];
+            all.extend(doc.descendants(n));
+            for d in all {
+                if doc.tag(d).is_some_and(|t| h.custom.contains_key(t)) {
+                    out.push(d);
+                }
+            }
+        }
+        out
+    })
+}
+
