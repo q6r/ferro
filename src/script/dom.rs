@@ -862,3 +862,53 @@ fn normalize(vm: &mut Vm, a: &mut CallArgs) -> R {
 
 // --------------------------------------------------------- CharacterData
 
+fn cd_data(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(s(&char_data(vm, n).unwrap_or_default()))
+}
+
+fn cd_set_data(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    set_data_of(vm, n, &a.arg(0))?;
+    Ok(Value::Undefined)
+}
+
+fn cd_length(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let t = char_data(vm, n).unwrap_or_default();
+    Ok(Value::Number(t.encode_utf16().count() as f64))
+}
+
+fn cd_append_data(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let mut t = char_data(vm, n).unwrap_or_default();
+    t.push_str(&arg_string(vm, a, 0)?);
+    set_data_of(vm, n, &s(&t))?;
+    Ok(Value::Undefined)
+}
+
+// ------------------------------------------------------------- ParentNode
+
+fn children(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let kids = read(vm, |h| element_children(&h.page.doc, n));
+    Ok(list(vm, kids, "HTMLCollection"))
+}
+
+fn first_element_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| element_children(&h.page.doc, n).first().copied());
+    Ok(wrap_opt(vm, c))
+}
+
+fn last_element_child(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let c = read(vm, |h| element_children(&h.page.doc, n).last().copied());
+    Ok(wrap_opt(vm, c))
+}
+
+fn child_element_count(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Number(read(vm, |h| element_children(&h.page.doc, n).len()) as f64))
+}
+
