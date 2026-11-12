@@ -362,3 +362,79 @@ fn make_flex_items(doc: &Document, b: &mut LayoutBox) {
     b.children = out;
 }
 
+fn is_collapsible(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c')
+}
+
+// ------------------------------------------------------------------- layout
+
+pub struct Page {
+    pub items: Vec<DisplayItem>,
+    pub height: f32,
+    pub background: Color,
+    /// Áreas clicáveis dos links.
+    pub links: Vec<(Rect, String)>,
+    /// Caixa (borda) de cada elemento de bloco, na ordem em que foram montadas
+    /// (para cliques e `getBoundingClientRect`).
+    pub boxes: Vec<(NodeId, Rect)>,
+    /// Elementos que rolam por dentro (os mais internos primeiro).
+    pub scrollers: Vec<Scroller>,
+    /// Áreas que recebem o mouse, na ordem de pintura (a última por cima),
+    /// já cortadas pelo `overflow` dos ancestrais. `true` = dentro de um
+    /// `position: fixed` (coordenadas da janela, não rola).
+    pub hits: Vec<(NodeId, Rect, bool)>,
+    /// Elementos dentro de `position: fixed` (as caixas deles não rolam).
+    pub fixed_nodes: std::collections::HashSet<NodeId>,
+    /// Links dentro de `position: fixed` (coordenadas da janela).
+    pub fixed_links: Vec<(Rect, String)>,
+    /// Posição vertical de cada `id` (e `<a name>`), para navegar até `#âncora`.
+    pub anchors: Vec<(String, f32)>,
+    /// Imagens de fundo (CSS) que a página usa e ainda não foram baixadas.
+    pub missing_urls: Vec<String>,
+    /// Fontes web que a página usa e ainda não foram baixadas.
+    pub missing_fonts: Vec<crate::css::FontFaceRule>,
+}
+
+/// Imagens já decodificadas: por elemento <img> e por URL (fundos do CSS).
+#[derive(Default)]
+pub struct Images {
+    pub nodes: HashMap<NodeId, Arc<ImageData>>,
+    pub urls: HashMap<String, Arc<ImageData>>,
+}
+
+impl Images {
+    pub fn new() -> Images {
+        Images::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len() + self.urls.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+struct BoxModel {
+    margin: [f32; 4],
+    border: [f32; 4],
+    padding: [f32; 4],
+    content_w: f32,
+}
+
+impl BoxModel {
+    fn anonymous(w: f32) -> Self {
+        BoxModel {
+            margin: [0.0; 4],
+            border: [0.0; 4],
+            padding: [0.0; 4],
+            content_w: w,
+        }
+    }
+
+    fn extra_h(&self) -> f32 {
+        self.padding[LEFT] + self.padding[RIGHT] + self.border[LEFT] + self.border[RIGHT]
+    }
+}
+
