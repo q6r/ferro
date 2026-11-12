@@ -114,3 +114,67 @@ impl LayoutBox {
         out
     }
 
+    fn dump_into(&self, doc: &Document, depth: usize, out: &mut String) {
+        let pad = "  ".repeat(depth);
+        let mut label = match self.kind {
+            BoxKind::Block(n) => format!("bloco <{}>", doc.tag(n).unwrap_or("?")),
+            BoxKind::Anonymous => "bloco anônimo".to_string(),
+            BoxKind::Inline(n) => format!("em linha <{}>", doc.tag(n).unwrap_or("?")),
+            BoxKind::Atomic(n) => format!("atômica <{}>", doc.tag(n).unwrap_or("?")),
+            BoxKind::InlineBlock(n) => format!("inline-block <{}>", doc.tag(n).unwrap_or("?")),
+            BoxKind::Text(n) => {
+                let full = match &self.text {
+                    Some(t) => t.to_string(),
+                    None => doc.text_content(n),
+                };
+                let t = full.split_whitespace().collect::<Vec<_>>().join(" ");
+                format!("texto \"{}\"", t.chars().take(60).collect::<String>())
+            }
+        };
+        if self.generated {
+            label.push_str(" [gerado]");
+        }
+        if !matches!(self.kind, BoxKind::Anonymous | BoxKind::Text(_)) {
+            match self.style.display {
+                Display::Flex | Display::InlineFlex => label.push_str(" [flex]"),
+                Display::Grid | Display::InlineGrid => label.push_str(" [grid]"),
+                Display::Table => label.push_str(" [tabela]"),
+                _ => {}
+            }
+        }
+        if self.is_out_of_flow() {
+            label.push_str(" [fora do fluxo]");
+        }
+        if self.is_float() {
+            label.push_str(" [float]");
+        }
+        out.push_str(&format!("{pad}{label}\n"));
+        for c in &self.children {
+            c.dump_into(doc, depth + 1, out);
+        }
+    }
+}
+
+fn has_inflow_blocks(b: &LayoutBox) -> bool {
+    b.children.iter().any(LayoutBox::is_inflow_block)
+}
+
+const REPLACED: &[&str] = &[
+    "img", "input", "select", "textarea", "svg", "video", "iframe", "canvas", "object", "embed", "audio",
+];
+
+pub fn build_box_tree(doc: &Document, styles: &Styles) -> Option<LayoutBox> {
+    let html = doc
+        .node(Document::ROOT)
+        .children
+        .iter()
+        .copied()
+        .find(|&c| doc.element(c).is_some())?;
+    let mut root = build(doc, styles, html).pop()?;
+    if !root.is_block_level() {
+        root.kind = BoxKind::Block(html);
+        wrap_inline_children(doc, &mut root);
+    }
+    Some(root)
+}
+
