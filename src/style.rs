@@ -2128,3 +2128,64 @@ fn parse_gradient(inner: &str, current: Color) -> Option<Gradient> {
     Some(Gradient { angle, stops: resolved })
 }
 
+fn parse_bg_image(t: &str, current: Color) -> Option<BgImage> {
+    let lower = t.trim().to_ascii_lowercase();
+    if lower.starts_with("url(") {
+        return css::css_url(t).filter(|u| !u.is_empty()).map(|u| BgImage::Url(Rc::from(u.as_str())));
+    }
+    for prefix in ["linear-gradient(", "-webkit-linear-gradient(", "repeating-linear-gradient("] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let inner = rest.strip_suffix(')')?;
+            return parse_gradient(inner, current).map(|g| BgImage::Linear(Rc::new(g)));
+        }
+    }
+    // radial e cônico ainda não: usa a primeira cor como um "gradiente" liso
+    for prefix in ["radial-gradient(", "conic-gradient(", "repeating-radial-gradient("] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let inner = rest.strip_suffix(')')?;
+            let color = css::split_top_level(inner, ',')
+                .iter()
+                .find_map(|a| split_values(a).first().and_then(|c| parse_color(c, current)))?;
+            return Some(BgImage::Linear(Rc::new(Gradient { angle: 180.0, stops: vec![(color, 0.0), (color, 1.0)] })));
+        }
+    }
+    None
+}
+
+/// Lê uma string CSS ("..." ou '...') com escapes; devolve (texto, resto).
+fn css_string(s: &str) -> Option<(String, &str)> {
+    let mut chars = s.char_indices();
+    let (_, q) = chars.next()?;
+    let mut out = String::new();
+    let mut esc = String::new();
+    let mut in_esc = false;
+    for (i, c) in chars {
+        if in_esc {
+            if c.is_ascii_hexdigit() && esc.len() < 6 {
+                esc.push(c);
+                continue;
+            }
+            if !esc.is_empty() {
+                out.push(char::from_u32(u32::from_str_radix(&esc, 16).unwrap_or(0xFFFD)).unwrap_or('\u{FFFD}'));
+                esc.clear();
+                in_esc = false;
+                if c == ' ' {
+                    continue;
+                }
+            } else {
+                out.push(c);
+                in_esc = false;
+                continue;
+            }
+        }
+        if c == '\\' {
+            in_esc = true;
+        } else if c == q {
+            return Some((out, &s[i + 1..]));
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
