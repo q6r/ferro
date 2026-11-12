@@ -1462,3 +1462,50 @@ impl App {
         }
     }
 
+    fn on_wheel(&mut self, delta: MouseScrollDelta) {
+        let (x, y) = self.mouse;
+        if let Some((_, popup, _, first)) = &mut self.select {
+            let dy = match delta {
+                MouseScrollDelta::LineDelta(_, y) => -y,
+                MouseScrollDelta::PixelDelta(p) => -(p.y as f32) / 28.0,
+            };
+            let max = popup.labels.len().saturating_sub(10);
+            *first = ((*first as f32 + dy.signum() * dy.abs().ceil()).max(0.0) as usize).min(max);
+            self.request_redraw();
+            return;
+        }
+        if self.palette_open || !self.geo().content.contains(x, y) {
+            return;
+        }
+        let (dx, dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (-x * 100.0, -y * 100.0),
+            MouseScrollDelta::PixelDelta(p) => (-(p.x as f32) / self.scale, -(p.y as f32) / self.scale),
+        };
+        // Shift + roda: rolagem horizontal
+        let (dx, dy) = if self.mods.shift_key() && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
+        // um elemento que rola por dentro, sob o ponteiro, que ainda pode rolar nessa direção
+        if let Some((px, py)) = self.page_point(x, y) {
+            let tab = self.tab();
+            let scroll = self.effective_scroll(self.active);
+            if let Some(frame) = &tab.frame
+                && let Some(sc) = frame.scrollers.iter().find(|s| {
+                    let py = if s.fixed { py - scroll } else { py };
+                    px >= s.rect.x
+                        && px < s.rect.x + s.rect.w
+                        && py >= s.rect.y
+                        && py < s.rect.y + s.rect.h
+                        && ((dy > 0.0 && s.y < s.max_y - 0.5)
+                            || (dy < 0.0 && s.y > 0.5)
+                            || (dx > 0.0 && s.x < s.max_x - 0.5)
+                            || (dx < 0.0 && s.x > 0.5))
+                })
+            {
+                tab.engine.scroll_element(tab.nav, sc.node, dx / self.zoom, dy / self.zoom);
+                return;
+            }
+        }
+        self.scroll_by(dy / self.zoom);
+    }
+
+    // ------------------------------------------------------------ teclado
+
