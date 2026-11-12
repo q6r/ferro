@@ -123,3 +123,52 @@ fn intersect(a: Rect, b: Rect) -> Rect {
     }
 }
 
+impl Painter<'_> {
+    /// Recorte final em pixels: o global combinado com um específico.
+    fn cut(&self, extra: Option<Rect>) -> Option<Rect> {
+        let c = match (self.clip, extra) {
+            (Some(a), Some(b)) => Some(intersect(a, b)),
+            (a, b) => a.or(b),
+        };
+        c.map(|r| self.dev(r))
+    }
+
+    fn dev(&self, r: Rect) -> Rect {
+        Rect {
+            x: r.x * self.scale,
+            y: r.y * self.scale,
+            w: r.w * self.scale,
+            h: r.h * self.scale,
+        }
+    }
+
+    pub fn font(&self, weight: Weight) -> FontId {
+        let w = match weight {
+            Weight::Regular => 400,
+            Weight::Semibold => 600,
+            Weight::Bold => 700,
+        };
+        self.fonts.pick(FontFamily::System, w, false)
+    }
+
+    pub fn rect(&mut self, r: Rect, color: Color) {
+        let (d, c) = (self.dev(r), self.cut(None));
+        self.canvas.fill_rect(d, color, c);
+    }
+
+    pub fn rrect(&mut self, r: Rect, radius: f32, color: Color) {
+        let (d, c) = (self.dev(r), self.cut(None));
+        self.canvas.fill_round_rect(d, radius * self.scale, color, c);
+    }
+
+    pub fn rrect_clip(&mut self, r: Rect, radius: f32, color: Color, clip: Rect) {
+        let (d, c) = (self.dev(r), self.cut(Some(clip)));
+        self.canvas.fill_round_rect(d, radius * self.scale, color, c);
+    }
+
+    pub fn stroke(&mut self, r: Rect, radius: f32, width: f32, color: Color) {
+        let (d, c) = (self.dev(r), self.cut(None));
+        self.canvas
+            .stroke_round_rect(d, radius * self.scale, (width * self.scale).max(1.0), color, c);
+    }
+
