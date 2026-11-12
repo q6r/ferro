@@ -1382,3 +1382,55 @@ fn get_elements_by_class_name(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(list(vm, found, "HTMLCollection"))
 }
 
+fn get_element_by_id(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let want = arg_string(vm, a, 0)?;
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.descendants(n).into_iter().find(|&d| doc.element(d).and_then(|e| e.id()) == Some(want.as_str()))
+    });
+    Ok(wrap_opt(vm, found))
+}
+
+fn get_elements_by_name(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let want = arg_string(vm, a, 0)?;
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.descendants(Document::ROOT)
+            .into_iter()
+            .filter(|&d| doc.element(d).and_then(|e| e.attr("name")) == Some(want.as_str()))
+            .collect()
+    });
+    Ok(list(vm, found, "NodeList"))
+}
+
+// ----------------------------------------------------------------- layout
+
+/// Retângulo (coordenadas do documento) que envolve as caixas do elemento.
+fn rect_of(vm: &mut Vm, n: NodeId) -> Option<Rect> {
+    let h = host(vm);
+    super::ensure_layout(&h);
+    let hb = h.borrow();
+    let info = hb.layout.as_ref()?;
+    // dentro de `position: fixed`, a caixa está na janela: soma a rolagem
+    let shift = if info.fixed.contains(&n) { hb.scroll_y } else { 0.0 };
+    let mut out: Option<Rect> = None;
+    for (id, r) in &info.boxes {
+        let r = &Rect { y: r.y + shift, ..*r };
+        if *id != n {
+            continue;
+        }
+        out = Some(match out {
+            None => *r,
+            Some(o) => {
+                let x0 = o.x.min(r.x);
+                let y0 = o.y.min(r.y);
+                let x1 = (o.x + o.w).max(r.x + r.w);
+                let y1 = (o.y + o.h).max(r.y + r.h);
+                Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }
+            }
+        });
+    }
+    out
+}
+
