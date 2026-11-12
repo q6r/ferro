@@ -65,3 +65,32 @@ th { text-align: center; }
 col, colgroup { display: table-column; }
 center > table, table[align=center] { margin-left: auto; margin-right: auto; }
 
+/* separador */
+hr { color: gray; border-style: inset; border-width: 1px; margin: 0.5em auto; }
+
+/* formulários */
+input, select, textarea, button { display: inline-block; font-family: sans-serif; font-size: 13.33px; }
+fieldset { margin-left: 2px; margin-right: 2px; border: 2px groove #c0c0c0; padding: 0.35em 0.75em 0.625em; }
+legend { padding-left: 2px; padding-right: 2px; }
+summary { display: block; font-weight: bold; }
+details > :not(summary) { display: none; }
+details[open] > :not(summary) { display: block; }
+button { padding: 1px 6px; border: 1px solid #767676; background-color: #efefef; border-radius: 3px; color: black; }
+
+/* shadow DOM: o slot some, ficam os filhos atribuídos */
+slot { display: contents }
+
+/* ponteiro do mouse */
+a:any-link { cursor: pointer; }
+input, textarea { cursor: text; }
+input[type=button], input[type=submit], input[type=reset], input[type=checkbox], input[type=radio],
+input[type=image], input[type=file], input[type=color], input[type=range], select, button, summary { cursor: default; }
+:disabled { cursor: default; }
+
+/* tela cheia: o elemento cobre a janela, por cima de tudo */
+:fullscreen {
+  position: fixed !important; top: 0 !important; left: 0 !important; right: 0 !important; bottom: 0 !important;
+  width: 100% !important; height: 100% !important; margin: 0 !important; box-sizing: border-box !important;
+  z-index: 2147483647 !important; transform: none !important; background: black;
+}
+video:fullscreen { object-fit: contain; }
