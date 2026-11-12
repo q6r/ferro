@@ -216,3 +216,37 @@ pub fn export() -> String {
     out
 }
 
+/// Lê os cookies gravados por [`export`] (os vencidos ficam de fora).
+pub fn import(text: &str) {
+    use crate::dados::unescape;
+    let t = now();
+    let mut jar = JAR.lock().unwrap_or_else(|e| e.into_inner());
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 8 {
+            continue;
+        }
+        let Ok(expires) = f[7].parse::<f64>() else { continue };
+        if expires <= t {
+            continue;
+        }
+        let c = Cookie {
+            name: unescape(f[0]),
+            value: unescape(f[1]),
+            domain: unescape(f[2]),
+            host_only: f[3] == "1",
+            path: unescape(f[4]),
+            secure: f[5] == "1",
+            http_only: f[6] == "1",
+            expires: Some(expires),
+            created: 0,
+        };
+        if jar.cookies.iter().any(|o| o.name == c.name && o.domain == c.domain && o.path == c.path) {
+            continue;
+        }
+        jar.seq += 1;
+        let created = jar.seq;
+        jar.cookies.push(Cookie { created, ..c });
+    }
+}
+
