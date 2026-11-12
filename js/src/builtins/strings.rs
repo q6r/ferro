@@ -163,3 +163,70 @@ fn char_code_at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Number(s.units()[n as usize] as f64))
 }
 
+pub fn code_point_at_units(u: &[u16], i: usize) -> (u32, usize) {
+    let c = u[i];
+    if (0xD800..0xDC00).contains(&c) && i + 1 < u.len() && (0xDC00..0xE000).contains(&u[i + 1]) {
+        let cp = 0x10000 + (((c as u32) - 0xD800) << 10) + (u[i + 1] as u32 - 0xDC00);
+        (cp, 2)
+    } else {
+        (c as u32, 1)
+    }
+}
+
+fn code_point_at(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "codePointAt")?;
+    let n = vm.to_integer(&a.arg(0))?;
+    if n < 0.0 || n >= s.len() as f64 {
+        return Ok(Value::Undefined);
+    }
+    Ok(Value::Number(code_point_at_units(s.units(), n as usize).0 as f64))
+}
+
+fn concat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut s = this_str(vm, a, "concat")?.units().to_vec();
+    for v in &a.args {
+        s.extend_from_slice(vm.to_string(v)?.units());
+    }
+    Ok(Value::String(JsStr::from_units(s)))
+}
+
+fn reject_regexp(vm: &mut Vm, v: &Value, what: &str) -> Result<(), Value> {
+    if let Value::Object(o) = v
+        && matches!(o.borrow().kind, Kind::RegExp { .. })
+    {
+        return Err(vm.type_error(format!("First argument to String.prototype.{what} must not be a regular expression")));
+    }
+    Ok(())
+}
+
+fn ends_with(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "endsWith")?;
+    reject_regexp(vm, &a.arg(0), "endsWith")?;
+    let search = vm.to_string(&a.arg(0))?;
+    let end = rel_clamp(vm, &a.arg(1), s.len(), s.len())?;
+    if search.len() > end {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(&s.units()[end - search.len()..end] == search.units()))
+}
+
+/// Posição absoluta (sem índices negativos), limitada ao tamanho.
+fn rel_clamp(vm: &mut Vm, v: &Value, len: usize, default: usize) -> Result<usize, Value> {
+    if v.is_undefined() {
+        return Ok(default);
+    }
+    let n = vm.to_integer(v)?;
+    Ok(n.clamp(0.0, len as f64) as usize)
+}
+
+fn starts_with(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "startsWith")?;
+    reject_regexp(vm, &a.arg(0), "startsWith")?;
+    let search = vm.to_string(&a.arg(0))?;
+    let start = rel_clamp(vm, &a.arg(1), s.len(), 0)?;
+    if start + search.len() > s.len() {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(&s.units()[start..start + search.len()] == search.units()))
+}
+
