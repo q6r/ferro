@@ -242,3 +242,46 @@ impl ClassSet {
         self.ranges = out;
     }
 
+    fn contains_raw(&self, c: u32) -> bool {
+        let r = &self.ranges;
+        let i = r.partition_point(|&(_, b)| b < c);
+        if i < r.len() && r[i].0 <= c {
+            return true;
+        }
+        self.props.iter().any(|&(p, neg)| p.test(c) != neg)
+    }
+
+    fn matches(&self, c: u32, ignore_case: bool, unicode: bool) -> bool {
+        let mut hit = self.contains_raw(c);
+        if !hit && ignore_case {
+            for v in case_variants(c) {
+                if v != c && canon(v, unicode) == canon(c, unicode) && self.contains_raw(v) {
+                    hit = true;
+                    break;
+                }
+            }
+        }
+        hit != self.negated
+    }
+}
+
+fn case_variants(c: u32) -> [u32; 3] {
+    let Some(ch) = char::from_u32(c) else { return [c, c, c] };
+    let single = |it: &mut dyn Iterator<Item = char>| -> u32 {
+        match (it.next(), it.next()) {
+            (Some(x), None) => x as u32,
+            _ => c,
+        }
+    };
+    let l = single(&mut ch.to_lowercase());
+    let u = single(&mut ch.to_uppercase());
+    let extra = match c {
+        0x73 | 0x53 => 0x17F,
+        0x17F => 0x73,
+        0x6B | 0x4B => 0x212A,
+        0x212A => 0x6B,
+        _ => c,
+    };
+    [l, u, extra]
+}
+
