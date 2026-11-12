@@ -3156,3 +3156,126 @@ impl<'a> Ctx<'a> {
         (cy - y, first)
     }
 
+    fn emit_frag(&mut self, f: &Frag, x: f32, baseline: f32) {
+        let s = &f.style;
+        if !s.visible {
+            return;
+        }
+        match &f.kind {
+            FragKind::Text(text) => {
+                if s.color.is_transparent() {
+                    return;
+                }
+                // text-shadow: uma cópia deslocada por baixo (sem desfoque)
+                if let Some(sh) = s.text_shadow
+                    && !sh.color.is_transparent()
+                {
+                    let mut c = sh.color;
+                    if sh.blur > 0.0 {
+                        c.a = (c.a as f32 * (1.0 / (1.0 + sh.blur / 4.0))).round() as u8;
+                    }
+                    self.items.push(DisplayItem::Text {
+                        x: x + sh.x,
+                        baseline: baseline + sh.y,
+                        text: text.clone(),
+                        font: f.font,
+                        size: s.font_size,
+                        color: c,
+                    });
+                }
+                self.items.push(DisplayItem::Text {
+                    x,
+                    baseline,
+                    text: text.clone(),
+                    font: f.font,
+                    size: s.font_size,
+                    color: s.color,
+                });
+                let thick = (s.font_size / 15.0).max(1.0);
+                if f.inh.underline {
+                    self.items.push(DisplayItem::Rect {
+                        rect: Rect { x, y: baseline + (s.font_size * 0.1).max(1.0), w: f.w, h: thick },
+                        color: s.color,
+                    });
+                }
+                if f.inh.line_through {
+                    self.items.push(DisplayItem::Rect {
+                        rect: Rect { x, y: baseline - s.font_size * 0.3, w: f.w, h: thick },
+                        color: s.color,
+                    });
+                }
+            }
+            FragKind::InlineBlock { .. } => {}
+            FragKind::Box { h, paint, label } => {
+                let top = if f.valign == VAlign::Middle { baseline - f.mid - h / 2.0 } else { baseline - h };
+                let r = Rect { x, y: top, w: f.w, h: *h };
+                if let AtomicPaint::Image(image) = paint {
+                    self.items.push(DisplayItem::Image {
+                        rect: r,
+                        image: image.clone(),
+                    });
+                    return;
+                }
+                if let AtomicPaint::Video(node) = paint {
+                    self.items.push(DisplayItem::Video { rect: r, node: *node });
+                    return;
+                }
+                if let AtomicPaint::Canvas(node) = paint {
+                    self.items.push(DisplayItem::Canvas { rect: r, node: *node });
+                    return;
+                }
+                let focused = f.inh.elem.is_some() && FOCUSED.with(|c| c.get()) == f.inh.elem;
+                let (fill, stroke) = match paint {
+                    AtomicPaint::Invisible | AtomicPaint::Image(_) | AtomicPaint::Video(_) | AtomicPaint::Canvas(_) => return,
+                    AtomicPaint::Control if focused => (Color::WHITE, Color::rgb(0x1a, 0x73, 0xe8)),
+                    AtomicPaint::Placeholder => (Color::rgb(0xe8, 0xe8, 0xe8), Color::rgb(0xc8, 0xc8, 0xc8)),
+                    AtomicPaint::Control | AtomicPaint::Check(_) => (Color::WHITE, Color::rgb(0x76, 0x76, 0x76)),
+                    AtomicPaint::Button => (Color::rgb(0xef, 0xef, 0xef), Color::rgb(0x76, 0x76, 0x76)),
+                };
+                // campo focado: borda de 2 px (anel de foco)
+                let bw = if focused && matches!(paint, AtomicPaint::Control) { 2.0 } else { 1.0 };
+                self.items.push(DisplayItem::Rect { rect: r, color: stroke });
+                self.items.push(DisplayItem::Rect {
+                    rect: Rect { x: r.x + bw, y: r.y + bw, w: (r.w - 2.0 * bw).max(0.0), h: (r.h - 2.0 * bw).max(0.0) },
+                    color: fill,
+                });
+                if let AtomicPaint::Check(true) = paint {
+                    self.items.push(DisplayItem::Rect {
+                        rect: Rect { x: r.x + 3.0, y: r.y + 3.0, w: r.w - 6.0, h: r.h - 6.0 },
+                        color: Color::rgb(0x00, 0x75, 0xff),
+                    });
+                }
+                if let Some((text, color)) = label {
+                    let font = self.fonts.for_style(s);
+                    let m = self.fonts.line_metrics(font, s.font_size);
+                    let text_x = if matches!(paint, AtomicPaint::Button) {
+                        r.x + (r.w - self.fonts.measure(font, s.font_size, text)) / 2.0
+                    } else {
+                        r.x + 4.0
+                    };
+                    self.items.push(DisplayItem::PushClip(r));
+                    self.items.push(DisplayItem::Text {
+                        x: text_x,
+                        baseline: r.y + (r.h + m.ascent - m.descent) / 2.0,
+                        text: text.clone(),
+                        font,
+                        size: s.font_size,
+                        color: *color,
+                    });
+                    self.items.push(DisplayItem::PopClip);
+                }
+                // cursor de texto no fim do que foi digitado
+                if focused && matches!(paint, AtomicPaint::Control) {
+                    let font = self.fonts.for_style(s);
+                    let typed = label.as_ref().filter(|(_, c)| *c == s.color).map(|(t, _)| t.as_str()).unwrap_or("");
+                    let cx = (r.x + 4.0 + self.fonts.measure(font, s.font_size, typed)).min(r.x + r.w - 3.0);
+                    let ch = (s.font_size * 1.2).min(r.h - 4.0);
+                    self.items.push(DisplayItem::Rect {
+                        rect: Rect { x: cx, y: r.y + (r.h - ch) / 2.0, w: 1.5, h: ch },
+                        color: s.color,
+                    });
+                }
+            }
+        }
+    }
+
