@@ -202,3 +202,55 @@ fn fill(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `cvStroke(el, caminho, estilo, matriz, alfa, op, largura, ponta, junção, limite, traços, deslocamento)`.
+fn stroke(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let path = decode_path(&numbers(&a.arg(1)));
+    let m = matrix(vm, &a.arg(3))?;
+    let alpha = num(vm, a, 4)?;
+    let op = text(vm, a, 5)?;
+    let width = num(vm, a, 6)?;
+    let cap = match text(vm, a, 7)?.as_str() {
+        "round" => Cap::Round,
+        "square" => Cap::Square,
+        _ => Cap::Butt,
+    };
+    let join = match text(vm, a, 8)?.as_str() {
+        "round" => Join::Round,
+        "bevel" => Join::Bevel,
+        _ => Join::Miter,
+    };
+    let miter_limit = num(vm, a, 9)?;
+    let dash = array_nums(vm, &a.arg(10))?;
+    let dash_offset = num(vm, a, 11)?;
+    let st = StrokeStyle { width, cap, join, miter_limit, dash, dash_offset };
+    if let Some(p) = paint(vm, &a.arg(2), m, alpha, &op)? {
+        with_bitmap(vm, n, |b| b.stroke_path(&path, &st, &p));
+    }
+    Ok(Value::Undefined)
+}
+
+fn clip(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    let path = decode_path(&numbers(&a.arg(1)));
+    let evenodd = ferro_js::vm::truthy(&a.arg(2));
+    write(vm, |h| {
+        if let Some(b) = h.canvases.get_mut(&n) {
+            b.clip_path(&path, evenodd);
+        }
+    });
+    Ok(Value::Undefined)
+}
+
+fn save(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    write(vm, |h| h.canvases.get_mut(&n).map(Bitmap::save));
+    Ok(Value::Undefined)
+}
+
+fn restore(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = el(vm, a)?;
+    write(vm, |h| h.canvases.get_mut(&n).map(Bitmap::restore));
+    Ok(Value::Undefined)
+}
+
