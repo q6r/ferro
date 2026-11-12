@@ -1011,3 +1011,59 @@ struct Compiler {
     names: HashMap<String, u32>,
 }
 
+fn group_range(n: &Node, out: &mut Option<(u32, u32)>) {
+    match n {
+        Node::Group(inner, idx) => {
+            if let Some(i) = idx {
+                *out = Some(match *out {
+                    Some((a, b)) => (a.min(*i), b.max(*i)),
+                    None => (*i, *i),
+                });
+            }
+            group_range(inner, out);
+        }
+        Node::Look { node, .. } => group_range(node, out),
+        Node::Repeat { node, .. } => group_range(node, out),
+        Node::Concat(v) | Node::Alt(v) => v.iter().for_each(|x| group_range(x, out)),
+        _ => {}
+    }
+}
+
+impl Compiler {
+    fn emit(&mut self, i: Inst) -> u32 {
+        self.insts.push(i);
+        (self.insts.len() - 1) as u32
+    }
+
+    fn here(&self) -> u32 {
+        self.insts.len() as u32
+    }
+
+    fn reg(&mut self) -> u32 {
+        let r = self.nregs;
+        self.nregs += 1;
+        r
+    }
+
+    fn single(&mut self, n: &Node) -> Option<Single> {
+        Some(match n {
+            Node::Char(c) => Single::Char(*c),
+            Node::Any => Single::Any,
+            Node::Class(cs) => {
+                self.classes.push(cs.clone());
+                Single::Class((self.classes.len() - 1) as u32)
+            }
+            _ => return None,
+        })
+    }
+
+    fn set_target(&mut self, at: u32, t: u32) {
+        match &mut self.insts[at as usize] {
+            Inst::Split(_, b) => *b = t,
+            Inst::Jmp(x) => *x = t,
+            Inst::CountLt { target, .. } | Inst::CountGe { target, .. } => *target = t,
+            Inst::Look { end, .. } => *end = t,
+            _ => {}
+        }
+    }
+
