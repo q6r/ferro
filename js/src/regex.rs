@@ -837,3 +837,52 @@ impl Parser {
         Ok(Node::Char(c))
     }
 
+    fn class(&mut self) -> Result<ClassSet, RegexError> {
+        let mut set = ClassSet::default();
+        if self.eat('^') {
+            set.negated = true;
+        }
+        loop {
+            let Some(c) = self.peek() else { return err("Unterminated character class") };
+            if c == ']' as u32 {
+                self.i += 1;
+                break;
+            }
+            let a = self.class_atom(&mut set)?;
+            if self.is('-') && self.peek_at(1).is_some_and(|x| x != ']' as u32) {
+                let save = self.i;
+                self.i += 1;
+                let mut tmp = ClassSet::default();
+                let b = self.class_atom(&mut tmp)?;
+                match (a, b) {
+                    (Some(a), Some(b)) => {
+                        if a > b {
+                            return err("Range out of order in character class");
+                        }
+                        set.add(a, b);
+                    }
+                    _ => {
+                        if self.u {
+                            return err("Invalid character class");
+                        }
+                        // Anexo B: \d-x vira \d, '-', x
+                        if let Some(a) = a {
+                            set.add(a, a);
+                        }
+                        set.add('-' as u32, '-' as u32);
+                        if let Some(b) = b {
+                            set.add(b, b);
+                        }
+                        set.ranges.extend(tmp.ranges);
+                        set.props.extend(tmp.props);
+                    }
+                }
+                let _ = save;
+            } else if let Some(a) = a {
+                set.add(a, a);
+            }
+        }
+        set.normalize();
+        Ok(set)
+    }
+
