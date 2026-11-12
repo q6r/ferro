@@ -3424,3 +3424,45 @@ function editText(el, inputType, data) {
   }
   fireTrusted(el, new InputEvent('input', { inputType, data: data ?? null, bubbles: true, composed: true }));
 }
+const KEY_CODES = { Backspace: 8, Tab: 9, Enter: 13, Shift: 16, Control: 17, Alt: 18, Pause: 19, CapsLock: 20,
+  Escape: 27, ' ': 32, PageUp: 33, PageDown: 34, End: 35, Home: 36, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39,
+  ArrowDown: 40, Insert: 45, Delete: 46, Meta: 91, F1: 112, F2: 113, F3: 114, F4: 115, F5: 116, F6: 117, F7: 118,
+  F8: 119, F9: 120, F10: 121, F11: 122, F12: 123, ';': 186, '=': 187, ',': 188, '-': 189, '.': 190, '/': 191,
+  '`': 192, '[': 219, '\\': 220, ']': 221, "'": 222 };
+function keyCodeOf(key) {
+  if (key in KEY_CODES) return KEY_CODES[key];
+  if (key.length === 1) {
+    const c = key.toUpperCase().charCodeAt(0);
+    if ((c >= 65 && c <= 90) || (c >= 48 && c <= 57)) return c;
+  }
+  return 0;
+}
+function codeOf(key) {
+  if (key.length === 1) {
+    if (/[a-z]/i.test(key)) return 'Key' + key.toUpperCase();
+    if (/[0-9]/.test(key)) return 'Digit' + key;
+    if (key === ' ') return 'Space';
+    return { ';': 'Semicolon', '=': 'Equal', ',': 'Comma', '-': 'Minus', '.': 'Period', '/': 'Slash', '`': 'Backquote',
+      '[': 'BracketLeft', ']': 'BracketRight', "'": 'Quote', '\\': 'Backslash' }[key] || '';
+  }
+  return key;
+}
+const FOCUSABLE_SEL = 'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"]), [contenteditable]:not([contenteditable=false])';
+function moveFocus(dir) {
+  const list = [...document.querySelectorAll(FOCUSABLE_SEL)].filter((e) => e.getClientRects().length);
+  if (!list.length) return;
+  const i = list.indexOf(document.activeElement);
+  const next = list[(i < 0 ? (dir > 0 ? 0 : list.length - 1) : (i + dir + list.length) % list.length)];
+  next.focus();
+}
+// change: quando o campo perde o foco com o valor diferente
+const FOCUS_VALUE = new WeakMap();
+document.addEventListener('focus', (e) => { const t = e.target; if (t && 'value' in t) FOCUS_VALUE.set(t, t.value); }, true);
+document.addEventListener('blur', (e) => {
+  const t = e.target;
+  if (t && FOCUS_VALUE.has(t) && FOCUS_VALUE.get(t) !== t.value && editable(t)) {
+    FOCUS_VALUE.delete(t);
+    fireTrusted(t, new Event('change', { bubbles: true }));
+  }
+}, true);
+
