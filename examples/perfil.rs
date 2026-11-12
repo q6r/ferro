@@ -101,3 +101,38 @@ fn main() {
         SymInitialize(process, path.as_ptr() as *const u8, 1);
     }
 
+    // cópia da pilha da thread suspensa (o desenrolar acontece depois, sem
+    // a thread parada: ela pode estar segurando o lock do heap)
+    const SNAP: usize = 512 * 1024;
+    let mut snaps: Vec<(CONTEXT, u64, Vec<u8>)> = Vec::new();
+    let mut spare: Vec<Vec<u8>> = Vec::new();
+    while !worker.is_finished() {
+        let mut buf = spare.pop().unwrap_or_else(|| vec![0u8; SNAP]);
+        unsafe {
+            if SuspendThread(h) == u32::MAX {
+                break;
+            }
+            let mut ctx: CONTEXT = std::mem::zeroed();
+            ctx.ContextFlags = CONTEXT_FULL_AMD64;
+            let ok = GetThreadContext(h, &mut ctx) != 0;
+            let rsp = ctx.Rsp;
+            let len = if ok && stack_top > rsp { ((stack_top - rsp) as usize + 64).min(SNAP) } else { 0 };
+            if len > 0 {
+                std::ptr::copy_nonoverlapping(rsp as *const u8, buf.as_mut_ptr(), len);
+            }
+            ResumeThread(h);
+            if ok {
+                buf.truncate(len.max(1));
+                snaps.push((ctx, rsp, buf));
+            } else {
+                spare.push(buf);
+            }
+        }
+        if snaps.len() > 20000 {
+            break;
+        }
+        std::thread::sleep(Duration::from_micros(700));
+    }
+    // desenrola cada pilha lendo da cópia
+    static mut SNAP_BASE: u64 = 0;
+    static mut SNAP_PTR: *const u8 = std::ptr::null();
