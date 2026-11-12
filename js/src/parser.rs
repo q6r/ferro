@@ -405,3 +405,74 @@ impl Parser {
         }
     }
 
+    fn expect_kw(&mut self, k: &str) -> PResult<()> {
+        if self.is_kw(k) {
+            self.advance()?;
+            Ok(())
+        } else {
+            self.err(format!("esperava '{k}'"))
+        }
+    }
+
+    /// Inserção automática de ponto e vírgula.
+    fn semicolon(&mut self) -> PResult<()> {
+        if self.eat(";")? {
+            return Ok(());
+        }
+        if self.is("}") || self.tok.tok == Tok::Eof || self.tok.nl_before {
+            return Ok(());
+        }
+        self.unexpected()
+    }
+
+    /// Estado salvo para retroceder.
+    fn save(&self) -> (Token, usize, u32, usize, u32, Ctx) {
+        (self.tok.clone(), self.lx.pos(), self.lx.line(), self.prev_end, self.prev_line, self.ctx)
+    }
+
+    fn restore(&mut self, s: (Token, usize, u32, usize, u32, Ctx)) {
+        let regex_ok = crate::lexer::regex_allowed_after(&s.0.tok);
+        self.tok = s.0;
+        self.lx.reset(s.1, s.2, regex_ok);
+        self.prev_end = s.3;
+        self.prev_line = s.4;
+        self.ctx = s.5;
+    }
+
+    /// Olha o token seguinte sem consumir.
+    fn peek(&mut self) -> PResult<Token> {
+        let s = self.save();
+        self.advance()?;
+        let t = self.tok.clone();
+        self.restore(s);
+        Ok(t)
+    }
+
+    fn ident_name(&mut self) -> PResult<Name> {
+        match &self.tok.tok {
+            Tok::Ident(n) => {
+                let n = n.clone();
+                self.advance()?;
+                Ok(n)
+            }
+            _ => self.unexpected(),
+        }
+    }
+
+    /// Identificador usado como nome de variável (não pode ser reservado).
+    fn binding_ident(&mut self) -> PResult<Name> {
+        match &self.tok.tok {
+            Tok::Ident(n) if !RESERVED.contains(&&**n) || self.tok.escaped => {
+                if (&**n == "await" && self.ctx.in_async) || (&**n == "yield" && self.ctx.in_generator) {
+                    return self.unexpected();
+                }
+                let n = n.clone();
+                self.advance()?;
+                Ok(n)
+            }
+            _ => self.unexpected(),
+        }
+    }
+
+    // --------------------------------------------------------- instruções
+
