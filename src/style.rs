@@ -2641,3 +2641,54 @@ fn presentational_hints(el: &crate::dom::ElementData, s: &mut ComputedStyle, u: 
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::html;
+
+    #[test]
+    fn cores() {
+        let c = |s| parse_color(s, Color::BLACK).unwrap();
+        assert_eq!(c("#f00"), Color::rgb(255, 0, 0));
+        assert_eq!(c("#3366CC"), Color::rgb(0x33, 0x66, 0xcc));
+        assert_eq!(c("rgb(10, 20, 30)"), Color::rgb(10, 20, 30));
+        assert_eq!(c("rgb(10 20 30 / 50%)").a, 128);
+        assert_eq!(c("hsl(0, 100%, 50%)"), Color::rgb(255, 0, 0));
+        assert_eq!(c("RebeccaPurple"), Color::rgb(0x66, 0x33, 0x99));
+    }
+
+    #[test]
+    fn variaveis() {
+        let mut root = ferro_js::fxhash::FxHashMap::default();
+        root.insert(Rc::from("--a"), Rc::from("10px"));
+        let root = CustomVars::child(&Rc::new(CustomVars::default()), root);
+        let mut own = ferro_js::fxhash::FxHashMap::default();
+        own.insert(Rc::from("--b"), Rc::from("var(--a) solid"));
+        let vars = CustomVars::child(&root, own);
+        assert_eq!(substitute_vars("var(--b) red", &vars, 0).unwrap(), "10px solid red");
+        assert_eq!(substitute_vars("var(--x, 2em)", &vars, 0).unwrap(), "2em");
+        assert!(substitute_vars("var(--x)", &vars, 0).is_none());
+    }
+
+    #[test]
+    fn cascata_especificidade_e_heranca() {
+        let doc = html::parse(
+            r#"<div id="d" class="c" style="font-size: 20px"><p class="c">oi <b>x</b></p></div>"#,
+        );
+        let media = MediaContext { width: 800.0, height: 600.0 };
+        let sheet = css::parse_stylesheet(
+            "p { color: red } .c { color: green } #d p { color: blue; margin: 1em 2em } \
+             :root { --cor: #123456 } b { color: var(--cor) }",
+            &media,
+        );
+        let styles = compute(&doc, &[(Rc::new(sheet), Origin::Author)], &media);
+        let p = doc.find_first("p").unwrap();
+        let b = doc.find_first("b").unwrap();
+        let sp = styles[p].as_ref().unwrap();
+        assert_eq!(sp.color, Color::rgb(0, 0, 255));
+        assert_eq!(sp.font_size, 20.0);
+        assert_eq!(sp.margin[RIGHT], Len::Px(40.0));
+        assert_eq!(styles[b].as_ref().unwrap().color, Color::rgb(0x12, 0x34, 0x56));
+    }
+}
+
