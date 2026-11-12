@@ -165,3 +165,76 @@ fn escape(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::str(&out))
 }
 
+fn unescape(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_string(&a.arg(0))?;
+    let u = s.units();
+    let mut out = Vec::new();
+    let mut i = 0;
+    let hexs = |sl: &[u16]| -> Option<u16> {
+        let t: String = sl.iter().map(|&c| char::from_u32(c as u32).unwrap_or('?')).collect();
+        u16::from_str_radix(&t, 16).ok()
+    };
+    while i < u.len() {
+        if u[i] == b'%' as u16 {
+            if i + 6 <= u.len()
+                && u[i + 1] == b'u' as u16
+                && let Some(v) = hexs(&u[i + 2..i + 6])
+            {
+                out.push(v);
+                i += 6;
+                continue;
+            }
+            if i + 3 <= u.len()
+                && let Some(v) = hexs(&u[i + 1..i + 3])
+            {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(u[i]);
+        i += 1;
+    }
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
+/// `eval` indireto: roda o texto como um script global.
+fn eval(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::String(src) = a.arg(0) else { return Ok(a.arg(0)) };
+    vm.eval_script(&src.to_rust(), "eval")
+}
+
+impl Vm {
+    /// Analisa, compila e executa um script; erros de sintaxe viram SyntaxError.
+    pub fn eval_script(&mut self, src: &str, file: &str) -> Result<Value, Value> {
+        let timing = std::env::var_os("FERRO_TEMPOS_JS").is_some();
+        let t0 = std::time::Instant::now();
+        let prog = match crate::parser::parse_program(src) {
+            Ok(p) => p,
+            Err(e) => return Err(self.syntax_error(format!("{} ({file}:{})", e.msg, e.line))),
+        };
+        let t1 = std::time::Instant::now();
+        let code = match crate::compiler::compile_script(&prog, file) {
+            Ok(c) => c,
+            Err(e) => return Err(self.syntax_error(format!("{} ({file}:{})", e.msg, e.line))),
+        };
+        drop(prog);
+        let t2 = std::time::Instant::now();
+        let r = self.run_script(code);
+        if timing {
+            let ms = |a: std::time::Instant, b: std::time::Instant| (b - a).as_secs_f64() * 1000.0;
+            let t3 = std::time::Instant::now();
+            if ms(t0, t3) > 20.0 {
+                let name: String = file.chars().take(90).collect();
+                eprintln!(
+                    "[js] {:>7} KB  análise {:>6.0} ms  compilação {:>6.0} ms  execução {:>6.0} ms  {name}",
+                    src.len() / 1024,
+                    ms(t0, t1),
+                    ms(t1, t2),
+                    ms(t2, t3)
+                );
+            }
+        }
+        r
+    }
+}
