@@ -386,3 +386,55 @@ impl BigInt {
         Some(BigInt::from_parts(self.neg != o.neg, q))
     }
 
+    /// Resto com o sinal do dividendo; None se o divisor for zero.
+    pub fn rem(&self, o: &BigInt) -> Option<BigInt> {
+        if o.is_zero() {
+            return None;
+        }
+        let (_, r) = mag_divrem(&self.mag, &o.mag);
+        Some(BigInt::from_parts(self.neg, r))
+    }
+
+    pub fn pow(&self, mut e: u64) -> BigInt {
+        let mut base = self.clone();
+        let mut acc = BigInt::from_i64(1);
+        while e > 0 {
+            if e & 1 == 1 {
+                acc = acc.mul(&base);
+            }
+            e >>= 1;
+            if e > 0 {
+                base = base.mul(&base);
+            }
+        }
+        acc
+    }
+
+    pub fn shl(&self, n: u64) -> BigInt {
+        if self.is_zero() {
+            return self.clone();
+        }
+        let limbs = (n / 32) as usize;
+        let bits = (n % 32) as u32;
+        let mut mag = vec![0u32; limbs];
+        mag.extend(shl_bits(&self.mag, bits, true));
+        BigInt::from_parts(self.neg, mag)
+    }
+
+    /// Desloca a magnitude para a direita (sem tratar o sinal).
+    fn shr_mag(&self, n: u64) -> BigInt {
+        let limbs = (n / 32) as usize;
+        if limbs >= self.mag.len() {
+            return BigInt::zero();
+        }
+        let bits = (n % 32) as u32;
+        let src = &self.mag[limbs..];
+        let mut mag = Vec::with_capacity(src.len());
+        for i in 0..src.len() {
+            let lo = src[i] >> bits;
+            let hi = if bits > 0 { src.get(i + 1).map_or(0, |x| x << (32 - bits)) } else { 0 };
+            mag.push(lo | hi);
+        }
+        BigInt::from_parts(self.neg, mag)
+    }
+
