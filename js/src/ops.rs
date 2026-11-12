@@ -426,3 +426,46 @@ impl Vm {
         Ok(Value::BigInt(std::rc::Rc::new(r)))
     }
 
+    pub fn to_rust_string(&mut self, v: &Value) -> Result<String, Value> {
+        Ok(self.to_string(v)?.to_rust())
+    }
+
+    pub fn to_number(&mut self, v: &Value) -> Result<f64, Value> {
+        Ok(match v {
+            Value::Undefined | Value::Empty => f64::NAN,
+            Value::Null => 0.0,
+            Value::Bool(b) => *b as u8 as f64,
+            Value::Number(n) => *n,
+            Value::String(s) => string_to_number(s.units()),
+            Value::Symbol(_) => return Err(self.type_error("Cannot convert a Symbol value to a number")),
+            Value::BigInt(_) => return Err(self.type_error("Cannot convert a BigInt value to a number")),
+            Value::Object(_) => {
+                let p = self.to_primitive(v, Hint::Number)?;
+                return self.to_number(&p);
+            }
+        })
+    }
+
+    pub fn to_integer(&mut self, v: &Value) -> Result<f64, Value> {
+        Ok(crate::conv::to_integer(self.to_number(v)?))
+    }
+
+    pub fn to_property_key(&mut self, v: &Value) -> Result<PropKey, Value> {
+        Ok(match v {
+            Value::String(s) => PropKey::Str(s.clone()),
+            Value::Symbol(s) => PropKey::Sym(s.clone()),
+            Value::Number(n) => {
+                if *n >= 0.0 && *n < 4294967296.0 && n.fract() == 0.0 {
+                    PropKey::Str(JsStr::new(&(*n as u64).to_string()))
+                } else {
+                    PropKey::Str(JsStr::new(&number_to_string(*n)))
+                }
+            }
+            Value::Object(_) => {
+                let p = self.to_primitive(v, Hint::String)?;
+                return self.to_property_key(&p);
+            }
+            _ => PropKey::Str(self.to_string(v)?),
+        })
+    }
+
