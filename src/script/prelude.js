@@ -449,3 +449,54 @@ for (const P of [HTMLAnchorElement.prototype, HTMLLinkElement.prototype, HTMLAre
 
 // --------------------------------------------------------------- style
 const STYLE = new WeakMap();
+function splitDecls(text) {
+  const out = [];
+  let depth = 0, quote = '', cur = '';
+  for (const c of text) {
+    if (quote) { if (c === quote) quote = ''; cur += c; continue; }
+    if (c === '"' || c === "'") { quote = c; cur += c; continue; }
+    if (c === '(') depth++;
+    else if (c === ')') depth = Math.max(0, depth - 1);
+    if (c === ';' && depth === 0) { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+function parseStyle(text) {
+  const m = new Map();
+  for (const d of splitDecls(text || '')) {
+    const i = d.indexOf(':');
+    if (i < 0) continue;
+    let name = d.slice(0, i).trim();
+    if (!name) continue;
+    if (!name.startsWith('--')) name = name.toLowerCase();
+    let value = d.slice(i + 1).trim();
+    let important = '';
+    const imp = /!\s*important\s*$/i.exec(value);
+    if (imp) { value = value.slice(0, imp.index).trim(); important = 'important'; }
+    if (value === '') continue;
+    m.delete(name);
+    m.set(name, { value, important });
+  }
+  return m;
+}
+function serializeStyle(m) {
+  return [...m].map(([k, v]) => `${k}: ${v.value}${v.important ? ' !important' : ''};`).join(' ');
+}
+class CSSStyleDeclaration {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+function styleMap(decl) {
+  const s = STYLE.get(decl);
+  if (s.computed) return s.computed;
+  return parseStyle(s.el.getAttribute('style'));
+}
+function writeStyle(decl, m) {
+  const s = STYLE.get(decl);
+  if (s.computed) throw new DOMException("Failed to execute 'setProperty' on 'CSSStyleDeclaration': These styles are computed, and therefore read-only.", 'NoModificationAllowedError');
+  s.el.setAttribute('style', serializeStyle(m));
+}
+const UNITLESS = new Set(['opacity', 'z-index', 'flex', 'flex-grow', 'flex-shrink', 'order', 'line-height',
+  'font-weight', 'zoom', 'orphans', 'widows', 'column-count', 'fill-opacity', 'stroke-opacity', 'tab-size',
+  'animation-iteration-count', 'grid-row', 'grid-column', 'stroke-width', 'aspect-ratio']);
