@@ -830,3 +830,80 @@ struct Units {
     vh: f32,
 }
 
+fn parse_len(v: &str, u: &Units) -> Option<Len> {
+    let v = v.trim().to_ascii_lowercase();
+    if v == "auto" {
+        return Some(Len::Auto);
+    }
+    if let Some(inner) = v.strip_prefix("calc(").and_then(|s| s.strip_suffix(')')) {
+        return parse_calc(inner, u);
+    }
+    let num_end = v
+        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e'))
+        .unwrap_or(v.len());
+    // "e" pode ser início de "em": recua se o que vem depois não for número
+    let (mut num, mut unit) = v.split_at(num_end);
+    if num.ends_with('e') {
+        num = &v[..num_end - 1];
+        unit = &v[num_end - 1..];
+    }
+    let n: f32 = num.parse().ok()?;
+    let px = match unit {
+        "px" => n,
+        "" if n == 0.0 => 0.0,
+        "%" => return Some(Len::Percent(n)),
+        "em" => n * u.em,
+        "rem" => n * u.rem,
+        "ex" | "ch" => n * u.em * 0.5,
+        "pt" => n * 4.0 / 3.0,
+        "pc" => n * 16.0,
+        "in" => n * 96.0,
+        "cm" => n * 96.0 / 2.54,
+        "mm" => n * 96.0 / 25.4,
+        "q" => n * 96.0 / 101.6,
+        "vw" => n * u.vw / 100.0,
+        "vh" => n * u.vh / 100.0,
+        "vmin" => n * u.vw.min(u.vh) / 100.0,
+        "vmax" => n * u.vw.max(u.vh) / 100.0,
+        _ => return None,
+    };
+    Some(Len::Px(px))
+}
+
+/// calc() simples: soma/subtração de termos em px/em/rem/vw (sem %).
+fn parse_calc(inner: &str, u: &Units) -> Option<Len> {
+    let mut total = 0.0;
+    let mut sign = 1.0;
+    for tok in inner.split_whitespace() {
+        match tok {
+            "+" => sign = 1.0,
+            "-" => sign = -1.0,
+            _ => match parse_len(tok, u)? {
+                Len::Px(v) => total += sign * v,
+                _ => return None,
+            },
+        }
+    }
+    Some(Len::Px(total))
+}
+
+/// 1 a 4 valores → [top, right, bottom, left].
+fn expand_sides<T: Copy>(vals: &[T]) -> Option<[T; 4]> {
+    match vals.len() {
+        1 => Some([vals[0]; 4]),
+        2 => Some([vals[0], vals[1], vals[0], vals[1]]),
+        3 => Some([vals[0], vals[1], vals[2], vals[1]]),
+        4 => Some([vals[0], vals[1], vals[2], vals[3]]),
+        _ => None,
+    }
+}
+
+fn split_values(v: &str) -> Vec<String> {
+    let v = v.split_whitespace().collect::<Vec<_>>().join(" ");
+    css::split_top_level(&v, ' ')
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
