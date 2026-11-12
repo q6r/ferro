@@ -332,3 +332,44 @@ pub(crate) fn drive(vm: &mut Vm) -> bool {
     any
 }
 
+/// Começa um `<script type=module>` (do HTML ou inserido por script).
+pub(crate) fn start_script(vm: &mut Vm, n: NodeId, src: Option<String>, text: &str) -> Option<Url> {
+    let url = match src {
+        Some(src) => {
+            let u = read(vm, |h| h.page.base.join(src.trim()).ok())?;
+            request(vm, &u);
+            u
+        }
+        None => add_inline(vm, text),
+    };
+    write(vm, |h| h.modules.waiting.push((url.clone(), Waiter::Script(n))));
+    Some(url)
+}
+
+/// O grafo desse `<script type=module>` já rodou (ou falhou)?
+pub(crate) fn script_done(h: &Host, n: NodeId) -> bool {
+    !h.modules.waiting.iter().any(|(_, w)| matches!(w, Waiter::Script(x) if *x == n))
+}
+
+/// `__native.importModule(especificador, quem importa, resolve, reject)`.
+fn import_module(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let spec = vm.to_string(&a.arg(0))?.to_rust();
+    let referrer = vm.to_string(&a.arg(1))?.to_rust();
+    let (res, rej) = (a.arg(2), a.arg(3));
+    let base = read(vm, |h| h.page.base.clone());
+    let from = Url::parse(&referrer).ok().filter(|u| matches!(u.scheme(), "http" | "https" | "file")).unwrap_or(base);
+    let Some(url) = resolve(vm, &spec, &from) else {
+        let e = vm.type_error(format!("Failed to resolve module specifier \"{spec}\""));
+        vm.call(&rej, Value::Undefined, vec![e])?;
+        return Ok(Value::Undefined);
+    };
+    request(vm, &url);
+    write(vm, |h| h.modules.waiting.push((url, Waiter::Import { res, rej })));
+    // já estava tudo carregado: resolve logo
+    drive(vm);
+    Ok(Value::Undefined)
+}
+
+pub(crate) fn install(vm: &Vm, n: &ObjRef) {
+    vm.realm.method(n, "importModule", 4, import_module);
+}
