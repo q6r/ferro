@@ -731,3 +731,51 @@ fn numeric_order(x: &Value, y: &Value) -> Ordering {
     }
 }
 
+fn sorted_values(vm: &mut Vm, o: &ObjRef, len: usize, cmp: &Value) -> Result<Vec<Value>, Value> {
+    let mut vals = values_of(o, len);
+    if cmp.is_undefined() {
+        vals.sort_by(numeric_order);
+        return Ok(vals);
+    }
+    if !cmp.is_callable() {
+        return Err(vm.type_error("The comparison function must be either a function or undefined"));
+    }
+    super::array::sort_values(vm, vals, cmp)
+}
+
+fn sort(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, _, len) = this_ta(vm, a)?;
+    let vals = sorted_values(vm, &o, len, &a.arg(0))?;
+    for (i, v) in vals.iter().enumerate() {
+        vm.typed_set(&o, i, v)?;
+    }
+    Ok(a.this.clone())
+}
+
+fn to_sorted(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let vals = sorted_values(vm, &o, len, &a.arg(0))?;
+    from_values(vm, kind, &vals)
+}
+
+fn to_reversed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let mut vals = values_of(&o, len);
+    vals.reverse();
+    from_values(vm, kind, &vals)
+}
+
+fn with(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (o, kind, len) = this_ta(vm, a)?;
+    let n = vm.to_integer(&a.arg(0))?;
+    let idx = if n >= 0.0 { n } else { len as f64 + n };
+    if idx < 0.0 || idx >= len as f64 {
+        return Err(vm.range_error("Invalid typed array index"));
+    }
+    let mut vals = values_of(&o, len);
+    vals[idx as usize] = a.arg(1);
+    from_values(vm, kind, &vals)
+}
+
+// ---------------------------------------------------------------- DataView
+
