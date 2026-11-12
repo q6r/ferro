@@ -426,3 +426,136 @@ impl App {
 
     // ------------------------------------------------------------- paleta
 
+    /// Paleta de busca (kit "Search or Ask"): vidro fosco sobre a página.
+    pub(super) fn draw_palette(&self, p: &mut Painter, t: &Theme, hits: &mut Hits) {
+        if !self.palette_open {
+            return;
+        }
+        let (w, h) = self.logical_size();
+        let full = rect(0.0, 0.0, w, h);
+        p.rect(full, Color { r: 0, g: 0, b: 0, a: if t.dark { 120 } else { 64 } });
+        hits.push((full, Hit::Scrim));
+
+        let (glass_top, glass_bottom, rim) = t.glass();
+        let input = palette_box(w, h);
+        p.shadow(input, 32.0, if t.dark { 55 } else { 40 });
+        p.frost(input, 32.0, 26.0);
+        p.rrect_grad(input, 32.0, glass_top, glass_bottom);
+        p.stroke(input, 32.0, 1.0, rim);
+        p.icon(input.x + 34.0, input.y + 32.0, Icon::Search, 24.0, t.text);
+        hits.push((input, Hit::PaletteInput));
+
+        let tx = input.x + 64.0;
+        let clip = rect(tx, input.y, input.w - 64.0 - 28.0, input.h);
+        let base = Painter::baseline(input.y + 32.0, PALETTE_FONT);
+        let m = |p: &Painter, s: &str| p.measure(s, PALETTE_FONT, Weight::Regular);
+        let cur = m(p, self.omni.prefix(self.omni.cursor));
+        let shift = (cur - clip.w + 6.0).max(0.0);
+        let (a, b) = self.omni.selection();
+        if a != b {
+            let (xa, xb) = (m(p, self.omni.prefix(a)), m(p, self.omni.prefix(b)));
+            p.rrect_clip(rect(tx + xa - shift, input.y + 18.0, xb - xa, 28.0), 5.0, with_alpha(t.accent, 90), clip);
+        }
+        if self.omni.text.is_empty() {
+            p.text_clipped(
+                tx,
+                base,
+                "Pesquise ou digite um endereço",
+                PALETTE_FONT,
+                t.muted,
+                Weight::Regular,
+                Some(clip),
+            );
+        } else {
+            p.text_clipped(tx - shift, base, &self.omni.text, PALETTE_FONT, t.text, Weight::Regular, Some(clip));
+        }
+        // cursor com um leve brilho, como no kit
+        let cx = tx + cur - shift;
+        p.rrect_clip(rect(cx - 3.0, input.y + 17.0, 6.0, 30.0), 3.0, with_alpha(t.text, 40), clip);
+        p.rect(rect(cx - 0.75, input.y + 18.0, 1.5, 28.0), t.text);
+
+        if self.suggestions.is_empty() {
+            let hint = "Enter abre  ·  Esc fecha  ·  Ctrl+K pesquisa de qualquer lugar";
+            let hw = p.measure(hint, 13.0, Weight::Regular);
+            p.text(
+                input.x + (input.w - hw) / 2.0,
+                input.y + input.h + 32.0,
+                hint,
+                13.0,
+                Color { r: 255, g: 255, b: 255, a: 190 },
+                Weight::Regular,
+            );
+            return;
+        }
+
+        let (row_h, head_h) = (50.0, 30.0);
+        let mut heads = 0;
+        let mut prev = "";
+        for s in &self.suggestions {
+            if !s.group.is_empty() && s.group != prev {
+                heads += 1;
+            }
+            prev = s.group;
+        }
+        let list_h = self.suggestions.len() as f32 * row_h + heads as f32 * head_h + 16.0;
+        let list = rect(input.x, input.y + input.h + 12.0, input.w, list_h);
+        p.shadow(list, 26.0, if t.dark { 55 } else { 40 });
+        p.frost(list, 26.0, 26.0);
+        p.rrect_grad(list, 26.0, glass_top, glass_bottom);
+        p.stroke(list, 26.0, 1.0, rim);
+
+        let mut y = list.y + 8.0;
+        let mut prev = "";
+        for (i, s) in self.suggestions.iter().enumerate() {
+            if !s.group.is_empty() && s.group != prev {
+                p.text(list.x + 28.0, y + 20.0, s.group, 12.0, t.muted, Weight::Semibold);
+                y += head_h;
+            }
+            prev = s.group;
+            let row = rect(list.x + 8.0, y, list.w - 16.0, row_h - 2.0);
+            let selected = i == self.suggestion;
+            let hovered = self.hover == Some(Hit::PaletteRow(i));
+            if selected || hovered {
+                let a = if selected { 1.0 } else { 0.6 };
+                let hl = if t.dark {
+                    Color { r: 255, g: 255, b: 255, a: (26.0 * a) as u8 }
+                } else {
+                    Color { r: 0, g: 0, b: 0, a: (16.0 * a) as u8 }
+                };
+                p.rrect(row, 16.0, hl);
+            }
+            let cy = row.y + row.h / 2.0;
+            p.icon(row.x + 28.0, cy, s.icon, 21.0, t.text);
+
+            // dica à direita; a linha selecionada mostra a tecla Enter
+            let mut right = row.x + row.w - 16.0;
+            if selected {
+                let kw = p.measure("Enter", 12.0, Weight::Semibold) + 16.0;
+                let key = rect(right - kw, cy - 11.0, kw, 22.0);
+                p.rrect(key, 7.0, with_alpha(t.muted, 50));
+                p.stroke(key, 7.0, 1.0, with_alpha(t.muted, 90));
+                p.text(key.x + 8.0, Painter::baseline(cy, 12.0), "Enter", 12.0, t.text, Weight::Semibold);
+                right = key.x - 10.0;
+            }
+            if !s.hint.is_empty() {
+                let hw = p.measure(s.hint, 13.0, Weight::Regular);
+                p.text(right - hw, Painter::baseline(cy, 13.0), s.hint, 13.0, t.muted, Weight::Regular);
+                right -= hw + 16.0;
+            }
+            let tx = row.x + 56.0;
+            let max = (right - tx).max(40.0);
+            let detail_w = if s.detail.is_empty() { 0.0 } else { p.measure(&s.detail, 13.0, Weight::Regular) + 12.0 };
+            let text = p.ellipsize(&s.text, 16.0, Weight::Regular, (max - detail_w.min(max * 0.4)).max(40.0));
+            p.text(tx, Painter::baseline(cy, 16.0), &text, 16.0, t.text, Weight::Regular);
+            if !s.detail.is_empty() {
+                let x = tx + p.measure(&text, 16.0, Weight::Regular) + 12.0;
+                let d = p.ellipsize(&s.detail, 13.0, Weight::Regular, (right - x).max(0.0));
+                if right - x > 30.0 {
+                    p.text(x, Painter::baseline(cy, 13.0), &d, 13.0, t.muted, Weight::Regular);
+                }
+            }
+            hits.push((row, Hit::PaletteRow(i)));
+            y += row_h;
+        }
+    }
+}
