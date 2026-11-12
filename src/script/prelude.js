@@ -1100,3 +1100,39 @@ methods(HTMLTableElement.prototype, {
   createTBody() { const b = document.createElement('tbody'); this.appendChild(b); return b; },
   createCaption() { let c = this.caption; if (!c) { c = document.createElement('caption'); this.prepend(c); } return c; },
 });
+methods(HTMLTableSectionElement.prototype, {
+  insertRow(i = -1) {
+    const r = document.createElement('tr');
+    const rows = this.rows;
+    if (i < 0 || i >= rows.length) this.appendChild(r); else rows[i].before(r);
+    return r;
+  },
+  deleteRow(i) { const r = this.rows[i < 0 ? this.rows.length + i : i]; if (r) r.remove(); },
+});
+methods(HTMLTableRowElement.prototype, {
+  insertCell(i = -1) {
+    const c = document.createElement('td');
+    const cells = this.cells;
+    if (i < 0 || i >= cells.length) this.appendChild(c); else cells[i].before(c);
+    return c;
+  },
+  deleteCell(i) { const c = this.cells[i < 0 ? this.cells.length + i : i]; if (c) c.remove(); },
+});
+
+// ---- canvas 2D: o estado do contexto fica aqui; o desenho, em Rust (script/canvas.rs)
+const CTX2D = new WeakMap();
+const TAU = Math.PI * 2;
+const IDENT = () => [1, 0, 0, 1, 0, 0];
+const mmul = (m, n) => [
+  m[0] * n[0] + m[2] * n[1], m[1] * n[0] + m[3] * n[1],
+  m[0] * n[2] + m[2] * n[3], m[1] * n[2] + m[3] * n[3],
+  m[0] * n[4] + m[2] * n[5] + m[4], m[1] * n[4] + m[3] * n[5] + m[5],
+];
+const minv = (m) => {
+  const det = m[0] * m[3] - m[1] * m[2];
+  if (!det) return null;
+  const i = 1 / det;
+  return [m[3] * i, -m[1] * i, -m[2] * i, m[0] * i, (m[2] * m[5] - m[3] * m[4]) * i, (m[1] * m[4] - m[0] * m[5]) * i];
+};
+const fin = (...a) => a.every(Number.isFinite);
+
