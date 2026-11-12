@@ -71,3 +71,51 @@ pub fn install(r: &Realm) {
     r.tag(&fr, "FinalizationRegistry");
 }
 
+fn noop(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Undefined)
+}
+
+fn noop_false(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Bool(false))
+}
+
+fn require_new(vm: &mut Vm, a: &CallArgs, name: &str) -> Result<ObjRef, Value> {
+    match &a.new_target {
+        Some(nt) => Ok(nt.clone()),
+        None => Err(vm.type_error(format!("Constructor {name} requires 'new'"))),
+    }
+}
+
+fn new_coll(vm: &mut Vm, nt: &ObjRef, default: &ObjRef, set: bool) -> Result<ObjRef, Value> {
+    let proto = vm.proto_from_ctor(Some(nt), default)?;
+    let kind = if set { Kind::Set(Collection::default()) } else { Kind::Map(Collection::default()) };
+    Ok(ObjRef::new(Object::new(Some(proto), kind)))
+}
+
+/// Preenche um Map a partir de um iterável de pares, chamando `adder`.
+fn fill_from(vm: &mut Vm, o: &ObjRef, iterable: &Value, adder_name: &str, pairs: bool) -> Result<(), Value> {
+    if iterable.is_nullish() {
+        return Ok(());
+    }
+    let ov = Value::Object(o.clone());
+    let adder = vm.get_str(&ov, adder_name)?;
+    if !adder.is_callable() {
+        return Err(vm.type_error(format!("'{adder_name}' is not a function")));
+    }
+    let items = vm.iterate_to_vec(iterable)?;
+    for item in items {
+        if pairs {
+            if !matches!(item, Value::Object(_)) {
+                let d = vm.describe(&item);
+                return Err(vm.type_error(format!("Iterator value {d} is not an entry object")));
+            }
+            let k = vm.get_index(&item, &Value::Number(0.0))?;
+            let v = vm.get_index(&item, &Value::Number(1.0))?;
+            vm.call(&adder, ov.clone(), vec![k, v])?;
+        } else {
+            vm.call(&adder, ov.clone(), vec![item])?;
+        }
+    }
+    Ok(())
+}
+
