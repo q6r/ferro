@@ -130,3 +130,72 @@ fn regexp_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     create(vm, src, flags, nt.as_ref())
 }
 
+fn escape(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::String(s) = a.arg(0) else {
+        return Err(vm.type_error("RegExp.escape requires a string"));
+    };
+    let mut out = String::new();
+    for (i, c) in s.to_rust().chars().enumerate() {
+        if i == 0 && c.is_ascii_alphanumeric() {
+            out.push_str(&format!("\\x{:02x}", c as u32));
+        } else if "^$\\.*+?()[]{}|/".contains(c) {
+            out.push('\\');
+            out.push(c);
+        } else if ",-=<>#&!%:;@~'`\"".contains(c) || c.is_whitespace() {
+            if (c as u32) < 0x100 {
+                out.push_str(&format!("\\x{:02x}", c as u32));
+            } else {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(Value::str(&out))
+}
+
+fn this_parts(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<(JsStr, JsStr, Rc<Program>), Value> {
+    regexp_parts(&a.this).ok_or_else(|| {
+        let d = vm.describe(&a.this);
+        vm.type_error(format!("RegExp.prototype.{what} requires that 'this' be a RegExp object (got {d})"))
+    })
+}
+
+/// O `source` escapado como o spec pede (`/` vira `\/`, quebras viram `\n`).
+fn escape_source(src: &JsStr) -> JsStr {
+    if src.is_empty() {
+        return JsStr::new("(?:)");
+    }
+    let mut out: Vec<u16> = Vec::with_capacity(src.len());
+    let mut in_class = false;
+    let mut escaped = false;
+    for &c in src.units() {
+        if escaped {
+            out.push(c);
+            escaped = false;
+            continue;
+        }
+        match c {
+            0x5C => {
+                escaped = true;
+                out.push(c);
+            }
+            0x5B => {
+                in_class = true;
+                out.push(c);
+            }
+            0x5D => {
+                in_class = false;
+                out.push(c);
+            }
+            0x2F if !in_class => out.extend_from_slice(&[0x5C, 0x2F]),
+            0x0A => out.extend("\\n".encode_utf16()),
+            0x0D => out.extend("\\r".encode_utf16()),
+            0x2028 => out.extend("\\u2028".encode_utf16()),
+            0x2029 => out.extend("\\u2029".encode_utf16()),
+            _ => out.push(c),
+        }
+    }
+    JsStr::from_units(out)
+}
+
