@@ -2529,3 +2529,54 @@ impl Compiler {
         Ok(())
     }
 
+    fn load_private(&mut self, name: &str) -> CResult<()> {
+        let key = format!("#{name}");
+        if !self.has_binding(&key) {
+            return syntax(format!("nome privado {key} não declarado numa classe"), 0);
+        }
+        self.load(&key);
+        Ok(())
+    }
+
+    fn this(&mut self) -> CResult<()> {
+        if !self.fr().is_arrow() {
+            self.emit(Op::This);
+            return Ok(());
+        }
+        if self.has_binding("this") {
+            self.load("this");
+        } else {
+            self.emit(Op::GlobalThis);
+        }
+        Ok(())
+    }
+
+    // -------------------------------------------------------- expressões
+
+    /// Expressão cujo valor é descartado (`i++;`, atualização do for).
+    fn expr_void(&mut self, e: &Expr) -> CResult<()> {
+        if let Expr::Update { inc, target, .. } = e
+            && let Expr::Ident(n, _) = &**target
+        {
+            self.load(n);
+            self.emit(if *inc { Op::Inc } else { Op::Dec });
+            self.store(n);
+            return Ok(());
+        }
+        self.expr(e)?;
+        self.emit(Op::Pop);
+        Ok(())
+    }
+
+    fn expr_named(&mut self, e: &Expr, name: Option<Name>) -> CResult<()> {
+        match e {
+            Expr::Function(f) if f.name.is_none() && name.is_some() => {
+                let idx = self.function(f, name, None, false)?;
+                self.emit(Op::Closure(idx));
+                Ok(())
+            }
+            Expr::Class(c) if c.name.is_none() && name.is_some() => self.class(c, name),
+            _ => self.expr(e),
+        }
+    }
+
