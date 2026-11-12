@@ -1423,3 +1423,42 @@ impl App {
         }
     }
 
+    /// Avisa o motor da rolagem atual (window.scrollY, getBoundingClientRect).
+    fn sync_scroll(&mut self) {
+        let i = self.active;
+        if self.tabs.is_empty() {
+            return;
+        }
+        let y = self.effective_scroll(i);
+        let tab = &mut self.tabs[i];
+        if (tab.sent_scroll - y).abs() > 0.5 && tab.frame.is_some() {
+            tab.sent_scroll = y;
+            tab.engine.scroll(tab.nav, y);
+        }
+    }
+
+    fn on_mouse_button(&mut self, state: ElementState, button: MouseButton, el: &ActiveEventLoop) {
+        match (state, button) {
+            (ElementState::Pressed, MouseButton::Left) => self.on_click(el),
+            (ElementState::Released, MouseButton::Left) => {
+                self.drag_scroll = None;
+                self.tools.selecting = false;
+            }
+            (ElementState::Pressed, MouseButton::Middle) => {
+                let (x, y) = self.mouse;
+                match self.hit_at(x, y) {
+                    Some(Hit::Tab(i) | Hit::CloseTab(i)) => self.close_tab(i, el),
+                    _ => {
+                        if let Some(href) = self.link_at(x, y) {
+                            self.open_link(&href, true);
+                        }
+                    }
+                }
+            }
+            (ElementState::Pressed, MouseButton::Right) => self.open_menu(),
+            (ElementState::Pressed, MouseButton::Back) => self.go(-1),
+            (ElementState::Pressed, MouseButton::Forward) => self.go(1),
+            _ => {}
+        }
+    }
+
