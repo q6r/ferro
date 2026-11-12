@@ -245,3 +245,53 @@ impl From<String> for JsStr {
     }
 }
 
+impl fmt::Display for JsStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.to_rust())
+    }
+}
+
+impl fmt::Debug for JsStr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.to_rust())
+    }
+}
+
+/// Espaço em branco e terminadores de linha do JavaScript.
+pub fn is_js_space(c: u16) -> bool {
+    matches!(
+        c,
+        0x09 | 0x0A | 0x0B | 0x0C | 0x0D | 0x20 | 0xA0 | 0x1680 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F
+            | 0x3000 | 0xFEFF
+    )
+}
+
+pub fn trim_js(u: &[u16]) -> &[u16] {
+    let start = u.iter().position(|&c| !is_js_space(c)).unwrap_or(u.len());
+    let end = u.iter().rposition(|&c| !is_js_space(c)).map_or(start, |e| e + 1);
+    &u[start..end]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cordas() {
+        let mut s = JsStr::new("");
+        for i in 0..100_000 {
+            s = s.concat(&JsStr::new(if i % 2 == 0 { "ab" } else { "c" }));
+        }
+        assert_eq!(s.len(), 150_000);
+        assert_eq!(&s.units()[..5], &[97, 98, 99, 97, 98]);
+        let t = JsStr::new(&"x".repeat(300)).concat(&JsStr::new("fim"));
+        assert!(t.to_rust().ends_with("xfim"));
+        assert_eq!(t, JsStr::new(&format!("{}fim", "x".repeat(300))));
+        // corda profunda sem nunca ser achatada: soltar não pode estourar a pilha
+        let mut deep = JsStr::new(&"y".repeat(300));
+        for _ in 0..200_000 {
+            deep = deep.concat(&JsStr::new("z"));
+        }
+        drop(deep);
+    }
+}
