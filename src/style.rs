@@ -2574,3 +2574,70 @@ fn substitute_vars(v: &str, vars: &CustomVars, depth: u32) -> Option<String> {
     Some(out)
 }
 
+/// Atributos de apresentação do HTML antigo (bgcolor, width, align...).
+fn presentational_hints(el: &crate::dom::ElementData, s: &mut ComputedStyle, u: &Units) {
+    if let Some(c) = el.attr("bgcolor").and_then(|c| parse_color(c, s.color)) {
+        s.background = c;
+    }
+    if el.tag == "font" {
+        if let Some(c) = el.attr("color").and_then(|c| parse_color(c, s.color)) {
+            s.color = c;
+        }
+        if let Some(size) = el.attr("size").and_then(|v| v.trim().parse::<i32>().ok()) {
+            let sizes = [10.0, 13.0, 16.0, 18.0, 24.0, 32.0, 48.0];
+            s.font_size = sizes[(size.clamp(1, 7) - 1) as usize];
+        }
+    }
+    if matches!(el.tag.as_str(), "img" | "table" | "td" | "th" | "iframe" | "video" | "canvas" | "hr") {
+        if let Some(w) = el.attr("width")
+            && s.width == Len::Auto
+        {
+            let w = w.trim();
+            s.width = if w.ends_with('%') { parse_len(w, u) } else { parse_len(&format!("{w}px"), u) }
+                .unwrap_or(Len::Auto);
+        }
+        if let Some(h) = el.attr("height")
+            && s.height == Len::Auto
+            && !h.trim().ends_with('%')
+        {
+            s.height = parse_len(&format!("{}px", h.trim()), u).unwrap_or(Len::Auto);
+        }
+    }
+    if let Some(align) = el.attr("align")
+        && matches!(el.tag.as_str(), "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "td" | "th")
+    {
+        match align.to_ascii_lowercase().as_str() {
+            "center" => s.text_align = TextAlign::Center,
+            "right" => s.text_align = TextAlign::Right,
+            _ => {}
+        }
+    }
+    if let Some(v) = el.attr("valign")
+        && matches!(el.tag.as_str(), "td" | "th" | "tr" | "tbody" | "thead" | "tfoot")
+    {
+        s.vertical_align = match v.to_ascii_lowercase().as_str() {
+            "top" => VAlign::Top,
+            "bottom" => VAlign::Bottom,
+            "middle" | "center" => VAlign::Middle,
+            _ => s.vertical_align,
+        };
+    }
+    if el.tag == "table"
+        && let Some(sp) = el.attr("cellspacing").and_then(|v| v.trim().parse::<f32>().ok())
+    {
+        s.border_spacing = sp.max(0.0);
+    }
+    if let Some(align) = el.attr("align")
+        && matches!(el.tag.as_str(), "img" | "table")
+    {
+        match align.to_ascii_lowercase().as_str() {
+            "left" => s.float = Float::Left,
+            "right" => s.float = Float::Right,
+            _ => {}
+        }
+    }
+    if el.attr("hidden").is_some() {
+        s.display = Display::None;
+    }
+}
+
