@@ -144,3 +144,53 @@ impl JsonParser<'_> {
         }
     }
 
+    fn word(&mut self, w: &str, v: Value) -> Result<Value, String> {
+        for (i, b) in w.bytes().enumerate() {
+            if self.s.get(self.pos + i) != Some(&(b as u16)) {
+                self.pos += i;
+                return Err(self.err());
+            }
+        }
+        self.pos += w.len();
+        Ok(v)
+    }
+
+    fn number(&mut self) -> Result<Value, String> {
+        let start = self.pos;
+        if self.s[self.pos] == 0x2D {
+            self.pos += 1;
+        }
+        let digits = |p: &mut Self| {
+            let s = p.pos;
+            while p.pos < p.s.len() && (0x30..=0x39).contains(&p.s[p.pos]) {
+                p.pos += 1;
+            }
+            p.pos - s
+        };
+        let int_start = self.pos;
+        if digits(self) == 0 {
+            return Err(self.err());
+        }
+        if self.s[int_start] == 0x30 && self.pos - int_start > 1 {
+            self.pos = int_start + 1;
+            return Err(self.err());
+        }
+        if self.s.get(self.pos) == Some(&0x2E) {
+            self.pos += 1;
+            if digits(self) == 0 {
+                return Err(self.err());
+            }
+        }
+        if matches!(self.s.get(self.pos), Some(0x65 | 0x45)) {
+            self.pos += 1;
+            if matches!(self.s.get(self.pos), Some(0x2B | 0x2D)) {
+                self.pos += 1;
+            }
+            if digits(self) == 0 {
+                return Err(self.err());
+            }
+        }
+        let text: String = self.s[start..self.pos].iter().map(|&c| c as u8 as char).collect();
+        Ok(Value::Number(text.parse().unwrap_or(f64::NAN)))
+    }
+
