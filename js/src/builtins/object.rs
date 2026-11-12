@@ -411,3 +411,38 @@ pub fn define_own_property(vm: &mut Vm, o: &ObjRef, key: PropKey, d: Descriptor)
     }
 }
 
+fn define_property(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(o) = a.arg(0) else {
+        return Err(vm.type_error("Object.defineProperty called on non-object"));
+    };
+    let key = vm.to_property_key(&a.arg(1))?;
+    let d = to_descriptor(vm, &a.arg(2))?;
+    let existed = o.borrow().own(&key).is_some();
+    if !define_own_property(vm, &o, key.clone(), d)? {
+        let k = crate::ops::key_display(&key);
+        if !existed && !o.borrow().extensible {
+            return Err(vm.type_error(format!("Cannot define property {k}, object is not extensible")));
+        }
+        return Err(vm.type_error(format!("Cannot redefine property: {k}")));
+    }
+    Ok(Value::Object(o))
+}
+
+fn define_props_from(vm: &mut Vm, o: &ObjRef, props: &Value) -> Result<(), Value> {
+    let p = vm.to_object(props)?;
+    let mut descs = Vec::new();
+    for k in vm.own_keys(&p)? {
+        if !vm.is_enumerable_own(&p, &k)? {
+            continue;
+        }
+        let dv = vm.get_obj(&p, &k)?;
+        descs.push((k, to_descriptor(vm, &dv)?));
+    }
+    for (k, d) in descs {
+        if !define_own_property(vm, o, k.clone(), d)? {
+            return Err(vm.type_error(format!("Cannot redefine property: {}", crate::ops::key_display(&k))));
+        }
+    }
+    Ok(())
+}
+
