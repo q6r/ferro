@@ -354,3 +354,54 @@ fn get_byte_length(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Number((len * kind.size()) as f64))
 }
 
+fn get_byte_offset(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::TypedArray(t) | Kind::DataView(t) = &o.borrow().kind
+    {
+        return Ok(Value::Number(t.offset as f64));
+    }
+    Err(vm.type_error("not a typed array or DataView"))
+}
+
+fn get_length(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (_, _, len) = this_ta(vm, a)?;
+    Ok(Value::Number(len as f64))
+}
+
+fn get_tag(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::TypedArray(t) = &o.borrow().kind
+    {
+        return Ok(Value::str(t.kind.name()));
+    }
+    Ok(Value::Undefined)
+}
+
+fn ta_from(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(c) = a.this.clone() else {
+        return Err(vm.type_error("TypedArray.from: this is not a constructor"));
+    };
+    let src = a.arg(0);
+    let map = a.arg(1);
+    let key = PropKey::Sym(vm.realm.sym_iterator.clone());
+    let it = vm.get(&src, &key)?;
+    let mut vals = if it.is_callable() {
+        vm.iterate_to_vec(&src)?
+    } else {
+        let o = vm.to_object(&src)?;
+        let len = vm.length_of(&o)?;
+        let mut v = Vec::new();
+        for i in 0..len {
+            v.push(vm.get_obj(&o, &crate::ops::index_key(i))?);
+        }
+        v
+    };
+    if map.is_callable() {
+        for (i, v) in vals.iter_mut().enumerate() {
+            *v = vm.call(&map, a.arg(2), vec![v.clone(), Value::Number(i as f64)])?;
+        }
+    }
+    let arr = vm.array_value(vals);
+    vm.construct(&c, vec![arr], &c)
+}
+
