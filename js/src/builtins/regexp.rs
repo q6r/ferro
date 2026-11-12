@@ -275,3 +275,80 @@ fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::str(&format!("/{s}/{f}")))
 }
 
+fn compile_legacy(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(o) = a.this.clone() else {
+        return Err(vm.type_error("RegExp.prototype.compile called on incompatible receiver"));
+    };
+    let (src, fl) = match regexp_parts(&a.arg(0)) {
+        Some((s, f, _)) => (s, f),
+        None => {
+            let s = if a.arg(0).is_undefined() { JsStr::empty() } else { vm.to_string(&a.arg(0))? };
+            let f = if a.arg(1).is_undefined() { JsStr::empty() } else { vm.to_string(&a.arg(1))? };
+            (s, f)
+        }
+    };
+    let prog = vm.compile_regex(&src, &fl)?;
+    o.borrow_mut().kind = Kind::RegExp { source: src, flags: fl, prog };
+    vm.put(&a.this, PropKey::str("lastIndex"), Value::Number(0.0), true)?;
+    Ok(a.this.clone())
+}
+
+// --------------------------------------------------------------- execução
+
+fn last_index(vm: &mut Vm, r: &Value) -> Result<usize, Value> {
+    // caminho rápido: propriedade própria numérica
+    if let Value::Object(o) = r
+        && let Some(Property {
+            slot: Slot::Data { value: Value::Number(n), .. },
+            ..
+        }) = o.borrow().props.get(&PropKey::str("lastIndex"))
+    {
+        return Ok(if *n <= 0.0 || n.is_nan() { 0 } else { n.min(9007199254740991.0) as usize });
+    }
+    let v = vm.get_str(r, "lastIndex")?;
+    let n = vm.to_integer(&v)?;
+    Ok(if n <= 0.0 { 0 } else { n.min(9007199254740991.0) as usize })
+}
+
+fn set_last_index(vm: &mut Vm, r: &Value, v: usize) -> Result<(), Value> {
+    vm.put(r, PropKey::str("lastIndex"), Value::Number(v as f64), true)
+}
+
+/// Uma ocorrência: texto, posição, capturas (texto ou undefined) e grupos nomeados.
+struct Hit {
+    caps: Vec<usize>,
+}
+
+/// RegExpBuiltinExec sem montar o objeto de resultado.
+fn builtin_match(vm: &mut Vm, r: &Value, prog: &Program, s: &JsStr) -> Result<Option<Hit>, Value> {
+    let (global, sticky) = (prog.flags.global, prog.flags.sticky);
+    let mut li = last_index(vm, r)?;
+    if !global && !sticky {
+        li = 0;
+    }
+    if li > s.len() {
+        if global || sticky {
+            set_last_index(vm, r, 0)?;
+        }
+        return Ok(None);
+    }
+    match prog.search(s.units(), li, sticky) {
+        None => {
+            if global || sticky {
+                set_last_index(vm, r, 0)?;
+            }
+            Ok(None)
+        }
+        Some(caps) => {
+            if global || sticky {
+                set_last_index(vm, r, caps[1])?;
+            }
+            Ok(Some(Hit { caps }))
+        }
+    }
+}
+
+fn slice_or_undef(s: &JsStr, a: usize, b: usize) -> Value {
+    if a == NONE || b == NONE { Value::Undefined } else { Value::String(s.slice(a, b)) }
+}
+
