@@ -2929,3 +2929,115 @@ impl<'a> Ctx<'a> {
         (mins, maxs)
     }
 
+    fn layout_table(&mut self, b: &'a LayoutBox, x: f32, y: f32, w: f32, inh: &Inherited) -> (f32, Option<f32>) {
+        let g = table_grid(self.doc, b);
+        if g.rows.is_empty() {
+            return if has_inflow_blocks(b) {
+                self.layout_block_children(b, x, y, w, inh)
+            } else {
+                self.layout_inline(b, x, y, w, inh)
+            };
+        }
+        let s = &b.style;
+        let sp = if s.border_collapse { 0.0 } else { s.border_spacing };
+        let n = g.ncols.max(1);
+        let (mins, maxs) = self.table_columns(&g, sp);
+        let avail = (w - sp * (n + 1) as f32).max(0.0);
+        let (smin, smax): (f32, f32) = (mins.iter().sum(), maxs.iter().sum());
+        let widths: Vec<f32> = if smax <= avail {
+            if smax > 0.0 {
+                maxs.iter().map(|m| m + (avail - smax) * m / smax).collect()
+            } else {
+                vec![avail / n as f32; n]
+            }
+        } else if smin < avail {
+            let k = (avail - smin) / (smax - smin).max(0.001);
+            (0..n).map(|i| mins[i] + (maxs[i] - mins[i]) * k).collect()
+        } else {
+            mins.clone()
+        };
+
+        let mut cy = y;
+        let mut first_baseline = None;
+        for cap in &g.captions {
+            let bm = self.box_model(&cap.style, w);
+            let r = self.layout_block(cap, &bm, x, cy + bm.margin[TOP], inh, Opts::bfc());
+            cy += bm.margin[TOP] + r.height + bm.margin[BOTTOM];
+        }
+        cy += sp;
+        for (tr, cells) in &g.rows {
+            // fundo da linha, atrás das células
+            let row_bg = tr
+                .filter(|t| t.style.visible && !t.style.background.is_transparent())
+                .map(|t| {
+                    self.items.push(DisplayItem::Rect {
+                        rect: Rect::default(),
+                        color: t.style.background,
+                    });
+                    (self.items.len() - 1, t.style.background)
+                });
+            let row_min = tr.and_then(|t| match t.style.height {
+                Len::Px(v) => Some(v),
+                _ => None,
+            });
+            let mut cx = x + sp;
+            let mut col = 0;
+            let mut placed: Vec<(Mark, BlockResult, VAlign)> = Vec::new();
+            for &(cell, span) in cells {
+                if col >= n {
+                    break;
+                }
+                let span = span.min(n - col);
+                let cw = widths[col..col + span].iter().sum::<f32>() + sp * (span - 1) as f32;
+                col += span;
+                let cs = &cell.style;
+                let border = [cs.border(TOP), cs.border(RIGHT), cs.border(BOTTOM), cs.border(LEFT)];
+                let padding = cs.padding.map(|p| p.resolve_or_zero(w).max(0.0));
+                let extra = padding[LEFT] + padding[RIGHT] + border[LEFT] + border[RIGHT];
+                let bm = BoxModel {
+                    margin: [0.0; 4],
+                    border,
+                    padding,
+                    content_w: (cw - extra).max(0.0),
+                };
+                let m = self.mark();
+                let r = self.layout_block(cell, &bm, cx, cy, inh, Opts::bfc());
+                placed.push((m, r, cs.vertical_align));
+                cx += cw + sp;
+            }
+            let row_h = placed.iter().map(|p| p.1.height).fold(row_min.unwrap_or(0.0), f32::max);
+            for k in 0..placed.len() {
+                let (h, va) = (placed[k].1.height, placed[k].2);
+                let dy = match va {
+                    VAlign::Middle => (row_h - h) / 2.0,
+                    VAlign::Bottom => row_h - h,
+                    _ => 0.0,
+                };
+                if dy > 0.0 {
+                    let (before, after) = placed.split_at(k + 1);
+                    let next = after.first().map(|p| &p.0);
+                    self.shift_between(&before[k].0, next, 0.0, dy);
+                }
+                self.stretch_to(placed[k].1.deco, Some(cy), row_h);
+                if first_baseline.is_none() {
+                    first_baseline = placed[k].1.first_baseline.map(|b| b + dy.max(0.0));
+                }
+            }
+            if let Some((i, color)) = row_bg {
+                self.items[i] = DisplayItem::Rect {
+                    rect: Rect {
+                        x: x + sp,
+                        y: cy,
+                        w: (w - 2.0 * sp).max(0.0),
+                        h: row_h,
+                    },
+                    color,
+                };
+            }
+            cy += row_h + sp;
+        }
+        (cy - y, first_baseline)
+    }
+
+    // ------------------------------------------------------------- em linha
+
