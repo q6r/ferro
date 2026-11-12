@@ -56,3 +56,113 @@ pub fn brand_icon(p: &mut Painter, r: Rect, s: &Shortcut) {
     p.text(r.x + (r.w - w) / 2.0, Painter::baseline(r.y + r.h / 2.0, size), s.glyph, size, fg, Weight::Bold);
 }
 
+/// Nova aba: relógio, data, busca e atalhos (kit `uikits/...-0.png`).
+#[allow(clippy::too_many_arguments)]
+pub fn new_tab(
+    p: &mut Painter,
+    t: &Theme,
+    area: Rect,
+    hits: &mut Hits,
+    hover: Option<Hit>,
+    now: &jiff::Zoned,
+    search_focused: bool,
+) {
+    p.rect(area, t.ntp_bg);
+    // grade de pontos
+    let step = 22.0;
+    let mut y = area.y + step / 2.0;
+    while y < area.y + area.h {
+        let mut x = area.x + step / 2.0;
+        while x < area.x + area.w {
+            p.rect(rect(x, y, 1.6, 1.6), t.ntp_dot);
+            x += step;
+        }
+        y += step;
+    }
+
+    let cx = area.x + area.w / 2.0;
+    let compact = area.h < 640.0;
+    let clock_size = if compact { 76.0 } else { 104.0 };
+    let clock = format!("{:02}:{:02}", now.hour(), now.minute());
+    let clock_w = p.measure(&clock, clock_size, Weight::Semibold);
+    let clock_base = area.y + if compact { 110.0 } else { (area.h * 0.24).max(150.0) };
+    p.text(cx - clock_w / 2.0, clock_base, &clock, clock_size, t.text, Weight::Semibold);
+
+    let wd = now.weekday().to_monday_zero_offset() as usize;
+    let date = format!("{}, {} de {}", WEEKDAYS[wd], now.day(), MONTHS[(now.month() - 1) as usize]);
+    let date_w = p.measure(&date, 22.0, Weight::Regular);
+    let date_base = clock_base + 42.0;
+    p.text(cx - date_w / 2.0, date_base, &date, 22.0, t.muted, Weight::Regular);
+
+    // caixa de busca (abre a paleta)
+    let bw = (area.w - 64.0).min(680.0);
+    let sb = rect(cx - bw / 2.0, date_base + 34.0, bw, 56.0);
+    let hov = hover == Some(Hit::FakeBox);
+    p.rrect(sb, 28.0, if hov { t.card_hover } else { t.card });
+    p.stroke(sb, 28.0, 1.0, if search_focused { t.accent } else { t.border });
+    p.icon(sb.x + 30.0, sb.y + 28.0, Icon::Search, 22.0, t.muted);
+    p.text(
+        sb.x + 56.0,
+        Painter::baseline(sb.y + 28.0, 16.0),
+        "Pesquise na web ou digite um endereço",
+        16.0,
+        t.muted,
+        Weight::Regular,
+    );
+    hits.push((sb, Hit::FakeBox));
+
+    // atalhos em duas fileiras, alternando cartões largos e compactos
+    let (wide_w, tile, gap): (f32, f32, f32) = (190.0, 60.0, 14.0);
+    let slot = |p: &Painter, s: &Shortcut| {
+        if s.wide { wide_w } else { tile.max(p.measure(s.name, 14.0, Weight::Semibold) + 6.0) }
+    };
+    let mut y = sb.y + sb.h + 30.0;
+    for row in SHORTCUTS.chunks(4) {
+        let total: f32 = row.iter().map(|s| slot(p, s)).sum::<f32>() + gap * 3.0;
+        let mut x = cx - total / 2.0;
+        for s in row {
+            let idx = SHORTCUTS.iter().position(|o| o.name == s.name).unwrap();
+            let hov = hover == Some(Hit::Shortcut(idx));
+            if s.wide {
+                let r = rect(x, y, wide_w, 80.0);
+                let c = rgb(s.color);
+                let light = c.r as u32 + c.g as u32 + c.b as u32 > 600;
+                let amount = match (light, hov) {
+                    (true, false) => 0.07,
+                    (true, true) => 0.13,
+                    (false, false) => 0.16,
+                    (false, true) => 0.28,
+                };
+                p.rrect(r, 16.0, mix(t.card, c, amount));
+                brand_icon(p, rect(r.x + 16.0, r.y + 20.0, 40.0, 40.0), s);
+                p.text(r.x + 68.0, Painter::baseline(r.y + 40.0, 16.0), s.name, 16.0, t.text, Weight::Semibold);
+                p.icon(r.x + r.w - 17.0, r.y + 17.0, Icon::ArrowUpRight, 15.0, t.muted);
+                hits.push((r, Hit::Shortcut(idx)));
+                x += wide_w + gap;
+            } else {
+                let sw = slot(p, s);
+                let r = rect(x + (sw - tile) / 2.0, y, tile, tile);
+                p.rrect(r, 16.0, if hov { t.card_hover } else { t.card });
+                brand_icon(p, rect(r.x + 14.0, r.y + 14.0, 32.0, 32.0), s);
+                let lw = p.measure(s.name, 14.0, Weight::Semibold);
+                p.text(x + (sw - lw) / 2.0, r.y + tile + 19.0, s.name, 14.0, t.text, Weight::Semibold);
+                hits.push((rect(x, y, sw, tile + 24.0), Hit::Shortcut(idx)));
+                x += sw + gap;
+            }
+        }
+        y += 80.0 + 18.0;
+    }
+
+    // "Personalizar" leva às configurações
+    let label = "Personalizar";
+    let lw = p.measure(label, 13.0, Weight::Regular);
+    let pw = lw + 52.0;
+    let py = (area.y + area.h - 58.0).max(y + 12.0);
+    let pr = rect(cx - pw / 2.0, py, pw, 34.0);
+    let hov = hover == Some(Hit::Customize);
+    p.rrect(pr, 17.0, if hov { t.card_hover } else { t.card });
+    p.icon(pr.x + 20.0, pr.y + 17.0, Icon::Swatch, 16.0, t.muted);
+    p.text(pr.x + 36.0, Painter::baseline(pr.y + 17.0, 13.0), label, 13.0, t.muted, Weight::Regular);
+    hits.push((pr, Hit::Customize));
+}
+
