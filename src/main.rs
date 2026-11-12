@@ -286,3 +286,67 @@ fn render_png(a: &Args) -> Result<(), String> {
         .map_err(|_| "a renderização falhou".to_string())?
 }
 
+/// Carrega a página numa sessão e roda o laço de eventos até ela sossegar.
+fn open_session(
+    a: &Args,
+    net: &Net,
+    fonts: &std::rc::Rc<Fonts>,
+    go: &ferro::script::Nav,
+) -> Result<ferro::script::Session, String> {
+    let t = Instant::now();
+    let url = &go.url;
+    log(format!("carregando {url}{}", if go.post.is_some() { " (POST)" } else { "" }));
+    let loaded = engine::load_with(net, url, go.post.as_ref())?;
+    log(format!(
+        "  HTTP {} · {} nós · {} folhas de estilo · {:.0} ms",
+        loaded.status,
+        loaded.doc.nodes.len(),
+        loaded.css.len(),
+        ms(t)
+    ));
+    let mut session = ferro::script::Session::new(loaded, net.clone(), fonts.clone(), a.width, a.height);
+    if !a.images {
+        session.disable_resources();
+    }
+    // primeiro desenho: pede imagens, fundos e fontes
+    let _ = session.render();
+    if a.js {
+        let t = Instant::now();
+        session.run_scripts(&|| false);
+        log(format!("scripts: {:.0} ms", ms(t)));
+    }
+    let t = Instant::now();
+    settle(&mut session, a, std::time::Duration::from_secs_f32(a.wait_ms / 1000.0), true);
+    log(format!("laço de eventos: {:.0} ms", ms(t)));
+    Ok(session)
+}
+
+/// Laço de eventos até a página sossegar (ou o tempo acabar).
+fn settle(session: &mut ferro::script::Session, a: &Args, budget: std::time::Duration, first: bool) {
+    let t = Instant::now();
+    let mut loaded_fired = !first;
+    let mut quiet_since: Option<Instant> = None;
+    while t.elapsed() < budget {
+        session.tick();
+        if session.wants_frame() {
+            let _ = session.render();
+        }
+        if session.idle() {
+            if !loaded_fired && a.js {
+                session.finish_load();
+                loaded_fired = true;
+                continue;
+            }
+            // dá um tempo para timers curtos (setTimeout 0, animações de entrada)
+            let q = *quiet_since.get_or_insert_with(Instant::now);
+            if q.elapsed().as_millis() > 300 || !a.js {
+                break;
+            }
+        } else {
+            quiet_since = None;
+        }
+        let nap = session.wakeup().unwrap_or(std::time::Duration::from_millis(20));
+        std::thread::sleep(nap.min(std::time::Duration::from_millis(20)));
+    }
+}
+
