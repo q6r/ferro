@@ -1755,3 +1755,79 @@ fn base_char(c: char) -> char {
 
 /// Comparação "humana": letras primeiro sem acento/caixa, depois acento, depois caixa.
 pub fn collate(a: &str, b: &str, numeric: bool, sensitivity: &str) -> Ordering {
+    fn tokens(s: &str, numeric: bool) -> Vec<(Option<f64>, String)> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut digits = String::new();
+        for c in s.chars() {
+            if numeric && c.is_ascii_digit() {
+                if !cur.is_empty() {
+                    out.push((None, std::mem::take(&mut cur)));
+                }
+                digits.push(c);
+            } else {
+                if !digits.is_empty() {
+                    out.push((digits.parse().ok(), std::mem::take(&mut digits)));
+                }
+                cur.push(c);
+            }
+        }
+        if !cur.is_empty() {
+            out.push((None, cur));
+        }
+        if !digits.is_empty() {
+            out.push((digits.parse().ok(), digits));
+        }
+        out
+    }
+    let key = |s: &str, level: u8| -> String {
+        s.chars()
+            .filter(|c| !matches!(c, '\u{300}'..='\u{36f}'))
+            .map(|c| match level {
+                0 => base_char(c).to_lowercase().next().unwrap_or(c),
+                1 => c.to_lowercase().next().unwrap_or(c),
+                _ => c,
+            })
+            .collect()
+    };
+    let (ta, tb) = (tokens(a, numeric), tokens(b, numeric));
+    // nível primário (com números comparados pelo valor)
+    for (x, y) in ta.iter().zip(tb.iter()) {
+        let o = match (x.0, y.0) {
+            (Some(p), Some(q)) => p.partial_cmp(&q).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            _ => {
+                let (kx, ky) = (key(&x.1, 0), key(&y.1, 0));
+                let ox = kx.chars().map(|c| (!c.is_alphanumeric(), c));
+                let oy = ky.chars().map(|c| (!c.is_alphanumeric(), c));
+                ox.cmp(oy)
+            }
+        };
+        if o != Ordering::Equal {
+            return o;
+        }
+    }
+    let o = ta.len().cmp(&tb.len());
+    if o != Ordering::Equal || sensitivity == "base" {
+        return o;
+    }
+    // acentos
+    let o = key(a, 1).cmp(&key(b, 1));
+    if o != Ordering::Equal || sensitivity == "accent" {
+        return o;
+    }
+    // caixa: minúscula antes
+    for (x, y) in a.chars().zip(b.chars()) {
+        if x != y {
+            if x.is_lowercase() && y.is_uppercase() {
+                return Ordering::Less;
+            }
+            if x.is_uppercase() && y.is_lowercase() {
+                return Ordering::Greater;
+            }
+        }
+    }
+    a.cmp(b)
+}
+
