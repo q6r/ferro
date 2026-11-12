@@ -89,3 +89,38 @@ pub enum Section {
     About,
 }
 
+/// Alvos clicáveis da interface (recalculados a cada quadro).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Hit {
+    Tab(usize),
+    CloseTab(usize),
+    NewTab,
+    Back,
+    Forward,
+    Reload,
+    Settings,
+    Home,
+    Search,
+    TogglePanel,
+    Capsule,
+    PaletteInput,
+    PaletteRow(usize),
+    Scrim,
+    Shortcut(usize),
+    FakeBox,
+    Customize,
+    SettingsBack,
+    Section(Section),
+    Theme(usize),
+    Layout(LayoutMode),
+    Retry,
+    ScrollThumb,
+    ScrollTrack,
+    FindBar,
+    FindClose,
+    SelectOption(usize),
+    SelectList,
+    MenuItem(usize),
+    Menu,
+}
+
