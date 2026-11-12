@@ -624,3 +624,65 @@ impl Bitmap {
         Some((bx, by, (ex - bx) as usize, (ey - by) as usize))
     }
 
+    /// Compõe um pixel: `src` não pré-multiplicada, `cov` = cobertura 0..1.
+    fn blend(&mut self, x: usize, y: usize, src: Rgba, cov: f32, op: Op) {
+        let i = (y * self.w + x) * 4;
+        let mut cov = cov;
+        if let Some(c) = &self.clip {
+            cov *= c[y * self.w + x] as f32 / 255.0;
+        }
+        if cov <= 0.0 && !matches!(op, Op::Copy | Op::SourceIn | Op::DestinationIn | Op::SourceOut | Op::DestinationAtop) {
+            return;
+        }
+        let sa = (src[3] * cov).clamp(0.0, 1.0);
+        let s = [src[0] * sa, src[1] * sa, src[2] * sa, sa];
+        let p = &mut self.px[i..i + 4];
+        let d = [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0];
+        let da = d[3];
+        let mut out = [0.0f32; 4];
+        let pd = |fs: f32, fd: f32, out: &mut [f32; 4]| {
+            for k in 0..4 {
+                out[k] = s[k] * fs + d[k] * fd;
+            }
+        };
+        match op {
+            Op::SourceOver => pd(1.0, 1.0 - sa, &mut out),
+            Op::DestinationOver => pd(1.0 - da, 1.0, &mut out),
+            Op::DestinationOut => pd(0.0, 1.0 - sa, &mut out),
+            Op::DestinationIn => pd(0.0, sa, &mut out),
+            Op::SourceIn => pd(da, 0.0, &mut out),
+            Op::SourceOut => pd(1.0 - da, 0.0, &mut out),
+            Op::SourceAtop => pd(da, 1.0 - sa, &mut out),
+            Op::DestinationAtop => pd(1.0 - da, sa, &mut out),
+            Op::Copy => pd(1.0, 0.0, &mut out),
+            Op::Lighter => {
+                for k in 0..4 {
+                    out[k] = (s[k] + d[k]).min(1.0);
+                }
+            }
+            Op::Xor => pd(1.0 - da, 1.0 - sa, &mut out),
+            Op::Multiply | Op::Screen | Op::Darken | Op::Lighten | Op::Overlay | Op::Difference => {
+                // modo de mistura separável: Cs(1-ab) + Cb(1-as) + as·ab·B(cb, cs)
+                for k in 0..3 {
+                    let cs = src[k];
+                    let cb = if da > 0.0 { d[k] / da } else { 0.0 };
+                    let b = match op {
+                        Op::Multiply => cs * cb,
+                        Op::Screen => cs + cb - cs * cb,
+                        Op::Darken => cs.min(cb),
+                        Op::Lighten => cs.max(cb),
+                        Op::Overlay => {
+                            if cb <= 0.5 { 2.0 * cs * cb } else { 1.0 - 2.0 * (1.0 - cs) * (1.0 - cb) }
+                        }
+                        _ => (cs - cb).abs(),
+                    };
+                    out[k] = s[k] * (1.0 - da) + d[k] * (1.0 - sa) + sa * da * b;
+                }
+                out[3] = sa + da - sa * da;
+            }
+        }
+        for k in 0..4 {
+            p[k] = (out[k].clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+    }
+
