@@ -1,6 +1,38 @@
 # Ferro
 
-Navegador com motor próprio, escrito do zero e 100% em Rust (sem nenhuma dependência em C/C++, inclusive a criptografia do HTTPS). Meta de longo prazo: abrir YouTube e Gmail.
+Navegador com motor próprio, escrito do zero e 100% em Rust — sem nenhuma dependência em C/C++, inclusive a
+criptografia do HTTPS e os decodificadores de vídeo. HTML, CSS, layout, pintura, o motor JavaScript, a interface:
+tudo feito aqui. Meta: abrir YouTube e Gmail.
+
+![Busca no YouTube aberta no Ferro (tema Carvão)](docs/previews/youtube.png)
+
+## Prévias
+
+| | |
+|:---:|:---:|
+| ![Wikipédia](docs/previews/wikipedia.png) | ![Buscar na página](docs/previews/busca-na-pagina.png) |
+| Wikipédia: grid, float, tabelas, fontes web (tema Claro) | Ctrl+F com as ocorrências destacadas (tema Moca) |
+| ![Nova aba](docs/previews/nova-aba.png) | ![Paleta de busca](docs/previews/paleta.png) |
+| Nova aba com relógio e atalhos (tema Crepúsculo) | Paleta de busca de vidro fosco (tema Névoa) |
+| ![Hacker News](docs/previews/hacker-news.png) | ![Login do Google](docs/previews/gmail.png) |
+| Layout "Cápsulas": abas no topo | Login do Gmail rodando o JavaScript do Google |
+| ![Canvas 2D](docs/previews/canvas.png) | ![Transformações](docs/previews/transform.png) |
+| Canvas 2D com rasterizador próprio | `transform`, `box-shadow`, `text-shadow` |
+| ![Escritas e emoji](docs/previews/escritas.png) | ![Vídeo](exemplos/video.png) |
+| Chinês, japonês, coreano, devanágari e emoji colorido | `<video>` com MP4 (H.264/AV1 + AAC) decodificado em Rust |
+
+## O que já funciona
+
+- **Páginas de verdade**: YouTube (busca, miniaturas, navegação interna e vídeo tocando com som), login do Google,
+  Wikipédia, Hacker News, g1, sites com módulos ES (vite.dev), players embutidos em `<iframe>`.
+- **Motor JavaScript próprio** (Ferro JS): ES2023 quase completo, módulos ES, Promise/async, RegExp, BigInt, Proxy,
+  typed arrays, Intl, coletor de ciclos — saída idêntica à do Node 24 no teste diferencial.
+- **CSS moderno**: flexbox, grid, float, tabelas, `position` (inclusive `fixed` de verdade), transformações, sombras,
+  `:hover`/`:focus`, variáveis, `@font-face`, `::before`/`::after`, rolagem dentro de elementos.
+- **Plataforma web**: DOM, eventos de mouse e teclado, `fetch`/XHR, cookies, localStorage, Custom Elements,
+  Shadow DOM, Canvas 2D, MSE, tela cheia, `postMessage` entre quadros.
+- **Navegador**: abas, histórico, busca na página, seleção e cópia de texto, menu de contexto, downloads,
+  `<select>` com lista, tela cheia, temas, zoom, cache HTTP e perfil (login continua depois de fechar).
 
 ## Uso
 
@@ -45,7 +77,9 @@ Captura da interface sem janela: `--captura x.png --tema <carvao|moca|crepusculo
 | Cookies | `src/cookies.rs` | próprio, compartilhado entre as abas |
 | Perfil em disco (cookies, localStorage) | `src/dados.rs` | próprio |
 | Canvas 2D (rasterizador) | `src/canvas.rs` | próprio |
-| Busca na página, seleção, avisos | `src/ui/pagetools.rs` | próprio |
+| Busca na página, seleção, menu de contexto, lista do `<select>` | `src/ui/pagetools.rs` | próprio |
+| `<iframe>` (cada quadro numa sessão própria) | `src/script/frames.rs` | próprio |
+| Cache HTTP (memória + disco) | `src/httpcache.rs` | próprio |
 
 ## Ferro JS
 
@@ -130,6 +164,8 @@ Já funcionam: YouTube (página inicial, busca com miniaturas, navegação inter
   do site (YouTube) baixa os segmentos e o Ferro os lê (`mp4.rs`: MP4 fragmentado, incremental).
 - Decodificadores em Rust puro, sem assembly nem C (`decode.rs`): H.264 Baseline/Main (`rusty_h264`), AV1 8 bits
   (`rav1d`) e AAC (`symphonia`). Formatos aceitos: `video/mp4` com `avc1.42*`/`avc1.4d*`/`av01.0.*` e `audio/mp4` AAC.
+- Arquivos MP4 comuns (`<video src="x.mp4">` ou `<source>`): o arquivo é baixado inteiro e lido pelas tabelas do
+  `stbl`; `<video controls>` toca/pausa com um clique e, parado, mostra o botão de play. Exemplo: `exemplos/video.html`.
 - Reprodução (`player.rs`): threads de decodificação alimentadas ~3 s à frente do relógio; uma thread apresentadora
   escolhe o quadro do momento e manda direto para a interface (sem passar pelo laço do JS); áudio pelo `cpal`, com
   reamostragem linear para a taxa da placa de som.
