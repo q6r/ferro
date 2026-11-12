@@ -260,3 +260,45 @@ impl Vm {
         Ok(p)
     }
 
+    /// Roda a fila de microtarefas até esvaziar.
+    pub fn run_microtasks(&mut self) {
+        let mut guard = 0u64;
+        while let Some(job) = self.microtasks.pop_front() {
+            guard += 1;
+            if guard > 50_000_000 {
+                break;
+            }
+            match job {
+                Job::Reaction(r, arg) => {
+                    let res = if r.handler.is_undefined() {
+                        if r.is_reject { Err(arg) } else { Ok(arg) }
+                    } else {
+                        self.call(&r.handler, Value::Undefined, vec![arg])
+                    };
+                    match (r.cap, res) {
+                        (Some(cap), Ok(v)) => {
+                            let _ = self.call(&cap.resolve, Value::Undefined, vec![v]);
+                        }
+                        (Some(cap), Err(e)) => {
+                            let _ = self.call(&cap.reject, Value::Undefined, vec![e]);
+                        }
+                        (None, Err(e)) => self.report_uncaught(&e),
+                        (None, Ok(_)) => {}
+                    }
+                }
+                Job::Thenable(p, thenable, then) => {
+                    let (res, rej) = self.resolving_functions(&p);
+                    if let Err(e) = self.call(&then, thenable, vec![Value::Object(res), Value::Object(rej.clone())]) {
+                        let _ = self.call_obj(&rej, Value::Undefined, vec![e]);
+                    }
+                }
+                Job::Call(f, args) => {
+                    if let Err(e) = self.call(&f, Value::Undefined, args) {
+                        self.report_uncaught(&e);
+                    }
+                }
+            }
+        }
+        self.report_unhandled();
+    }
+
