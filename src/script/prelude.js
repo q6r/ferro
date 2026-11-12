@@ -1930,3 +1930,40 @@ accessor(MEDIA, 'videoTracks', function () { return Object.assign([], { addEvent
 accessor(MEDIA, 'mediaKeys', () => null);
 accessor(MEDIA, 'sinkId', () => '');
 accessor(MEDIA, 'remote', () => ({ state: 'disconnected', watchAvailability() { return Promise.reject(new DOMException('', 'NotSupportedError')); }, addEventListener() {} }));
+methods(MEDIA, {
+  play() {
+    const s = mediaOf(this);
+    if (s.error) return Promise.reject(new DOMException('The element has no supported sources.', 'NotSupportedError'));
+    fireMedia(this, N.mediaPlay(this));
+    return Promise.resolve();
+  },
+  pause() { fireMedia(this, N.mediaPause(this)); },
+  load() { loadMedia(this, this.getAttribute('src')); },
+  canPlayType(t) { return N.mediaSupports(String(t)) ? 'probably' : ''; },
+  addTextTrack() { return { mode: 'disabled', cues: [], addCue() {}, removeCue() {}, addEventListener() {} }; },
+  setMediaKeys() { return Promise.reject(new DOMException('', 'NotSupportedError')); },
+  setSinkId() { return Promise.resolve(); },
+  captureStream() { return null; },
+});
+const VIDEO = HTMLVideoElement.prototype;
+accessor(VIDEO, 'videoWidth', function () { return stateOf(this)[5]; });
+accessor(VIDEO, 'videoHeight', function () { return stateOf(this)[6]; });
+methods(VIDEO, {
+  getVideoPlaybackQuality() {
+    return { creationTime: N.now(), totalVideoFrames: stateOf(this)[8] || 0, droppedVideoFrames: 0, corruptedVideoFrames: 0, totalFrameDelay: 0 };
+  },
+  requestVideoFrameCallback(cb) {
+    return requestAnimationFrame((t) => cb(t, { mediaTime: this.currentTime, presentedFrames: 0, width: this.videoWidth, height: this.videoHeight }));
+  },
+  cancelVideoFrameCallback(id) { cancelAnimationFrame(id); },
+  requestPictureInPicture() { return Promise.reject(new DOMException('', 'NotSupportedError')); },
+});
+accessor(VIDEO, 'disablePictureInPicture', () => true, () => {});
+hidden(G, 'Audio', named(function Audio(src) {
+  const a = document.createElement('audio');
+  if (src !== undefined) a.src = src;
+  return a;
+}, 'Audio'));
+
+// ------------------------------------------------- mais do Element/Node
+const EP = Element.prototype;
