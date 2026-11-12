@@ -1875,3 +1875,89 @@ fn is_extend(c: char) -> bool {
     matches!(c as u32, 0x300..=0x36F | 0x200D | 0xFE00..=0xFE0F | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F | 0x20D0..=0x20FF)
 }
 
+fn segment(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let gran = with_intl(vm, &a.this, |x| match x {
+        IntlObj::Segmenter { granularity, .. } => Some(granularity.clone()),
+        _ => None,
+    })?;
+    let s = vm.to_string(&a.arg(0))?;
+    let text = s.to_rust();
+    let mut segs: Vec<(String, usize, Option<bool>)> = Vec::new();
+    let mut idx16 = 0usize;
+    match gran.as_str() {
+        "word" => {
+            let mut cur = String::new();
+            let mut cur_word = false;
+            let mut start = 0usize;
+            for c in text.chars() {
+                let w = c.is_alphanumeric() || c == '_' || c == '\'' || is_extend(c);
+                if !cur.is_empty() && (w != cur_word || !w) {
+                    segs.push((std::mem::take(&mut cur), start, Some(cur_word)));
+                }
+                if cur.is_empty() {
+                    start = idx16;
+                    cur_word = w;
+                }
+                cur.push(c);
+                idx16 += c.len_utf16();
+            }
+            if !cur.is_empty() {
+                segs.push((cur, start, Some(cur_word)));
+            }
+        }
+        "sentence" => {
+            let mut cur = String::new();
+            let mut start = 0usize;
+            let mut ended = false;
+            for c in text.chars() {
+                if ended && !c.is_whitespace() {
+                    segs.push((std::mem::take(&mut cur), start, None));
+                    start = idx16;
+                    ended = false;
+                }
+                cur.push(c);
+                idx16 += c.len_utf16();
+                if matches!(c, '.' | '!' | '?' | '。') {
+                    ended = true;
+                }
+            }
+            if !cur.is_empty() {
+                segs.push((cur, start, None));
+            }
+        }
+        _ => {
+            let mut cur = String::new();
+            let mut start = 0usize;
+            let mut join = false;
+            for c in text.chars() {
+                if !cur.is_empty() && !is_extend(c) && !join {
+                    segs.push((std::mem::take(&mut cur), start, None));
+                    start = idx16;
+                }
+                join = c == '\u{200D}';
+                cur.push(c);
+                idx16 += c.len_utf16();
+            }
+            if !cur.is_empty() {
+                segs.push((cur, start, None));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for (seg, index, word) in segs {
+        let o = vm.new_object();
+        vm.define_data(&o, PropKey::str("segment"), Value::str(&seg));
+        vm.define_data(&o, PropKey::str("index"), Value::Number(index as f64));
+        vm.define_data(&o, PropKey::str("input"), Value::String(s.clone()));
+        if let Some(w) = word {
+            vm.define_data(&o, PropKey::str("isWordLike"), Value::Bool(w));
+        }
+        out.push(Value::Object(o));
+    }
+    let arr = vm.new_array(out);
+    let containing = vm.realm.native("containing", 1, segments_containing);
+    set_native_data(&containing, Value::Object(arr.clone()));
+    arr.borrow_mut().props.insert(PropKey::str("containing"), Property::hidden(Value::Object(containing)));
+    Ok(Value::Object(arr))
+}
+
