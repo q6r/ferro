@@ -1401,3 +1401,97 @@ impl Parser {
         })
     }
 
+    fn parse_primary(&mut self) -> PResult<Expr> {
+        let line = self.line();
+        match self.tok.tok.clone() {
+            Tok::Num(n) => {
+                self.advance()?;
+                Ok(Expr::Num(n))
+            }
+            Tok::BigInt(b) => {
+                self.advance()?;
+                Ok(Expr::BigInt(b))
+            }
+            Tok::Str(s) => {
+                self.advance()?;
+                Ok(Expr::Str(s))
+            }
+            Tok::Template { .. } => {
+                let (cooked, _, exprs) = self.parse_template_parts()?;
+                let mut parts = Vec::new();
+                for c in cooked {
+                    match c {
+                        Some(c) => parts.push(c),
+                        None => return self.err("escape inválido em template"),
+                    }
+                }
+                Ok(Expr::Template(parts, exprs))
+            }
+            Tok::Regex { pattern, flags } => {
+                self.advance()?;
+                Ok(Expr::Regex(pattern, flags))
+            }
+            Tok::Punct("(") => {
+                self.advance()?;
+                let e = self.parse_expression(false)?;
+                self.expect(")")?;
+                Ok(e)
+            }
+            Tok::Punct("[") => {
+                self.advance()?;
+                let mut elems = Vec::new();
+                while !self.eat("]")? {
+                    if self.is(",") {
+                        self.advance()?;
+                        elems.push(ArrayElem::Hole);
+                        continue;
+                    }
+                    if self.eat("...")? {
+                        elems.push(ArrayElem::Spread(self.parse_assign(false)?));
+                    } else {
+                        elems.push(ArrayElem::Expr(self.parse_assign(false)?));
+                    }
+                    if !self.is("]") {
+                        self.expect(",")?;
+                    }
+                }
+                Ok(Expr::Array(elems))
+            }
+            Tok::Punct("{") => self.parse_object(),
+            Tok::Ident(n) if !self.tok.escaped => match &*n {
+                "this" => {
+                    self.advance()?;
+                    Ok(Expr::This)
+                }
+                "null" => {
+                    self.advance()?;
+                    Ok(Expr::Null)
+                }
+                "true" => {
+                    self.advance()?;
+                    Ok(Expr::Bool(true))
+                }
+                "false" => {
+                    self.advance()?;
+                    Ok(Expr::Bool(false))
+                }
+                "function" => Ok(Expr::Function(self.parse_function(false, true)?)),
+                "async" if matches!(self.peek()?.tok, Tok::Ident(ref k) if &**k == "function") && !self.peek()?.nl_before => {
+                    self.advance()?;
+                    Ok(Expr::Function(self.parse_function(true, true)?))
+                }
+                "class" => Ok(Expr::Class(self.parse_class()?)),
+                _ if RESERVED.contains(&&*n) => self.unexpected(),
+                _ => {
+                    self.advance()?;
+                    Ok(Expr::Ident(n, line))
+                }
+            },
+            Tok::Ident(n) => {
+                self.advance()?;
+                Ok(Expr::Ident(n, line))
+            }
+            _ => self.unexpected(),
+        }
+    }
+
