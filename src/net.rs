@@ -139,3 +139,69 @@ impl Net {
         Err("redirecionamentos demais".into())
     }
 
+    pub fn request(&self, req: &Request) -> Result<Response, String> {
+        let url = &req.url;
+        match url.scheme() {
+            "http" | "https" if Self::cacheable(req) => self.cached(req),
+            "http" | "https" => self.http(req),
+            "file" => {
+                let path = url.to_file_path().map_err(|_| format!("caminho inválido: {url}"))?;
+                let body = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                Ok(Response {
+                    url: url.clone(),
+                    status: 200,
+                    content_type: None,
+                    body,
+                    headers: Vec::new(),
+                })
+            }
+            "data" => {
+                let (content_type, body) = decode_data_url(url.as_str())?;
+                Ok(Response {
+                    url: url.clone(),
+                    status: 200,
+                    content_type: Some(content_type.clone()),
+                    body,
+                    headers: vec![("content-type".into(), content_type)],
+                })
+            }
+            other => Err(format!("esquema não suportado: {other}")),
+        }
+    }
+}
+
+impl Net {
+    /// GET simples, sem `Range` nem corpo: pode vir do cache.
+    fn cacheable(req: &Request) -> bool {
+        req.method.eq_ignore_ascii_case("GET")
+            && req.body.is_none()
+            && !req.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("range") || k.eq_ignore_ascii_case("cache-control"))
+            && std::env::var_os("FERRO_SEM_CACHE").is_none()
+    }
+
+    /// Requisição passando pelo cache HTTP.
+    fn cached(&self, req: &Request) -> Result<Response, String> {
+        use crate::httpcache::{self, Lookup};
+        match httpcache::lookup(&req.url) {
+            Lookup::Fresh(r) => Ok(r),
+            Lookup::Stale(cond) => {
+                let mut r2 = req.clone();
+                r2.headers.extend(cond);
+                let res = self.http(&r2)?;
+                if res.status == 304
+                    && let Some(r) = httpcache::revalidated(&req.url, &res.headers)
+                {
+                    return Ok(r);
+                }
+                httpcache::store(&req.url, &res);
+                Ok(res)
+            }
+            Lookup::Miss => {
+                let res = self.http(req)?;
+                httpcache::store(&req.url, &res);
+                Ok(res)
+            }
+        }
+    }
+}
+
