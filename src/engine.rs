@@ -598,3 +598,48 @@ pub fn fetch_resources(
 
 // ---------------------------------------------------- thread de renderização
 
+/// Uma página pronta para a interface pintar.
+pub struct Frame {
+    pub url: Url,
+    pub base: Url,
+    pub title: String,
+    pub status: u16,
+    pub items: Vec<DisplayItem>,
+    pub height: f32,
+    pub background: Color,
+    pub links: Vec<(Rect, String)>,
+    /// Links dentro de `position: fixed` (coordenadas da janela).
+    pub fixed_links: Vec<(Rect, String)>,
+    pub anchors: Vec<(String, f32)>,
+    /// Largura (em px CSS) para a qual o layout foi feito.
+    pub width: f32,
+    /// false enquanto as imagens ainda estão chegando.
+    pub complete: bool,
+    /// Quadro atual de cada `<video>`.
+    pub videos: HashMap<NodeId, Arc<ImageData>>,
+    /// Elementos que rolam por dentro (os mais internos primeiro).
+    pub scrollers: Vec<layout::Scroller>,
+    /// `<video controls>` parados.
+    pub paused: std::collections::HashSet<NodeId>,
+}
+
+pub enum Command {
+    Navigate { nav: u64, url: Url, post: Option<crate::script::PostData> },
+    Resize { width: f32, height: f32 },
+    /// Clique na página (coordenadas do documento, px CSS).
+    Click { nav: u64, x: f32, y: f32 },
+    /// A interface rolou a página.
+    Scroll { nav: u64, y: f32 },
+    /// Roda do mouse sobre um elemento que rola por dentro.
+    ScrollElement { nav: u64, node: NodeId, dx: f32, dy: f32 },
+    /// O mouse andou sobre a página (coordenadas do documento) ou saiu (None).
+    MouseMove { nav: u64, point: Option<(f32, f32)> },
+    /// A interface saiu da tela cheia (Esc).
+    ExitFullscreen { nav: u64 },
+    /// Opção escolhida na lista de um `<select>`.
+    SelectChoose { nav: u64, node: NodeId, index: usize },
+    /// Tecla (valor `key` do DOM e o texto digitado, se houver).
+    Key { nav: u64, key: String, text: Option<String>, ctrl: bool, shift: bool, alt: bool, meta: bool },
+    Quit,
+}
+
