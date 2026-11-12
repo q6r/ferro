@@ -764,6 +764,10 @@ pub enum Kind {
     TypedArray(Box<TypedArrayData>),
     DataView(Box<TypedArrayData>),
     AsyncGenerator(Box<crate::builtins::async_generator::AsyncGenData>),
+    /// Ajudante de iterador (map, filter, take, Iterator.concat, zip...).
+    IterHelper(Box<crate::builtins::iterator::Helper>),
+    /// Embrulho de Iterator.from (%WrapForValidIteratorPrototype%).
+    IterWrap(Box<crate::builtins::iterator::IterRec>),
 }
 
 pub struct Object {

@@ -11,6 +11,7 @@ pub mod function;
 pub mod generator;
 pub mod global;
 pub mod intl;
+pub mod iterator;
 pub mod json;
 pub mod number;
 pub mod object;
@@ -45,6 +46,10 @@ pub struct Realm {
     pub eval_error_proto: ObjRef,
     pub uri_error_proto: ObjRef,
     pub iterator_proto: ObjRef,
+    /// %IteratorHelperPrototype% (map, filter, Iterator.concat...).
+    pub iterator_helper_proto: ObjRef,
+    /// %WrapForValidIteratorPrototype% (Iterator.from).
+    pub wrap_for_valid_iter_proto: ObjRef,
     pub array_iter_proto: ObjRef,
     pub map_proto: ObjRef,
     pub set_proto: ObjRef,
@@ -92,6 +97,8 @@ pub struct Realm {
     pub sym_replace: Sym,
     pub sym_search: Sym,
     pub sym_split: Sym,
+    pub sym_dispose: Sym,
+    pub sym_async_dispose: Sym,
 }
 
 fn plain(proto: Option<&ObjRef>) -> ObjRef {
@@ -141,6 +148,8 @@ impl Realm {
             syntax_error_proto: plain(Some(&error_proto)),
             eval_error_proto: plain(Some(&error_proto)),
             uri_error_proto: plain(Some(&error_proto)),
+            iterator_helper_proto: plain(ip),
+            wrap_for_valid_iter_proto: plain(ip),
             array_iter_proto: plain(ip),
             map_proto: plain(p),
             set_proto: plain(p),
@@ -182,6 +191,8 @@ impl Realm {
             sym_replace: sym("Symbol.replace"),
             sym_search: sym("Symbol.search"),
             sym_split: sym("Symbol.split"),
+            sym_dispose: sym("Symbol.dispose"),
+            sym_async_dispose: sym("Symbol.asyncDispose"),
             error_proto,
             iterator_proto,
             object_proto,
@@ -202,6 +213,7 @@ impl Realm {
         date::install(&realm);
         regexp::install(&realm);
         generator::install(&realm);
+        iterator::install(&realm);
         promise::install(&realm);
         async_generator::install(&realm);
         timers::install(&realm);
