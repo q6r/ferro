@@ -2227,3 +2227,67 @@ fn parse_content(v: &str) -> Option<Option<Vec<ContentPart>>> {
     Some(Some(parts))
 }
 
+fn parse_track(t: &str, u: &Units) -> Option<Track> {
+    let t = t.trim();
+    Some(match t {
+        "auto" => Track::Auto,
+        "min-content" => Track::MinContent,
+        "max-content" => Track::MaxContent,
+        _ => match t.strip_suffix("fr") {
+            Some(n) => Track::Fr(n.trim().parse().ok()?),
+            None => Track::Len(parse_len(t, u)?),
+        },
+    })
+}
+
+fn parse_track_size(t: &str, u: &Units) -> Option<TrackSize> {
+    let t = t.trim();
+    if let Some(inner) = t.strip_prefix("minmax(").and_then(|r| r.strip_suffix(')')) {
+        let (a, b) = inner.split_once(',')?;
+        let min = parse_track(a, u)?;
+        let min = if matches!(min, Track::Fr(_)) { Track::Auto } else { min };
+        return Some(TrackSize { min, max: parse_track(b, u)? });
+    }
+    if let Some(inner) = t.strip_prefix("fit-content(").and_then(|r| r.strip_suffix(')')) {
+        return Some(TrackSize { min: Track::Auto, max: Track::Len(parse_len(inner, u)?) });
+    }
+    let tr = parse_track(t, u)?;
+    Some(match tr {
+        Track::Fr(_) => TrackSize { min: Track::Auto, max: tr },
+        _ => TrackSize { min: tr, max: tr },
+    })
+}
+
+/// Lista de trilhas: `200px 1fr`, `repeat(3, 1fr)`, `repeat(auto-fill, minmax(12em, 1fr))`.
+fn parse_tracks(v: &str, u: &Units) -> GridTemplate {
+    let mut g = GridTemplate::default();
+    if v.trim() == "none" {
+        return g;
+    }
+    for tok in split_values(v) {
+        if tok.contains('[') || tok.contains(']') {
+            continue; // nomes de linhas
+        }
+        if let Some(inner) = tok.strip_prefix("repeat(").and_then(|r| r.strip_suffix(')')) {
+            let Some((count, list)) = inner.split_once(',') else { continue };
+            let tracks: Vec<TrackSize> = split_values(list)
+                .iter()
+                .filter(|t| !t.contains('['))
+                .filter_map(|t| parse_track_size(t, u))
+                .collect();
+            match count.trim() {
+                "auto-fill" | "auto-fit" => g.auto_fill = Some(tracks),
+                n => {
+                    let n: usize = n.parse().unwrap_or(1).min(100);
+                    for _ in 0..n {
+                        g.tracks.extend(tracks.iter().copied());
+                    }
+                }
+            }
+        } else if let Some(t) = parse_track_size(&tok, u) {
+            g.tracks.push(t);
+        }
+    }
+    g
+}
+
