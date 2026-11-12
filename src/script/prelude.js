@@ -2032,3 +2032,46 @@ hidden(G, 'CSS', CSSNS);
 
 // ---------------------------------------------------- folhas (CSSOM)
 const SHEETS = new WeakMap();
+class CSSStyleSheet {
+  constructor() { SHEETS.set(this, { rules: [], owner: null }); }
+  get cssRules() { return SHEETS.get(this).rules.map((t) => ({ cssText: t, type: 1 })); }
+  get rules() { return this.cssRules; }
+  get ownerNode() { return SHEETS.get(this).owner; }
+  get media() { return { mediaText: '', length: 0 }; }
+  get disabled() { return false; }
+  insertRule(rule, index = 0) {
+    const s = SHEETS.get(this);
+    index = Math.min(Math.max(0, index | 0), s.rules.length);
+    s.rules.splice(index, 0, String(rule));
+    flushSheet(this);
+    return index;
+  }
+  deleteRule(index) {
+    const s = SHEETS.get(this);
+    s.rules.splice(index | 0, 1);
+    flushSheet(this);
+  }
+  addRule(sel, style, index) { return this.insertRule(`${sel} { ${style} }`, index ?? this.cssRules.length); }
+  removeRule(i) { this.deleteRule(i); }
+  replaceSync(text) { SHEETS.get(this).rules = [String(text)]; flushSheet(this); }
+  replace(text) { this.replaceSync(text); return Promise.resolve(this); }
+}
+function flushSheet(sheet) {
+  const s = SHEETS.get(sheet);
+  if (s.owner && s.owner.localName === 'style') {
+    s.flushing = true;
+    s.owner.textContent = s.base + '\n' + s.rules.join('\n');
+    s.flushing = false;
+  }
+}
+function sheetOf(el) {
+  let sh = SHEET_OF.get(el);
+  if (!sh) {
+    sh = new CSSStyleSheet();
+    const s = SHEETS.get(sh);
+    s.owner = el;
+    s.base = el.localName === 'style' ? el.textContent : '';
+    SHEET_OF.set(el, sh);
+  }
+  return sh;
+}
