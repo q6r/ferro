@@ -53,3 +53,47 @@ pub fn number_to_string(n: f64) -> String {
     }
 }
 
+/// `Number.prototype.toString(base)` para bases diferentes de 10.
+pub fn number_to_string_radix(n: f64, radix: u32) -> String {
+    if radix == 10 || !n.is_finite() {
+        return number_to_string(n);
+    }
+    if n == 0.0 {
+        return "0".into();
+    }
+    let neg = n < 0.0;
+    let n = n.abs();
+    let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut int = n.trunc();
+    let mut frac = n - int;
+    let mut out = Vec::new();
+    if int == 0.0 {
+        out.push(b'0');
+    }
+    while int >= 1.0 {
+        let d = (int % radix as f64) as usize;
+        out.push(digits[d]);
+        int = (int / radix as f64).trunc();
+    }
+    out.reverse();
+    if frac > 0.0 {
+        out.push(b'.');
+        // precisão aproximada: até esgotar os bits significativos
+        let mut delta = 0.5 * (n.next_up() - n).max(f64::MIN_POSITIVE);
+        let mut count = 0;
+        loop {
+            frac *= radix as f64;
+            delta *= radix as f64;
+            let d = frac.trunc() as usize;
+            frac -= d as f64;
+            out.push(digits[d.min(radix as usize - 1)]);
+            count += 1;
+            if frac <= delta || count >= 52 {
+                break;
+            }
+        }
+    }
+    let s = String::from_utf8(out).unwrap_or_default();
+    if neg { format!("-{s}") } else { s }
+}
+
