@@ -1229,3 +1229,119 @@ hidden(G, 'createImageBitmap', async function createImageBitmap(src) {
   return new ImageBitmap(r[0], r[1], r[2]);
 });
 
+// Caminho: comandos em coordenadas do usuário (Path2D) ou do dispositivo (contexto).
+class PathBuilder {
+  constructor() { this.d = []; this.last = null; this.start = null; }
+  clone() { const p = new PathBuilder(); p.d = this.d.slice(); p.last = this.last; p.start = this.start; return p; }
+  moveTo(m, x, y) {
+    if (!fin(x, y)) return;
+    const p = [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+    this.d.push(0, p[0], p[1]); this.last = this.start = p;
+  }
+  lineTo(m, x, y) {
+    if (!fin(x, y)) return;
+    if (!this.last) return this.moveTo(m, x, y);
+    const p = [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+    this.d.push(1, p[0], p[1]); this.last = p;
+  }
+  bezierCurveTo(m, a, b, c, d, x, y) {
+    if (!fin(a, b, c, d, x, y)) return;
+    if (!this.last) this.moveTo(m, a, b);
+    const T = (u, v) => [m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]];
+    const p1 = T(a, b), p2 = T(c, d), p3 = T(x, y);
+    this.d.push(2, p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]); this.last = p3;
+  }
+  // ponto atual no espaço do usuário de agora
+  userLast(m) {
+    if (!this.last) return null;
+    const i = minv(m) || IDENT();
+    const [x, y] = this.last;
+    return [i[0] * x + i[2] * y + i[4], i[1] * x + i[3] * y + i[5]];
+  }
+  quadraticCurveTo(m, cx, cy, x, y) {
+    if (!fin(cx, cy, x, y)) return;
+    if (!this.last) this.moveTo(m, cx, cy);
+    const [x0, y0] = this.userLast(m);
+    this.bezierCurveTo(m, x0 + 2 / 3 * (cx - x0), y0 + 2 / 3 * (cy - y0), x + 2 / 3 * (cx - x), y + 2 / 3 * (cy - y), x, y);
+  }
+  closePath() { if (this.last) { this.d.push(3); this.last = this.start; } }
+  rect(m, x, y, w, h) {
+    if (!fin(x, y, w, h)) return;
+    this.moveTo(m, x, y); this.lineTo(m, x + w, y); this.lineTo(m, x + w, y + h); this.lineTo(m, x, y + h); this.closePath();
+  }
+  ellipse(m, x, y, rx, ry, rot, a0, a1, ccw) {
+    if (!fin(x, y, rx, ry, rot, a0, a1)) return;
+    if (rx < 0 || ry < 0) throw new DOMException(`The radius provided (${rx < 0 ? rx : ry}) is negative.`, 'IndexSizeError');
+    let sweep = a1 - a0;
+    if (!ccw) { if (sweep >= TAU) sweep = TAU; else { sweep %= TAU; if (sweep < 0) sweep += TAU; } }
+    else { if (sweep <= -TAU) sweep = -TAU; else { sweep %= TAU; if (sweep > 0) sweep -= TAU; } }
+    const cr = Math.cos(rot), sr = Math.sin(rot);
+    const E = (u, v) => [x + rx * u * cr - ry * v * sr, y + rx * u * sr + ry * v * cr];
+    const s = E(Math.cos(a0), Math.sin(a0));
+    if (this.last) this.lineTo(m, s[0], s[1]); else this.moveTo(m, s[0], s[1]);
+    if (sweep === 0) return;
+    const n = Math.max(1, Math.ceil(Math.abs(sweep) / (Math.PI / 2) - 1e-9));
+    const th = sweep / n, k = 4 / 3 * Math.tan(th / 4);
+    let t = a0;
+    for (let i = 0; i < n; i++) {
+      const c0 = Math.cos(t), s0 = Math.sin(t), c1 = Math.cos(t + th), s1 = Math.sin(t + th);
+      const p1 = E(c0 - k * s0, s0 + k * c0), p2 = E(c1 + k * s1, s1 - k * c1), p3 = E(c1, s1);
+      this.bezierCurveTo(m, p1[0], p1[1], p2[0], p2[1], p3[0], p3[1]);
+      t += th;
+    }
+  }
+  arcTo(m, x1, y1, x2, y2, r) {
+    if (!fin(x1, y1, x2, y2, r)) return;
+    if (r < 0) throw new DOMException(`The radius provided (${r}) is negative.`, 'IndexSizeError');
+    if (!this.last) this.moveTo(m, x1, y1);
+    const [x0, y0] = this.userLast(m);
+    const v1x = x0 - x1, v1y = y0 - y1, v2x = x2 - x1, v2y = y2 - y1;
+    const l1 = Math.hypot(v1x, v1y), l2 = Math.hypot(v2x, v2y);
+    const cross = (v1x * v2y - v1y * v2x) / (l1 * l2 || 1);
+    if (!l1 || !l2 || !r || Math.abs(cross) < 1e-9) return this.lineTo(m, x1, y1);
+    const ux = v1x / l1, uy = v1y / l1, wx = v2x / l2, wy = v2y / l2;
+    const cos = Math.max(-1, Math.min(1, ux * wx + uy * wy)), th = Math.acos(cos);
+    const t = r / Math.tan(th / 2);
+    const t1 = [x1 + ux * t, y1 + uy * t], t2 = [x1 + wx * t, y1 + wy * t];
+    const bx = ux + wx, by = uy + wy, bl = Math.hypot(bx, by);
+    const d = r / Math.sin(th / 2);
+    const cx = x1 + bx / bl * d, cy = y1 + by / bl * d;
+    this.lineTo(m, t1[0], t1[1]);
+    this.ellipse(m, cx, cy, r, r, 0, Math.atan2(t1[1] - cy, t1[0] - cx), Math.atan2(t2[1] - cy, t2[0] - cx), cross > 0);
+  }
+  roundRect(m, x, y, w, h, radii = 0) {
+    if (!fin(x, y, w, h)) return;
+    let rs = Array.isArray(radii) ? radii : [radii];
+    if (rs.length < 1 || rs.length > 4) throw new RangeError(`${rs.length} radii provided. Between one and four radii are necessary.`);
+    rs = rs.map((r) => (typeof r === 'object' ? [Number(r.x) || 0, Number(r.y) || 0] : [Number(r) || 0, Number(r) || 0]));
+    if (rs.some(([a, b]) => a < 0 || b < 0)) throw new RangeError('Radius value is negative.');
+    const [tl, tr, br, bl] = rs.length === 1 ? [rs[0], rs[0], rs[0], rs[0]] : rs.length === 2 ? [rs[0], rs[1], rs[0], rs[1]] : rs.length === 3 ? [rs[0], rs[1], rs[2], rs[1]] : rs;
+    const aw = Math.abs(w), ah = Math.abs(h);
+    const f = Math.min(1, aw / (tl[0] + tr[0] || 1), aw / (bl[0] + br[0] || 1), ah / (tl[1] + bl[1] || 1), ah / (tr[1] + br[1] || 1));
+    const R = (r) => [r[0] * f, r[1] * f];
+    const [a, b, c, d] = [R(tl), R(tr), R(br), R(bl)];
+    const sx = Math.sign(w) || 1, sy = Math.sign(h) || 1;
+    this.moveTo(m, x + a[0] * sx, y);
+    this.lineTo(m, x + w - b[0] * sx, y);
+    this.ellipse(m, x + w - b[0] * sx, y + b[1] * sy, b[0], b[1], 0, -Math.PI / 2, 0, false);
+    this.lineTo(m, x + w, y + h - c[1] * sy);
+    this.ellipse(m, x + w - c[0] * sx, y + h - c[1] * sy, c[0], c[1], 0, 0, Math.PI / 2, false);
+    this.lineTo(m, x + d[0] * sx, y + h);
+    this.ellipse(m, x + d[0] * sx, y + h - d[1] * sy, d[0], d[1], 0, Math.PI / 2, Math.PI, false);
+    this.lineTo(m, x, y + a[1] * sy);
+    this.ellipse(m, x + a[0] * sx, y + a[1] * sy, a[0], a[1], 0, Math.PI, Math.PI * 1.5, false);
+    this.closePath();
+    this.moveTo(m, x, y);
+  }
+  // acrescenta comandos já prontos (Path2D de texto SVG), transformados por m
+  addCommands(m, d) {
+    const T = (u, v) => [m[0] * u + m[2] * v + m[4], m[1] * u + m[3] * v + m[5]];
+    for (let i = 0; i < d.length;) {
+      const op = d[i];
+      if (op === 0 || op === 1) { const p = T(d[i + 1], d[i + 2]); this.d.push(op, p[0], p[1]); this.last = p; if (op === 0) this.start = p; i += 3; }
+      else if (op === 2) { const a = T(d[i + 1], d[i + 2]), b = T(d[i + 3], d[i + 4]), c = T(d[i + 5], d[i + 6]); this.d.push(2, a[0], a[1], b[0], b[1], c[0], c[1]); this.last = c; i += 7; }
+      else { this.d.push(3); this.last = this.start; i += 1; }
+    }
+  }
+}
+
