@@ -333,3 +333,336 @@ impl Inspector {
         }
     }
 
+    fn fmt_object(&mut self, o: &ObjRef, depth: usize, indent: usize) -> (String, usize) {
+        // Proxy aparece como o alvo (como no Node)
+        let target = match &o.borrow().kind {
+            Kind::Proxy { target: Some(t), .. } => Some(t.clone()),
+            _ => None,
+        };
+        if let Some(t) = target {
+            return self.fmt_object(&t, depth, indent);
+        }
+        let id = o.id();
+        if self.seen.contains(&id) {
+            let n = match self.refs.iter().position(|r| *r == id) {
+                Some(i) => i + 1,
+                None => {
+                    self.refs.push(id);
+                    self.refs.len()
+                }
+            };
+            return (format!("[Circular *{n}]"), 0);
+        }
+        let b = o.borrow();
+        let ctor = self.ctor_name(o);
+        let null_proto = b.proto.is_none();
+        // base (prefixo) e chaves
+        enum Shape {
+            Plain,
+            Array(Vec<Value>),
+            Map(Vec<(Value, Value)>),
+            Set(Vec<Value>),
+        }
+        let mut base = String::new();
+        let mut iter_prefix: Option<&str> = None;
+        let mut typed_prefix: Option<String> = None;
+        let mut promise_entry: Option<Result<(Value, bool), &str>> = None;
+        let shape = match &b.kind {
+            Kind::Array(v) => Shape::Array(v.clone()),
+            Kind::TypedArray(t) => {
+                typed_prefix = Some(format!("{}({})", t.kind.name(), t.length));
+                Shape::Array((0..t.length).filter_map(|i| t.get(i)).collect())
+            }
+            Kind::ArrayBuffer(bytes) => {
+                let d = bytes.borrow();
+                let hex: Vec<String> = d.iter().take(50).map(|x| format!("{x:02x}")).collect();
+                let more = if d.len() > 50 { format!(" ... {} more bytes", d.len() - 50) } else { String::new() };
+                base = format!("ArrayBuffer {{ [Uint8Contents]: <{}{more}>, byteLength: {} }}", hex.join(" "), d.len());
+                Shape::Plain
+            }
+            Kind::DataView(t) => {
+                base = format!("DataView {{ byteLength: {}, byteOffset: {} }}", t.length, t.offset);
+                Shape::Plain
+            }
+            Kind::Map(c) => Shape::Map(c.entries.iter().flatten().cloned().collect()),
+            Kind::Set(c) => Shape::Set(c.entries.iter().flatten().map(|e| e.0.clone()).collect()),
+            Kind::Function(f) => {
+                let name = match data_in_chain(o, "name") {
+                    Some(Value::String(s)) => s.to_rust(),
+                    _ => String::new(),
+                };
+                let is_class = matches!(f, Func::Closure(c) if c.code.is_class_constructor());
+                base = if is_class {
+                    let ext = o.proto().and_then(|p| match data_in_chain(&p, "name") {
+                        Some(Value::String(s)) if !s.is_empty() => Some(s.to_rust()),
+                        _ => None,
+                    });
+                    match ext {
+                        Some(e) => format!("[class {} extends {e}]", if name.is_empty() { "(anonymous)" } else { &name }),
+                        None => format!("[class {}]", if name.is_empty() { "(anonymous)" } else { &name }),
+                    }
+                } else {
+                    let kind = match f {
+                        Func::Closure(c) if c.code.is_async && c.code.is_generator => "AsyncGeneratorFunction",
+                        Func::Closure(c) if c.code.is_async => "AsyncFunction",
+                        Func::Closure(c) if c.code.is_generator => "GeneratorFunction",
+                        _ => "Function",
+                    };
+                    if name.is_empty() { format!("[{kind} (anonymous)]") } else { format!("[{kind}: {name}]") }
+                };
+                Shape::Plain
+            }
+            Kind::Error => {
+                let stack = match b.props.get(&PropKey::str("stack")) {
+                    Some(Property {
+                        slot: Slot::Data { value: Value::String(s), .. },
+                        ..
+                    }) => Some(s.to_rust()),
+                    _ => None,
+                };
+                base = stack.unwrap_or_else(|| {
+                    let name = match data_in_chain(o, "name") {
+                        Some(Value::String(s)) => s.to_rust(),
+                        _ => "Error".into(),
+                    };
+                    let msg = match data_in_chain(o, "message") {
+                        Some(Value::String(s)) => s.to_rust(),
+                        _ => String::new(),
+                    };
+                    if msg.is_empty() { name } else { format!("{name}: {msg}") }
+                });
+                if depth > 0 {
+                    base = format!("[{}]", base.lines().next().unwrap_or(""));
+                }
+                Shape::Plain
+            }
+            Kind::Boolean(x) => {
+                base = format!("[Boolean: {x}]");
+                Shape::Plain
+            }
+            Kind::Number(n) => {
+                base = format!("[Number: {}]", fmt_number(*n));
+                Shape::Plain
+            }
+            Kind::String(s) => {
+                base = format!("[String: {}]", quote_str(&s.to_rust()));
+                Shape::Plain
+            }
+            Kind::Symbol(s) => {
+                base = format!("[Symbol: {}]", super::symbol::symbol_descriptive(s));
+                Shape::Plain
+            }
+            Kind::BigIntBox(v) => {
+                base = format!("[BigInt: {}n]", v.to_string_radix(10));
+                Shape::Plain
+            }
+            Kind::Date(t) => {
+                base = if t.is_nan() { "Invalid Date".into() } else { super::date::iso_string(*t) };
+                Shape::Plain
+            }
+            Kind::RegExp { source, flags, .. } => {
+                base = format!("/{}/{}", source.to_rust(), flags.to_rust());
+                Shape::Plain
+            }
+            Kind::WeakRef(_) => {
+                base = "WeakRef".into();
+                Shape::Plain
+            }
+            Kind::ArrayIter { .. } => {
+                iter_prefix = Some("Object [Array Iterator]");
+                Shape::Plain
+            }
+            Kind::MapIter { .. } => {
+                iter_prefix = Some("Object [Map Iterator]");
+                Shape::Plain
+            }
+            Kind::StringIter { .. } => {
+                iter_prefix = Some("Object [String Iterator]");
+                Shape::Plain
+            }
+            Kind::Arguments => {
+                iter_prefix = Some("[Arguments]");
+                Shape::Plain
+            }
+            Kind::Generator(_) => {
+                iter_prefix = Some("Object [Generator]");
+                Shape::Plain
+            }
+            Kind::AsyncGenerator(_) => {
+                iter_prefix = Some("Object [AsyncGenerator]");
+                Shape::Plain
+            }
+            Kind::Promise(d) => {
+                promise_entry = Some(match &d.state {
+                    super::promise::PState::Pending => Err("<pending>"),
+                    super::promise::PState::Fulfilled(v) => Ok((v.clone(), false)),
+                    super::promise::PState::Rejected(v) => Ok((v.clone(), true)),
+                });
+                Shape::Plain
+            }
+            _ => Shape::Plain,
+        };
+        let is_tagged_kind = !base.is_empty();
+        // propriedades próprias enumeráveis (sem índices de array)
+        let is_array = matches!(shape, Shape::Array(_));
+        let keys: Vec<PropKey> = b
+            .props
+            .ordered_keys()
+            .into_iter()
+            .filter(|k| !matches!(k, PropKey::Sym(s) if s.is_private()))
+            .filter(|k| b.props.get(k).is_some_and(|p| p.enumerable))
+            .collect();
+        let props: Vec<(PropKey, Property)> = keys.iter().filter_map(|k| b.props.get(k).map(|p| (k.clone(), p.clone()))).collect();
+        drop(b);
+
+        let empty_shape = match &shape {
+            Shape::Plain => promise_entry.is_none(),
+            Shape::Array(v) => v.is_empty(),
+            Shape::Map(v) => v.is_empty(),
+            Shape::Set(v) => v.is_empty(),
+        };
+        // prefixo de classe / protótipo nulo
+        let mut prefix = String::new();
+        match &shape {
+            Shape::Array(v) => {
+                if let Some(t) = &typed_prefix {
+                    prefix = t.clone();
+                } else if let Some(c) = &ctor
+                    && c != "Array"
+                {
+                    prefix = format!("{c}({})", v.len());
+                }
+            }
+            Shape::Map(v) => prefix = format!("{}({})", ctor.clone().unwrap_or_else(|| "Map".into()), v.len()),
+            Shape::Set(v) => prefix = format!("{}({})", ctor.clone().unwrap_or_else(|| "Set".into()), v.len()),
+            Shape::Plain => {
+                if promise_entry.is_some() {
+                    prefix = "Promise".to_string();
+                } else if let Some(p) = iter_prefix {
+                    prefix = p.to_string();
+                } else if !is_tagged_kind {
+                    if null_proto {
+                        prefix = "[Object: null prototype]".into();
+                    } else if let Some(c) = &ctor
+                        && c != "Object"
+                    {
+                        prefix = c.clone();
+                    }
+                }
+            }
+        }
+        let (open, close) = if is_array { ("[", "]") } else { ("{", "}") };
+        if props.is_empty() && empty_shape {
+            if is_tagged_kind {
+                return (base, 0);
+            }
+            let s = if prefix.is_empty() { format!("{open}{close}") } else { format!("{prefix} {open}{close}") };
+            return (s, 0);
+        }
+        if depth > self.max_depth {
+            let name = match &shape {
+                Shape::Array(_) => "[Array]".to_string(),
+                _ if is_tagged_kind => base,
+                _ => format!("[{}]", ctor.unwrap_or_else(|| "Object".into())),
+            };
+            return (name, 0);
+        }
+        self.seen.push(id);
+        let mut out: Vec<String> = Vec::new();
+        let mut levels = 0;
+        let child_indent = indent + 2;
+        match &shape {
+            Shape::Array(v) => {
+                let mut holes = 0;
+                let mut shown = 0;
+                for x in v.iter() {
+                    if shown >= 100 {
+                        break;
+                    }
+                    if matches!(x, Value::Empty) {
+                        holes += 1;
+                        continue;
+                    }
+                    if holes > 0 {
+                        out.push(format!("<{holes} empty item{}>", if holes > 1 { "s" } else { "" }));
+                        shown += 1;
+                        holes = 0;
+                    }
+                    let (s, l) = self.fmt(x, depth + 1, child_indent, true);
+                    levels = levels.max(l);
+                    out.push(s);
+                    shown += 1;
+                }
+                if holes > 0 {
+                    out.push(format!("<{holes} empty item{}>", if holes > 1 { "s" } else { "" }));
+                }
+                if v.len() > 100 && shown >= 100 {
+                    let rest = v.len() - 100;
+                    out.push(format!("... {rest} more item{}", if rest > 1 { "s" } else { "" }));
+                }
+            }
+            Shape::Map(entries) => {
+                for (k, val) in entries.iter() {
+                    let (ks, l1) = self.fmt(k, depth + 1, child_indent, true);
+                    let (vs, l2) = self.fmt(val, depth + 1, child_indent, true);
+                    levels = levels.max(l1).max(l2);
+                    out.push(format!("{ks} => {vs}"));
+                }
+            }
+            Shape::Set(items) => {
+                for x in items.iter() {
+                    let (s, l) = self.fmt(x, depth + 1, child_indent, true);
+                    levels = levels.max(l);
+                    out.push(s);
+                }
+            }
+            Shape::Plain => {
+                match &promise_entry {
+                    Some(Err(p)) => out.push(p.to_string()),
+                    Some(Ok((v, rejected))) => {
+                        let (s, l) = self.fmt(v, depth + 1, child_indent, true);
+                        levels = levels.max(l);
+                        out.push(if *rejected { format!("<rejected> {s}") } else { s });
+                    }
+                    None => {}
+                }
+            }
+        }
+        let array_entries = out.len();
+        for (k, p) in props.iter() {
+            if is_array && k.as_index().is_some() {
+                continue;
+            }
+            let vs = match &p.slot {
+                Slot::Data { value, .. } => {
+                    let (s, l) = self.fmt(value, depth + 1, child_indent, true);
+                    levels = levels.max(l);
+                    s
+                }
+                Slot::Accessor { get: Some(_), set: Some(_) } => "[Getter/Setter]".into(),
+                Slot::Accessor { get: Some(_), .. } => "[Getter]".into(),
+                Slot::Accessor { .. } => "[Setter]".into(),
+            };
+            out.push(format!("{}: {vs}", key_text(k)));
+        }
+        self.seen.pop();
+        if let Some(i) = self.refs.iter().position(|r| *r == id) {
+            prefix = if prefix.is_empty() { format!("<ref *{}>", i + 1) } else { format!("<ref *{}> {prefix}", i + 1) };
+        }
+        let head = match (prefix.is_empty(), base.is_empty()) {
+            (true, true) => String::new(),
+            (false, true) => prefix,
+            (true, false) => base,
+            (false, false) => format!("{prefix} {base}"),
+        };
+        let before = out.len();
+        let out = if is_array && array_entries > 6 && out.len() == array_entries {
+            group_array(&out, indent)
+        } else {
+            out
+        };
+        let grouped = out.len() != before;
+        (reduce(&out, &head, open, close, indent, levels, grouped), levels + 1)
+    }
+}
+
