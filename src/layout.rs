@@ -1546,3 +1546,390 @@ impl<'a> Ctx<'a> {
         bm
     }
 
+    fn layout_block(&mut self, b: &'a LayoutBox, bm: &BoxModel, x: f32, y: f32, inh: &Inherited, opts: Opts) -> BlockResult {
+        let s = &b.style;
+        let anon = matches!(b.kind, BoxKind::Anonymous);
+        let inh = inh.enter(self.doc, b.node(), s);
+        if !b.generated
+            && let Some(id) = b.node().and_then(|n| self.doc.element(n)).and_then(|e| e.id())
+        {
+            self.anchors.push((id.to_string(), y));
+        }
+        let positioned = s.is_positioned() && !anon;
+        if positioned {
+            self.abs.push(Vec::new());
+        }
+        let bfc = opts.bfc
+            || (!anon
+                && (s.overflow_clip
+                    || s.display.is_flex()
+                    || s.display.is_grid()
+                    || s.display.is_inline_block()
+                    || matches!(s.display, Display::Table | Display::TableCell)));
+        if bfc {
+            self.bfc_starts.push(self.floats.len());
+        }
+        let needs_mark =
+            s.opacity < 1.0 || s.translate.is_some() || matches!(s.position, Position::Relative | Position::Sticky);
+        // relativos e sticky pintam na ordem da árvore junto com os absolutos
+        let layered = !anon && matches!(s.position, Position::Relative | Position::Sticky);
+        // contexto de empilhamento: posicionado com z-index (os descendentes
+        // posicionados sem z-index pintam dentro dele)
+        let stacking = !anon && s.is_positioned() && s.z_index.is_some();
+        if stacking {
+            self.z_stack.push(s.z_index.unwrap_or(0));
+        }
+        if layered {
+            let order = self.next_layer;
+            self.next_layer += 1;
+            self.items.push(DisplayItem::LayerStart { z: s.z_index, order });
+        }
+        let mark = needs_mark.then(|| self.mark());
+        // transformação (rotate/scale...): marca reservada aqui, preenchida no fim
+        let xform_idx = (s.transform.is_some() && !anon).then(|| {
+            self.items.push(DisplayItem::TransformStart { m: [1.0, 0.0, 0.0, 1.0, 0.0, 0.0], origin: (0.0, 0.0) });
+            self.items.len() - 1
+        });
+        // área de mouse: reservada aqui (ordem de pintura), preenchida no fim
+        let hit_idx = match b.node() {
+            Some(n) if !anon && !b.generated && s.pointer_events && s.visible => {
+                self.items.push(DisplayItem::Hit { rect: Rect::default(), node: n });
+                Some(self.items.len() - 1)
+            }
+            _ => None,
+        };
+
+        let bx = x + bm.margin[LEFT];
+        let content_x = bx + bm.border[LEFT] + bm.padding[LEFT];
+        let content_y = y + bm.border[TOP] + bm.padding[TOP];
+
+        // Fundo, bordas e recorte entram antes do conteúdo; o tamanho final só
+        // é conhecido depois, então reservamos as posições e preenchemos no fim.
+        let mut deco = Deco::default();
+        let canvas_bg = b.node().is_some() && b.node() == self.skip_bg && !b.generated;
+        let masked = s.mask_image.is_some();
+        let paint_bg = s.visible && !s.background.is_transparent() && !canvas_bg && !masked;
+        if s.visible
+            && !anon
+            && let Some(list) = &s.box_shadow
+        {
+            // a última sombra da lista fica por baixo
+            let n = list.len().min(4);
+            deco.shadow = Some((self.items.len(), n));
+            for _ in 0..n {
+                self.items.push(DisplayItem::Shadow { rect: Rect::default(), radius: 0.0, blur: 0.0, color: Color::TRANSPARENT });
+            }
+        }
+        if paint_bg {
+            deco.bg = Some(self.items.len());
+            self.items.push(DisplayItem::Rect {
+                rect: Rect::default(),
+                color: s.background,
+            });
+        }
+        let img_ready = if masked {
+            let u = s.mask_image.clone().unwrap();
+            !s.background.is_transparent() && self.url_ready(&u)
+        } else {
+            self.bg_ready(s)
+        };
+        if s.visible && img_ready {
+            deco.img = Some(self.items.len());
+            self.items.push(DisplayItem::Rect {
+                rect: Rect::default(),
+                color: Color::TRANSPARENT,
+            });
+        }
+        let has_border = s.visible && bm.border.iter().any(|&w| w > 0.0);
+        deco.round_border = has_border && s.border_radius != Len::Px(0.0);
+        if has_border {
+            deco.border = Some(self.items.len());
+            for _ in 0..if deco.round_border { 1 } else { 4 } {
+                self.items.push(DisplayItem::Rect {
+                    rect: Rect::default(),
+                    color: Color::TRANSPARENT,
+                });
+            }
+        }
+        let clip_idx = self.items.len();
+        let clip = s.overflow_clip || s.line_clamp.is_some();
+        if clip {
+            self.items.push(DisplayItem::PushClip(Rect::default()));
+        }
+        // o que vem daqui em diante é conteúdo (rola junto quando o elemento rola)
+        let content_mark = self.mark();
+
+        let vert_extra = bm.border[TOP] + bm.border[BOTTOM] + bm.padding[TOP] + bm.padding[BOTTOM];
+        // porcentagens de altura valem quando o pai tem altura definida
+        let parent_h = self.cb_heights.last().copied().flatten();
+        let fixed = |l: Len| {
+            let v = match l {
+                Len::Px(v) => v,
+                Len::Percent(p) => p / 100.0 * parent_h?,
+                Len::Auto => return None,
+            };
+            Some(if s.border_box { (v - vert_extra).max(0.0) } else { v })
+        };
+        let definite_h = opts.forced_h.or_else(|| fixed(s.height));
+        self.cb_heights.push(definite_h);
+
+        let w = bm.content_w;
+        let (mut content_h, first_baseline) = match s.display {
+            _ if anon => {
+                if has_inflow_blocks(b) {
+                    self.layout_block_children(b, content_x, content_y, w, &inh)
+                } else {
+                    self.layout_inline(b, content_x, content_y, w, &inh)
+                }
+            }
+            d if d.is_flex() => self.layout_flex(b, content_x, content_y, w, definite_h, &inh),
+            d if d.is_grid() => self.layout_grid(b, content_x, content_y, w, &inh),
+            Display::Table => self.layout_table(b, content_x, content_y, w, &inh),
+            _ if has_inflow_blocks(b) => self.layout_block_children(b, content_x, content_y, w, &inh),
+            _ => self.layout_inline(b, content_x, content_y, w, &inh),
+        };
+        self.cb_heights.pop();
+
+        if bfc {
+            // um contexto de formatação novo contém os seus floats
+            let start = self.bfc_starts.pop().unwrap_or(0).min(self.floats.len());
+            let bottom = self.floats[start..].iter().map(|f| f.rect.y + f.rect.h).fold(content_y, f32::max);
+            content_h = content_h.max(bottom - content_y);
+            self.floats.truncate(start);
+        }
+
+        let mut h = match (definite_h, s.aspect_ratio) {
+            (Some(h), _) => h,
+            // aspect-ratio: a altura vem da largura (o conteúdo pode aumentar)
+            (None, Some(r)) => content_h.max(w / r),
+            (None, None) => content_h,
+        };
+        if let Some(max) = fixed(s.max_height) {
+            h = h.min(max);
+        }
+        if let Some(n) = s.line_clamp {
+            let lh = match s.line_height {
+                crate::style::LineHeight::Normal => s.font_size * 1.2,
+                crate::style::LineHeight::Number(k) => s.font_size * k,
+                crate::style::LineHeight::Px(p) => p,
+            };
+            h = h.min(n as f32 * lh);
+        }
+        if let Some(min) = fixed(s.min_height) {
+            h = h.max(min);
+        }
+        let border_box = Rect {
+            x: bx,
+            y,
+            w: bm.content_w + bm.padding[LEFT] + bm.padding[RIGHT] + bm.border[LEFT] + bm.border[RIGHT],
+            h: h + vert_extra,
+        };
+
+        let radius = radius_of(s, border_box);
+        if let Some((i, n)) = deco.shadow
+            && let Some(list) = &s.box_shadow
+        {
+            for (k, sh) in list.iter().take(n).rev().enumerate() {
+                if let Some(slot) = self.items.get_mut(i + k) {
+                    *slot = DisplayItem::Shadow {
+                        rect: Rect {
+                            x: border_box.x + sh.x - sh.spread,
+                            y: border_box.y + sh.y - sh.spread,
+                            w: (border_box.w + 2.0 * sh.spread).max(0.0),
+                            h: (border_box.h + 2.0 * sh.spread).max(0.0),
+                        },
+                        radius: (radius + sh.spread).max(0.0),
+                        blur: sh.blur,
+                        color: sh.color,
+                    };
+                }
+            }
+        }
+        if let Some(i) = deco.bg {
+            self.items[i] = if radius > 0.0 {
+                DisplayItem::RoundRect {
+                    rect: border_box,
+                    radius,
+                    color: s.background,
+                }
+            } else {
+                DisplayItem::Rect {
+                    rect: border_box,
+                    color: s.background,
+                }
+            };
+        }
+        if let Some(i) = deco.img
+            && let Some(item) = self.bg_item(s, border_box, radius)
+        {
+            self.items[i] = item;
+        }
+        if let Some(i) = deco.border
+            && deco.round_border
+        {
+            self.items[i] = DisplayItem::RoundBorder {
+                rect: border_box,
+                radius,
+                width: bm.border.iter().copied().fold(0.0, f32::max),
+                color: s.border_color(TOP),
+            };
+        } else if let Some(i) = deco.border {
+            let r = border_box;
+            let bw = bm.border;
+            let rects = [
+                Rect { x: r.x, y: r.y, w: r.w, h: bw[TOP] },
+                Rect { x: r.x + r.w - bw[RIGHT], y: r.y, w: bw[RIGHT], h: r.h },
+                Rect { x: r.x, y: r.y + r.h - bw[BOTTOM], w: r.w, h: bw[BOTTOM] },
+                Rect { x: r.x, y: r.y, w: bw[LEFT], h: r.h },
+            ];
+            for (k, rect) in rects.into_iter().enumerate() {
+                self.items[i + k] = DisplayItem::Rect {
+                    rect,
+                    color: s.border_color(k),
+                };
+            }
+        }
+        // rolagem por dentro: mede o conteúdo e desloca o que foi rolado
+        if (s.scroll_x || s.scroll_y)
+            && !anon
+            && !b.generated
+            && let Some(n) = b.node()
+        {
+            let pad_box = Rect {
+                x: bx + bm.border[LEFT],
+                y: y + bm.border[TOP],
+                w: border_box.w - bm.border[LEFT] - bm.border[RIGHT],
+                h: border_box.h - bm.border[TOP] - bm.border[BOTTOM],
+            };
+            let right = self.boxes[content_mark.boxes.min(self.boxes.len())..]
+                .iter()
+                .map(|(_, r)| r.x + r.w)
+                .fold(pad_box.x + pad_box.w, f32::max);
+            let bottom = (content_y + content_h + bm.padding[BOTTOM]).max(pad_box.y + pad_box.h);
+            let max_x = if s.scroll_x { (right + bm.padding[RIGHT] - (pad_box.x + pad_box.w)).max(0.0) } else { 0.0 };
+            let max_y = if s.scroll_y { (bottom - (pad_box.y + pad_box.h)).max(0.0) } else { 0.0 };
+            let (ox, oy) = SCROLLS.with(|m| m.borrow().get(&n).copied()).unwrap_or((0.0, 0.0));
+            let (ox, oy) = (ox.clamp(0.0, max_x), oy.clamp(0.0, max_y));
+            if ox != 0.0 || oy != 0.0 {
+                self.shift_between(&content_mark, None, -ox, -oy);
+            }
+            self.scrollers.push(Scroller { node: n, rect: pad_box, x: ox, y: oy, max_x, max_y, fixed: self.in_fixed > 0 });
+        }
+        if clip {
+            self.items[clip_idx] = DisplayItem::PushClip(Rect {
+                x: bx + bm.border[LEFT],
+                y: y + bm.border[TOP],
+                w: border_box.w - bm.border[LEFT] - bm.border[RIGHT],
+                h: border_box.h - bm.border[TOP] - bm.border[BOTTOM],
+            });
+            self.items.push(DisplayItem::PopClip);
+        }
+
+        if let Some(m) = opts.marker
+            && s.visible
+        {
+            let font = self.fonts.for_style(s);
+            let mw = self.fonts.measure(font, s.font_size, &m);
+            let baseline =
+                first_baseline.unwrap_or_else(|| content_y + self.fonts.line_metrics(font, s.font_size).ascent);
+            self.items.push(DisplayItem::Text {
+                x: content_x - mw,
+                baseline,
+                text: m,
+                font,
+                size: s.font_size,
+                color: s.color,
+            });
+        }
+
+        if !anon
+            && !b.generated
+            && let Some(n) = b.node()
+        {
+            let r = Rect {
+                x: bx,
+                y,
+                w: border_box.w,
+                h: border_box.h,
+            };
+            self.boxes.push((n, r));
+            if self.in_fixed > 0 {
+                self.fixed_nodes.insert(n);
+            }
+            if let Some(i) = hit_idx
+                && let Some(DisplayItem::Hit { rect, node }) = self.items.get_mut(i)
+                && *node == n
+            {
+                *rect = r;
+            }
+        }
+
+        // absolutos que dependem deste bloco: agora o tamanho dele é conhecido
+        if positioned {
+            let pending = self.abs.pop().unwrap_or_default();
+            let pad_box = Rect {
+                x: bx + bm.border[LEFT],
+                y: y + bm.border[TOP],
+                w: border_box.w - bm.border[LEFT] - bm.border[RIGHT],
+                h: border_box.h - bm.border[TOP] - bm.border[BOTTOM],
+            };
+            for p in pending {
+                self.layout_absolute(p, pad_box);
+            }
+        }
+
+        if let Some(m) = mark {
+            if matches!(s.position, Position::Relative | Position::Sticky) {
+                let dx = match (s.left, s.right) {
+                    (Len::Px(l), _) => l,
+                    (_, Len::Px(r)) => -r,
+                    _ => 0.0,
+                };
+                let dy = match (s.top, s.bottom) {
+                    (Len::Px(t), _) => t,
+                    (_, Len::Px(b)) => -b,
+                    _ => 0.0,
+                };
+                self.shift_between(&m, None, dx, dy);
+            }
+            if let Some(t) = s.translate {
+                let dx = t[0] + t[1] / 100.0 * border_box.w;
+                let dy = t[2] + t[3] / 100.0 * border_box.h;
+                self.shift_between(&m, None, dx, dy);
+            }
+            if s.opacity < 1.0 {
+                self.fade_since(&m, s.opacity);
+                if s.opacity <= 0.01 {
+                    // os itens (fundo e bordas inclusive) foram descartados
+                    deco = Deco::default();
+                }
+            }
+        }
+        // fecha a transformação: matriz em px, em torno do transform-origin
+        if let Some(i) = xform_idx
+            && let Some(fns) = &s.transform
+        {
+            let bb = self.boxes.iter().rev().find(|(n, _)| Some(*n) == b.node()).map(|(_, r)| *r).unwrap_or(border_box);
+            let m = transform_matrix(fns, bb.w, bb.h);
+            let ox = bb.x + s.transform_origin.0.resolve(bb.w).unwrap_or(bb.w / 2.0);
+            let oy = bb.y + s.transform_origin.1.resolve(bb.h).unwrap_or(bb.h / 2.0);
+            if let Some(DisplayItem::TransformStart { m: mm, origin }) = self.items.get_mut(i) {
+                *mm = m;
+                *origin = (ox, oy);
+                self.items.push(DisplayItem::TransformEnd);
+            }
+        }
+        if stacking {
+            self.z_stack.pop();
+        }
+        if layered {
+            self.items.push(DisplayItem::LayerEnd);
+        }
+
+        BlockResult {
+            height: border_box.h,
+            first_baseline,
+            deco,
+        }
+    }
+
