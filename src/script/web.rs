@@ -874,3 +874,87 @@ fn prompt(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Null)
 }
 
+pub(crate) fn install(vm: &mut Vm) {
+    let r = &vm.realm;
+    let g = r.global.clone();
+    r.method(&g, "atob", 1, atob);
+    r.method(&g, "btoa", 1, btoa);
+    r.method(&g, "requestAnimationFrame", 1, request_animation_frame);
+    r.method(&g, "cancelAnimationFrame", 1, cancel_animation_frame);
+    r.method(&g, "alert", 0, alert);
+    r.method(&g, "confirm", 0, confirm);
+    r.method(&g, "prompt", 0, prompt);
+    r.method(&g, "print", 0, noop);
+    r.method(&g, "focus", 0, noop);
+    r.method(&g, "blur", 0, noop);
+    let win = host(vm).borrow().protos.get("Window").cloned().expect("Window");
+    let r = &vm.realm;
+    for (name, f) in [
+        ("innerWidth", inner_width as ferro_js::value::NativeFn),
+        ("outerWidth", inner_width),
+        ("innerHeight", inner_height),
+        ("outerHeight", inner_height),
+        ("scrollY", scroll_y),
+        ("pageYOffset", scroll_y),
+        ("scrollX", zero),
+        ("pageXOffset", zero),
+        ("screenX", zero),
+        ("screenY", zero),
+        ("devicePixelRatio", one),
+    ] {
+        r.accessor(&win, name, Some(f), Some(noop));
+    }
+
+    let n = vm.new_object();
+    let r = &vm.realm;
+    for (name, len, f) in [
+        ("utf8Encode", 1, utf8_encode as ferro_js::value::NativeFn),
+        ("utf8Decode", 1, utf8_decode),
+        ("fetch", 6, fetch),
+        ("fetchSync", 4, fetch_sync),
+        ("urlParse", 2, url_parse),
+        ("urlSet", 3, url_set),
+        ("formDecode", 1, form_decode),
+        ("formEncode", 1, form_encode),
+        ("href", 0, location_href),
+        ("navigate", 1, navigate),
+        ("navigatePost", 3, navigate_post),
+        ("setUrl", 1, set_url),
+        ("reload", 0, reload),
+        ("cookie", 0, cookie),
+        ("setCookie", 1, set_cookie),
+        ("storageGet", 2, storage_get),
+        ("storageSet", 3, storage_set),
+        ("storageRemove", 2, storage_remove),
+        ("storageClear", 1, storage_clear),
+        ("storageKeys", 1, storage_keys),
+        ("matchMedia", 1, match_media),
+        ("now", 0, now),
+        ("reportError", 1, report_error),
+        ("log", 1, log),
+        ("defineCustom", 2, define_custom),
+        ("computedStyle", 1, computed_style),
+        ("scrollTo", 1, scroll_to),
+        ("observing", 0, observing),
+        ("createDocument", 1, super::dom::create_document),
+        ("parseDocument", 1, super::dom::parse_document),
+    ] {
+        r.method(&n, name, len, f);
+    }
+    super::media::install(vm, &n);
+    super::module::install(vm, &n);
+    super::canvas::install(vm, &n);
+    for (name, len, f) in [
+        ("requestFullscreen", 1, request_fullscreen as ferro_js::value::NativeFn),
+        ("framePost", 3, frame_post),
+        ("openSelect", 4, open_select),
+        ("frameUrl", 1, frame_url),
+        ("parentPost", 2, parent_post),
+        ("frameParentOrigin", 0, frame_parent_origin),
+        ("exitFullscreen", 0, exit_fullscreen),
+        ("fullscreenElement", 0, fullscreen_element),
+    ] {
+        vm.realm.method(&n, name, len, f);
+    }
+    vm.realm.global_value("__native", Value::Object(n));
+}
