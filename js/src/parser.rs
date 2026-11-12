@@ -1586,3 +1586,74 @@ impl Parser {
 
     // ------------------------------------------------------------- funções
 
+    fn parse_function(&mut self, is_async: bool, is_expr: bool) -> PResult<Rc<FunctionDef>> {
+        let start = self.tok.start;
+        let line = self.line();
+        self.expect_kw("function")?;
+        let is_gen = self.eat("*")?;
+        let name = if let Tok::Ident(_) = &self.tok.tok {
+            Some(self.binding_ident()?)
+        } else if is_expr {
+            None
+        } else {
+            return self.err("função sem nome");
+        };
+        self.parse_function_rest(name, FnKind::Normal, is_async, is_gen, start, line)
+    }
+
+    /// Parâmetros e corpo (a partir do "(").
+    fn parse_function_rest(
+        &mut self,
+        name: Option<Name>,
+        kind: FnKind,
+        is_async: bool,
+        is_generator: bool,
+        start: usize,
+        line: u32,
+    ) -> PResult<Rc<FunctionDef>> {
+        let saved_ctx = self.ctx;
+        let saved_strict = self.strict;
+        self.ctx.in_function = true;
+        self.ctx.in_async = is_async;
+        self.ctx.in_generator = is_generator;
+        self.expect("(")?;
+        let mut params = Vec::new();
+        let mut rest = None;
+        while !self.is(")") {
+            if self.eat("...")? {
+                rest = Some(self.parse_binding_target()?);
+                break;
+            }
+            params.push(self.parse_binding_element()?);
+            if !self.is(")") {
+                self.expect(",")?;
+            }
+        }
+        self.expect(")")?;
+        self.expect("{")?;
+        self.directives()?;
+        let mut body = Vec::new();
+        while !self.eat("}")? {
+            if self.tok.tok == Tok::Eof {
+                return self.err("função sem '}'");
+            }
+            body.push(self.parse_statement()?);
+        }
+        let strict = self.strict;
+        self.ctx = saved_ctx;
+        self.strict = saved_strict;
+        let source = self.lx.source_slice(start, self.prev_end);
+        Ok(Rc::new(FunctionDef {
+            name,
+            params,
+            rest,
+            body: FnBody::Block(body),
+            kind,
+            is_async,
+            is_generator,
+            strict,
+            source: source.into(),
+            line,
+        }))
+    }
+
