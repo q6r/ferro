@@ -381,3 +381,44 @@ fn parse_path(d: &str) -> Vec<Seg> {
     out
 }
 
+/// Elipse como 4 cúbicas (k = 0,5523).
+fn ellipse(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<Seg> {
+    let k = 0.552_284_8;
+    vec![
+        Seg::Move((cx + rx, cy)),
+        Seg::Cubic((cx + rx, cy + k * ry), (cx + k * rx, cy + ry), (cx, cy + ry)),
+        Seg::Cubic((cx - k * rx, cy + ry), (cx - rx, cy + k * ry), (cx - rx, cy)),
+        Seg::Cubic((cx - rx, cy - k * ry), (cx - k * rx, cy - ry), (cx, cy - ry)),
+        Seg::Cubic((cx + k * rx, cy - ry), (cx + rx, cy - k * ry), (cx + rx, cy)),
+        Seg::Close,
+    ]
+}
+
+fn round_rect(x: f32, y: f32, w: f32, h: f32, rx: f32, ry: f32) -> Vec<Seg> {
+    let rx = rx.min(w / 2.0);
+    let ry = ry.min(h / 2.0);
+    if rx <= 0.0 || ry <= 0.0 {
+        return vec![
+            Seg::Move((x, y)),
+            Seg::Line((x + w, y)),
+            Seg::Line((x + w, y + h)),
+            Seg::Line((x, y + h)),
+            Seg::Close,
+        ];
+    }
+    let k = 0.552_284_8;
+    let (kx, ky) = (k * rx, k * ry);
+    vec![
+        Seg::Move((x + rx, y)),
+        Seg::Line((x + w - rx, y)),
+        Seg::Cubic((x + w - rx + kx, y), (x + w, y + ry - ky), (x + w, y + ry)),
+        Seg::Line((x + w, y + h - ry)),
+        Seg::Cubic((x + w, y + h - ry + ky), (x + w - rx + kx, y + h), (x + w - rx, y + h)),
+        Seg::Line((x + rx, y + h)),
+        Seg::Cubic((x + rx - kx, y + h), (x, y + h - ry + ky), (x, y + h - ry)),
+        Seg::Line((x, y + ry)),
+        Seg::Cubic((x, y + ry - ky), (x + rx - kx, y), (x + rx, y)),
+        Seg::Close,
+    ]
+}
+
