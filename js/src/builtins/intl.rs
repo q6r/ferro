@@ -1536,3 +1536,77 @@ fn date_arg(vm: &mut Vm, v: &Value) -> Result<f64, Value> {
     Ok(super::date::time_clip(n))
 }
 
+fn df_format_getter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    with_intl(vm, &a.this, |x| matches!(x, IntlObj::DateTimeFormat(_)).then_some(()))?;
+    let f = vm.realm.native("", 1, df_bound_format);
+    set_native_data(&f, a.this.clone());
+    Ok(Value::Object(f))
+}
+
+fn df_bound_format(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let this = native_data(&a.callee);
+    let o = with_intl(vm, &this, |x| match x {
+        IntlObj::DateTimeFormat(o) => Some(o.clone()),
+        _ => None,
+    })?;
+    let t = date_arg(vm, &a.arg(0))?;
+    Ok(Value::str(&format_date(vm, &o, t)?))
+}
+
+fn df_format_to_parts(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = with_intl(vm, &a.this, |x| match x {
+        IntlObj::DateTimeFormat(o) => Some(o.clone()),
+        _ => None,
+    })?;
+    let t = date_arg(vm, &a.arg(0))?;
+    let mut parts = format_date_parts(vm, &o, t)?;
+    // como o V8: em formatToParts o espaço antes de AM/PM é o estreito (U+202F)
+    for i in 1..parts.len() {
+        if parts[i].0 == "dayPeriod" && parts[i - 1].0 == "literal" && parts[i - 1].1 == " " {
+            parts[i - 1].1 = "\u{202f}".into();
+        }
+    }
+    Ok(parts_to_array(vm, parts))
+}
+
+/// Date.prototype.toLocale{,Date,Time}String.
+pub fn date_to_locale(vm: &mut Vm, t: f64, locales: &Value, options: &Value, required: &str, defaults: &str) -> Result<String, Value> {
+    if t.is_nan() {
+        return Ok("Invalid Date".into());
+    }
+    let locale = resolve_locale(vm, locales)?;
+    let o = make_date_opts(vm, locale, options, required, defaults)?;
+    format_date(vm, &o, t)
+}
+
+// ------------------------------------------------- plurais, tempo, listas
+
+fn plural_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.new_target.is_none() {
+        return Err(vm.type_error("Constructor Intl.PluralRules requires 'new'"));
+    }
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let ordinal = opt_str(vm, &a.arg(1), "type", &["cardinal", "ordinal"])?.as_deref() == Some("ordinal");
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::PluralRules { locale, ordinal })
+}
+
+fn plural_select(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (locale, ordinal) = with_intl(vm, &a.this, |x| match x {
+        IntlObj::PluralRules { locale, ordinal } => Some((locale.clone(), *ordinal)),
+        _ => None,
+    })?;
+    let n = vm.to_number(&a.arg(0))?;
+    let lang = data_for(&locale).lang;
+    Ok(Value::str(if ordinal { plural_ordinal(lang, n) } else { plural_cardinal(lang, n) }))
+}
+
+fn relative_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.new_target.is_none() {
+        return Err(vm.type_error("Constructor Intl.RelativeTimeFormat requires 'new'"));
+    }
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let numeric_auto = opt_str(vm, &a.arg(1), "numeric", &["always", "auto"])?.as_deref() == Some("auto");
+    let style = opt_str(vm, &a.arg(1), "style", &["long", "short", "narrow"])?.unwrap_or_else(|| "long".into());
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::RelativeTime { locale, numeric_auto, style })
+}
+
