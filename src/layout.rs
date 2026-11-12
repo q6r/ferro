@@ -1383,3 +1383,40 @@ impl<'a> Ctx<'a> {
 
     // ------------------------------------------------------------- floats
 
+    fn bfc_floats(&self) -> &[FloatBox] {
+        let start = self.bfc_starts.last().copied().unwrap_or(0).min(self.floats.len());
+        &self.floats[start..]
+    }
+
+    /// Altura abaixo da qual não há floats do lado pedido.
+    fn clear_y(&self, clear: Clear) -> f32 {
+        self.bfc_floats()
+            .iter()
+            .filter(|f| match clear {
+                Clear::Left => f.left,
+                Clear::Right => !f.left,
+                Clear::Both => true,
+                Clear::None => false,
+            })
+            .map(|f| f.rect.y + f.rect.h)
+            .fold(f32::MIN, f32::max)
+    }
+
+    /// Faixa livre [esquerda, direita) na altura `y`, dentro de [x, x + w).
+    fn free_band(&self, y: f32, h: f32, x: f32, w: f32) -> (f32, f32, Option<f32>) {
+        let (mut l, mut r) = (x, x + w);
+        let mut next: Option<f32> = None;
+        for f in self.bfc_floats() {
+            if f.rect.y < y + h && f.rect.y + f.rect.h > y {
+                if f.left {
+                    l = l.max(f.rect.x + f.rect.w);
+                } else {
+                    r = r.min(f.rect.x);
+                }
+                let b = f.rect.y + f.rect.h;
+                next = Some(next.map_or(b, |n| n.min(b)));
+            }
+        }
+        (l, r, next)
+    }
+
