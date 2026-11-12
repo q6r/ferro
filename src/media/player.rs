@@ -364,3 +364,59 @@ impl Pipeline {
         }
     }
 
+    /// Acerta o relógio compartilhado (a aba chama a cada volta e a cada mudança).
+    pub fn sync_clock(&self, t: f64, rate: f64, running: bool, volume: f32) {
+        *self.clock.lock().unwrap() = Clock { base: t, since: Instant::now(), rate, running };
+        if let Some(a) = &self.audio {
+            a.shared.playing.store(running, Ordering::Relaxed);
+            a.shared.volume.store(volume.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Recomeça a partir de `t` (busca): o vídeo volta ao quadro-chave anterior.
+    pub fn seek(&mut self, t: f64) {
+        self.sync_clock(t, 1.0, false, 1.0);
+        if let Some(v) = &self.video {
+            let _ = v.tx.send(Cmd::Seek(t));
+        }
+        if let Some(a) = &self.audio {
+            let _ = a.tx.send(Cmd::Seek(t));
+        }
+        self.shown = None;
+    }
+
+    /// Liga (ou troca) as trilhas: as threads puxam as amostras sozinhas.
+    pub fn set_sources(&mut self, video: Option<(&Codec, &SharedSamples)>, audio: Option<(&Codec, &SharedSamples)>) {
+        if let Some((codec, list)) = video
+            && !same_src(&self.video_src, codec, list)
+        {
+            self.video = VideoPipe::start(codec, list.clone(), self.clock.clone(), self.node, self.sink.clone());
+            self.video_src = Some((codec.clone(), list.clone()));
+        }
+        if let Some((codec, list)) = audio
+            && !same_src(&self.audio_src, codec, list)
+        {
+            self.audio = AudioPipe::start(codec, list.clone(), self.clock.clone());
+            self.audio_src = Some((codec.clone(), list.clone()));
+        }
+    }
+
+    /// Copia o quadro atual da thread de apresentação. `true` se mudou.
+    pub fn present(&mut self) -> bool {
+        let Some(v) = &self.video else { return false };
+        let seq = v.seq.load(Ordering::Relaxed);
+        if seq == self.last_seq {
+            return false;
+        }
+        self.last_seq = seq;
+        self.frames_shown = seq as u32;
+        self.shown = v.shown.lock().unwrap().clone();
+        true
+    }
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
