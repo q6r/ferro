@@ -2471,3 +2471,62 @@ fn is_inherited(name: &str) -> bool {
     )
 }
 
+/// Copia uma propriedade de `src` (para inherit/initial/unset).
+fn copy_property(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
+    match name {
+        "color" => dst.color = src.color,
+        "font-size" => dst.font_size = src.font_size,
+        "font-weight" => dst.font_weight = src.font_weight,
+        "font-style" => dst.italic = src.italic,
+        "font-family" => dst.font_family = src.font_family,
+        "font" => {
+            dst.font_size = src.font_size;
+            dst.font_weight = src.font_weight;
+            dst.italic = src.italic;
+            dst.font_family = src.font_family;
+            dst.line_height = src.line_height;
+        }
+        "line-height" => dst.line_height = src.line_height,
+        "text-align" => dst.text_align = src.text_align,
+        "white-space" => dst.white_space = src.white_space,
+        "text-transform" => dst.text_transform = src.text_transform,
+        "list-style" | "list-style-type" => dst.list_style = src.list_style,
+        "visibility" => dst.visible = src.visible,
+        "cursor" => dst.cursor = src.cursor,
+        "pointer-events" => dst.pointer_events = src.pointer_events,
+        "display" => dst.display = src.display,
+        "background" | "background-color" => dst.background = src.background,
+        "margin" => dst.margin = src.margin,
+        "padding" => dst.padding = src.padding,
+        "width" => dst.width = src.width,
+        "height" => dst.height = src.height,
+        "max-width" => dst.max_width = src.max_width,
+        "max-height" => dst.max_height = src.max_height,
+        "aspect-ratio" => dst.aspect_ratio = src.aspect_ratio,
+        "-webkit-line-clamp" | "line-clamp" => dst.line_clamp = src.line_clamp,
+        "transform" | "-webkit-transform" | "translate" => {
+            dst.translate = src.translate;
+            dst.transform = src.transform.clone();
+        }
+        "transform-origin" => dst.transform_origin = src.transform_origin,
+        "box-shadow" => dst.box_shadow = src.box_shadow.clone(),
+        "text-shadow" => dst.text_shadow = src.text_shadow,
+        "content-visibility" => dst.content_hidden = src.content_hidden,
+        "min-height" => dst.min_height = src.min_height,
+        "text-decoration" | "text-decoration-line" => {
+            dst.underline = src.underline;
+            dst.line_through = src.line_through;
+        }
+        "border" => {
+            dst.border_width = src.border_width;
+            dst.border_style = src.border_style;
+            dst.border_color = src.border_color;
+        }
+        "position" => dst.position = src.position,
+        "vertical-align" => dst.vertical_align = src.vertical_align,
+        "border-spacing" => dst.border_spacing = src.border_spacing,
+        "float" => dst.float = src.float,
+        _ => {}
+    }
+}
+
