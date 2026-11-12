@@ -720,3 +720,57 @@ fn split_layers(items: Vec<DisplayItem>, base_z: i32, fixed: bool, out: &mut Vec
     stack.pop().map(|t| t.2).unwrap_or_default()
 }
 
+struct Ctx<'a> {
+    doc: &'a Document,
+    fonts: &'a Fonts,
+    images: &'a Images,
+    items: Vec<DisplayItem>,
+    links: Vec<(Rect, String)>,
+    boxes: Vec<(NodeId, Rect)>,
+    anchors: Vec<(String, f32)>,
+    /// Fundo mais baixo dos elementos absolutos (altura rolável da página).
+    abs_bottom: f32,
+    /// Altura definida (do conteúdo) de cada bloco em montagem, para `height: N%`.
+    cb_heights: Vec<Option<f32>>,
+    /// z-index dos contextos de empilhamento abertos.
+    z_stack: Vec<i32>,
+    scrollers: Vec<Scroller>,
+    /// Profundidade dentro de elementos `position: fixed`.
+    in_fixed: u32,
+    fixed_nodes: std::collections::HashSet<NodeId>,
+    fixed_links: Vec<(Rect, String)>,
+    skip_bg: Option<NodeId>,
+    viewport: Rect,
+    /// Um nível por contêiner posicionado aberto; o nível 0 é a janela.
+    abs: Vec<Vec<Pending<'a>>>,
+    layers: Vec<Layer>,
+    next_layer: usize,
+    /// Floats do contexto de formatação atual (e dos que o contêm).
+    floats: Vec<FloatBox>,
+    /// Onde começa, em `floats`, cada contexto de formatação aberto.
+    bfc_starts: Vec<usize>,
+    /// (min-content, max-content) por caixa.
+    intrinsic_cache: HashMap<usize, (f32, f32)>,
+    /// URLs de fundo que faltam baixar.
+    missing: Vec<String>,
+}
+
+fn collapse_margins(prev: Option<f32>, next: f32) -> f32 {
+    match prev {
+        None => next,
+        Some(p) if p >= 0.0 && next >= 0.0 => p.max(next),
+        Some(p) if p < 0.0 && next < 0.0 => p.min(next),
+        Some(p) => p + next,
+    }
+}
+
+fn list_marker(style: ListStyle, n: i64) -> Option<String> {
+    match style {
+        ListStyle::None => None,
+        ListStyle::Disc => Some("•  ".into()),
+        ListStyle::Circle => Some("◦  ".into()),
+        ListStyle::Square => Some("▪  ".into()),
+        ListStyle::Decimal => Some(format!("{n}. ")),
+    }
+}
+
