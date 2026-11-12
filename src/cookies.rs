@@ -250,3 +250,56 @@ pub fn import(text: &str) {
     }
 }
 
+/// Guarda os `Set-Cookie` de uma resposta.
+pub fn store_from_header(url: &Url, set_cookie: &str) {
+    store(set_cookie, url, true);
+}
+
+/// `document.cookie = "..."`.
+pub fn store_from_script(url: &Url, line: &str) {
+    if matches!(url.scheme(), "http" | "https") {
+        store(line, url, false);
+    }
+}
+
+fn matching(url: &Url, for_script: bool) -> String {
+    let Some(host) = url.host_str().map(str::to_ascii_lowercase) else {
+        return String::new();
+    };
+    let t = now();
+    let mut jar = JAR.lock().unwrap_or_else(|e| e.into_inner());
+    jar.cookies.retain(|c| c.expires.is_none_or(|e| e > t));
+    let mut found: Vec<&Cookie> = jar
+        .cookies
+        .iter()
+        .filter(|c| if c.host_only { host == c.domain } else { domain_match(&host, &c.domain) })
+        .filter(|c| path_match(url.path(), &c.path))
+        .filter(|c| !c.secure || url.scheme() == "https" || host == "localhost")
+        .filter(|c| !(for_script && c.http_only))
+        .collect();
+    // caminhos mais longos primeiro; depois os mais antigos
+    found.sort_by(|a, b| b.path.len().cmp(&a.path.len()).then(a.created.cmp(&b.created)));
+    found
+        .iter()
+        .map(|c| if c.name.is_empty() { c.value.clone() } else { format!("{}={}", c.name, c.value) })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Valor do cabeçalho `Cookie` para uma requisição (vazio = nenhum).
+pub fn header_for(url: &Url) -> String {
+    matching(url, false)
+}
+
+/// O que `document.cookie` devolve (sem os HttpOnly).
+pub fn for_script(url: &Url) -> String {
+    if !matches!(url.scheme(), "http" | "https") {
+        return String::new();
+    }
+    matching(url, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
