@@ -2032,3 +2032,83 @@ pub(crate) fn create_document(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(wrap(vm, d))
 }
 
+/// `__native.parseDocument(html)` (DOMParser).
+pub(crate) fn parse_document(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let html = arg_string(vm, a, 0)?;
+    let d = new_document(vm, &html);
+    Ok(wrap(vm, d))
+}
+
+fn doctype(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.node(Document::ROOT).children.iter().copied().find(|&c| matches!(doc.node(c).data, NodeData::Doctype(_)))
+    });
+    Ok(wrap_opt(vm, n))
+}
+
+fn title(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(s(&read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.find_first("title")
+            .map(|t| doc.text_content(t).split_whitespace().collect::<Vec<_>>().join(" "))
+            .unwrap_or_default()
+    })))
+}
+
+fn set_title(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?;
+    write(vm, |h| {
+        let t = match h.page.doc.find_first("title") {
+            Some(t) => t,
+            None => {
+                let t = h.page.doc.create_element("title");
+                let head = h.page.doc.find_first("head").unwrap_or(Document::ROOT);
+                h.page.doc.append(head, t);
+                t
+            }
+        };
+        h.page.doc.set_text_content(t, &text);
+        h.title_changed = true;
+    });
+    Ok(Value::Undefined)
+}
+
+fn document_url(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(s(read(vm, |h| h.page.url.to_string()).as_str()))
+}
+
+fn ready_state(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(s(read(vm, |h| h.ready_state)))
+}
+
+fn current_script(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = read(vm, |h| h.current_script);
+    Ok(wrap_opt(vm, n))
+}
+
+fn active_element(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = read(vm, |h| h.focused.filter(|&f| h.page.doc.is_connected(f)));
+    let n = n.or_else(|| find_tag(vm, "body"));
+    Ok(wrap_opt(vm, n))
+}
+
+fn default_view(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::Object(vm.realm.global.clone()))
+}
+
+fn create_element(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let tag = arg_string(vm, a, 0)?.to_ascii_lowercase();
+    if tag.is_empty() || tag.contains(|c: char| c.is_whitespace() || c == '<' || c == '>' || c == '"' || c == '/') {
+        return Err(dom_error(
+            vm,
+            "InvalidCharacterError",
+            &format!("The tag name provided ('{tag}') is not a valid name."),
+        ));
+    }
+    let n = write(vm, |h| h.page.doc.create_element(&tag));
+    let el = wrap(vm, n);
+    upgrade_custom(vm, n, &el)?;
+    Ok(el)
+}
+
