@@ -360,3 +360,77 @@ impl App {
         }
     }
 
+    /// Aviso rápido (downloads) por 5 segundos.
+    pub(super) fn draw_toast(&self, p: &mut Painter, t: &Theme, g: &Geo) {
+        let Some(toast) = &self.toast else { return };
+        if toast.since.elapsed() > Duration::from_secs(5) {
+            return;
+        }
+        let c = g.content;
+        let text = p.ellipsize(&toast.text, 13.0, Weight::Regular, (c.w * 0.7).max(200.0));
+        let tw = p.measure(&text, 13.0, Weight::Regular);
+        let r = rect(c.x + (c.w - tw - 52.0) / 2.0, c.y + c.h - 56.0, tw + 52.0, 36.0);
+        p.shadow(r, 18.0, 30);
+        p.rrect(r, 18.0, t.popup);
+        p.stroke(r, 18.0, 1.0, t.border);
+        p.icon(r.x + 20.0, r.y + 18.0, Icon::Download, 16.0, t.accent);
+        p.text(r.x + 36.0, Painter::baseline(r.y + 18.0, 13.0), &text, 13.0, t.text, Weight::Regular);
+    }
+
+    /// Abre a busca na página.
+    pub(super) fn open_find(&mut self) {
+        self.tools.find_open = true;
+        self.tools.find.select_all();
+        self.refresh_find(false);
+    }
+
+    pub(super) fn close_find(&mut self) {
+        self.tools.find_open = false;
+        self.tools.matches.clear();
+        self.request_redraw();
+    }
+
+    /// Refaz a busca; com `jump`, rola até a ocorrência atual.
+    pub(super) fn refresh_find(&mut self, jump: bool) {
+        if let Some(frame) = self.tabs[self.active].frame.as_ref() {
+            self.tools.sync(&frame.items);
+        }
+        self.tools.search();
+        if jump {
+            self.scroll_to_match();
+        }
+        self.request_redraw();
+    }
+
+    pub(super) fn find_step(&mut self, back: bool) {
+        let n = self.tools.matches.len();
+        if n == 0 {
+            return;
+        }
+        self.tools.current = if back { (self.tools.current + n - 1) % n } else { (self.tools.current + 1) % n };
+        self.scroll_to_match();
+        self.request_redraw();
+    }
+
+    fn scroll_to_match(&mut self) {
+        let Some(&(ri, _, _)) = self.tools.matches.get(self.tools.current) else { return };
+        let Some(run) = self.tools.runs.get(ri) else { return };
+        let (top, vh) = (run.top(), self.viewport_css().1);
+        let cur = self.effective_scroll(self.active);
+        if top < cur + 40.0 || top > cur + vh - 60.0 {
+            self.scroll_to(top - vh / 3.0);
+        }
+    }
+
+    /// Copia a seleção da página. Devolve se havia algo selecionado.
+    pub(super) fn copy_selection(&mut self) -> bool {
+        let text = self.tools.selected_text(&self.fonts);
+        if text.is_empty() {
+            return false;
+        }
+        if let Some(cb) = self.clipboard() {
+            let _ = cb.set_text(text);
+        }
+        true
+    }
+}
