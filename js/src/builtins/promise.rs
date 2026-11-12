@@ -198,3 +198,65 @@ impl Vm {
         }
     }
 
+    /// NewPromiseCapability(C).
+    pub fn new_capability(&mut self, ctor: &Value) -> Result<Capability, Value> {
+        let intrinsic = match ctor {
+            Value::Object(c) => self.is_intrinsic_promise_ctor(c),
+            _ => true,
+        };
+        if intrinsic {
+            let p = self.new_promise();
+            let (res, rej) = self.resolving_functions(&p);
+            return Ok(Capability {
+                promise: Value::Object(p),
+                resolve: Value::Object(res),
+                reject: Value::Object(rej),
+            });
+        }
+        let Value::Object(c) = ctor else { unreachable!() };
+        if !c.is_constructor() {
+            return Err(self.type_error("Promise resolve or reject function is not callable"));
+        }
+        let rec = self.new_object();
+        let exec = self.realm.native("", 2, capability_executor);
+        set_native_data(&exec, Value::Object(rec.clone()));
+        let promise = self.construct(c, vec![Value::Object(exec)], c)?;
+        let resolve = self.get_obj(&rec, &PropKey::str("resolve"))?;
+        let reject = self.get_obj(&rec, &PropKey::str("reject"))?;
+        if !resolve.is_callable() || !reject.is_callable() {
+            return Err(self.type_error("Promise resolve or reject function is not callable"));
+        }
+        Ok(Capability { promise, resolve, reject })
+    }
+
+    fn is_intrinsic_promise_ctor(&self, c: &ObjRef) -> bool {
+        match self.realm.promise_proto.borrow().props.get(&PropKey::str("constructor")) {
+            Some(Property {
+                slot: Slot::Data { value: Value::Object(x), .. },
+                ..
+            }) => x.ptr_eq(c),
+            _ => false,
+        }
+    }
+
+    pub fn is_promise(v: &Value) -> bool {
+        matches!(v, Value::Object(o) if matches!(o.borrow().kind, Kind::Promise(_)))
+    }
+
+    /// PromiseResolve(%Promise%, v): a própria promessa ou uma nova resolvida com v.
+    pub fn promise_resolve_value(&mut self, v: Value) -> Result<ObjRef, Value> {
+        if let Value::Object(o) = &v
+            && matches!(o.borrow().kind, Kind::Promise(_))
+        {
+            let ctor = self.get_obj(o, &PropKey::str("constructor"))?;
+            if let Value::Object(c) = &ctor
+                && self.is_intrinsic_promise_ctor(c)
+            {
+                return Ok(o.clone());
+            }
+        }
+        let p = self.new_promise();
+        self.resolve_promise(&p, v);
+        Ok(p)
+    }
+
