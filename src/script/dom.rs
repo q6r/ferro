@@ -2331,3 +2331,67 @@ fn html_element_ctor(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(el)
 }
 
+/// Elemento novo com tag de um elemento personalizado: roda o construtor.
+pub(crate) fn upgrade_custom(vm: &mut Vm, n: NodeId, el: &Value) -> Result<(), Value> {
+    let ctor = read(vm, |h| h.page.doc.tag(n).and_then(|t| h.custom.get(t).cloned()));
+    let Some(ctor) = ctor else { return Ok(()) };
+    if !write(vm, |h| h.upgraded.insert(n)) {
+        return Ok(());
+    }
+    write(vm, |h| h.hooks.insert("__upgrading", el.clone()));
+    let r = vm.construct(&ctor, Vec::new(), &ctor);
+    write(vm, |h| h.hooks.remove("__upgrading"));
+    r.map(|_| ())
+}
+
+/// `window.algumId`: elemento com esse id (acesso nomeado da janela).
+fn named_element(vm: &mut Vm, name: &ferro_js::JsStr) -> Option<Value> {
+    let name = name.to_rust();
+    let found = read(vm, |h| {
+        let doc = &h.page.doc;
+        doc.descendants(Document::ROOT)
+            .into_iter()
+            .find(|&d| doc.element(d).is_some_and(|e| e.id() == Some(name.as_str())))
+    })?;
+    Some(wrap(vm, found))
+}
+
+// ------------------------------------------------------------- instalação
+
+struct Protos<'a> {
+    vm: &'a mut Vm,
+}
+
+impl Protos<'_> {
+    fn make(&mut self, name: &'static str, parent: &ObjRef, ctor: NativeFn) -> ObjRef {
+        let p = ObjRef::new(Object::new(Some(parent.clone()), Kind::Ordinary));
+        self.vm.realm.tag(&p, name);
+        let c = self.vm.realm.ctor(name, 0, ctor, &p);
+        // a cadeia dos construtores também segue a herança (HTMLDivElement.__proto__ === HTMLElement)
+        let from_object = parent.ptr_eq(&self.vm.realm.object_proto);
+        if !from_object
+            && let Some(Value::Object(pc)) = parent.borrow().own(&ferro_js::value::PropKey::str("constructor")).and_then(|pr| match pr.slot {
+                ferro_js::value::Slot::Data { value, .. } => Some(value),
+                _ => None,
+            })
+            && pc.is_callable()
+        {
+            c.borrow_mut().proto = Some(pc);
+        }
+        host(self.vm).borrow_mut().protos.insert(name, p.clone());
+        p
+    }
+
+    fn get(&mut self, p: &ObjRef, name: &str, f: NativeFn) {
+        self.vm.realm.accessor(p, name, Some(f), None);
+    }
+
+    fn get_set(&mut self, p: &ObjRef, name: &str, g: NativeFn, s: NativeFn) {
+        self.vm.realm.accessor(p, name, Some(g), Some(s));
+    }
+
+    fn method(&mut self, p: &ObjRef, name: &str, len: u32, f: NativeFn) {
+        self.vm.realm.method(p, name, len, f);
+    }
+}
+
