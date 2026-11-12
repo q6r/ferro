@@ -1827,3 +1827,47 @@ fn blur(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `el.click()`: dispara o clique e, se não for cancelado, a ação padrão.
+fn click(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let Some(f) = read(vm, |h| h.hooks.get("click").cloned()) else { return Ok(Value::Undefined) };
+    let el = wrap(vm, n);
+    let ok = vm.call(&f, Value::Undefined, vec![el, Value::Number(0.0), Value::Number(0.0)])?;
+    if ferro_js::vm::truthy(&ok) {
+        let target = write(vm, |h| {
+            let doc = &h.page.doc;
+            let el = doc.element(n)?;
+            match el.tag.as_str() {
+                "a" | "area" => el.attr("href").and_then(|href| h.page.base.join(href.trim()).ok()),
+                _ => None,
+            }
+        });
+        if let Some(u) = target {
+            write(vm, |h| h.navigate = Some(u));
+        }
+        let toggle = read(vm, |h| {
+            let el = h.page.doc.element(n)?;
+            (el.tag == "input").then(|| el.attr("type").unwrap_or("").to_ascii_lowercase())
+        });
+        match toggle.as_deref() {
+            Some("checkbox") => {
+                let on = attr_of(vm, n, "checked").is_some();
+                write(vm, |h| {
+                    if on {
+                        h.page.doc.remove_attr(n, "checked");
+                    } else {
+                        h.page.doc.set_attr(n, "checked", "");
+                    }
+                    h.dirty = true;
+                });
+            }
+            Some("radio") => write(vm, |h| {
+                h.page.doc.set_attr(n, "checked", "");
+                h.dirty = true;
+            }),
+            _ => {}
+        }
+    }
+    Ok(Value::Undefined)
+}
+
