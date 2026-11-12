@@ -1034,3 +1034,51 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+/// Desenha um `<svg>` que está no próprio HTML (ícones, logos).
+fn inline_svg(doc: &Document, n: NodeId, w: f32, h: f32, color: Color) -> Option<Arc<ImageData>> {
+    use std::hash::Hasher;
+    if w < 1.0 || h < 1.0 || w > 4096.0 || h > 4096.0 {
+        return None;
+    }
+    let src = doc.serialize(n, true);
+    let mut hs = ferro_js::fxhash::FxHasher::default();
+    hs.write(src.as_bytes());
+    // 2× para ficar nítido com zoom e telas de alta densidade
+    let (pw, ph) = ((w * 2.0).round() as u32, (h * 2.0).round() as u32);
+    let key = (hs.finish(), pw, ph, u32::from_le_bytes([color.r, color.g, color.b, color.a]));
+    INLINE_SVG.with(|c| {
+        if let Some(v) = c.borrow().get(&key) {
+            return v.clone();
+        }
+        let img = crate::svg::parse(&src).map(|svg| Arc::new(svg.render_with(pw, ph, None, color)));
+        let mut c = c.borrow_mut();
+        if c.len() > 2000 {
+            c.clear();
+        }
+        c.insert(key, img.clone());
+        img
+    })
+}
+
+fn track_fixed(t: Track, w: f32) -> Option<f32> {
+    match t {
+        Track::Len(l) => l.resolve(w),
+        _ => None,
+    }
+}
+
+impl<'a> Ctx<'a> {
+    // ---------------------------------------------------- marcas e camadas
+
+    fn mark(&self) -> Mark {
+        Mark {
+            items: self.items.len(),
+            links: self.links.len(),
+            boxes: self.boxes.len(),
+            anchors: self.anchors.len(),
+            layers: self.layers.len(),
+            floats: self.floats.len(),
+            abs: self.abs.iter().map(Vec::len).collect(),
+        }
+    }
+
