@@ -1025,3 +1025,66 @@ fn local_name(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(read(vm, |h| h.page.doc.tag(n).map_or(Value::Null, s)))
 }
 
+fn namespace_uri(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(s(if read(vm, |h| in_svg(&h.page.doc, n)) {
+        "http://www.w3.org/2000/svg"
+    } else {
+        "http://www.w3.org/1999/xhtml"
+    }))
+}
+
+fn attr_of(vm: &Vm, n: NodeId, name: &str) -> Option<String> {
+    read(vm, |h| h.page.doc.element(n).and_then(|e| e.attr(name)).map(str::to_string))
+}
+
+/// Nomes de atributo HTML são insensíveis a maiúsculas.
+fn attr_name(vm: &mut Vm, a: &CallArgs, i: usize) -> Result<String, Value> {
+    Ok(vm.to_rust_string(&a.arg(i))?.to_ascii_lowercase())
+}
+
+fn get_attribute(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let name = attr_name(vm, a, 0)?;
+    Ok(attr_of(vm, n, &name).map_or(Value::Null, |v| s(&v)))
+}
+
+fn set_attr_checked(vm: &mut Vm, n: NodeId, name: &str, value: &str) -> Result<(), Value> {
+    if name.is_empty() || name.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '>' || c == '/' || c == '=') {
+        return Err(dom_error(vm, "InvalidCharacterError", &format!("'{name}' is not a valid attribute name.")));
+    }
+    let old = attr_of(vm, n, name);
+    write(vm, |h| h.page.doc.set_attr(n, name, value));
+    attr_changed(vm, n, name, old);
+    Ok(())
+}
+
+fn set_attribute(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let name = attr_name(vm, a, 0)?;
+    let value = arg_string(vm, a, 1)?;
+    set_attr_checked(vm, n, &name, &value)?;
+    Ok(Value::Undefined)
+}
+
+fn remove_attribute(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let name = attr_name(vm, a, 0)?;
+    let old = attr_of(vm, n, &name);
+    if write(vm, |h| h.page.doc.remove_attr(n, &name)) {
+        attr_changed(vm, n, &name, old);
+    }
+    Ok(Value::Undefined)
+}
+
+fn has_attribute(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let name = attr_name(vm, a, 0)?;
+    Ok(Value::Bool(attr_of(vm, n, &name).is_some()))
+}
+
+fn has_attributes(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    Ok(Value::Bool(read(vm, |h| h.page.doc.element(n).is_some_and(|e| !e.attrs.is_empty()))))
+}
+
