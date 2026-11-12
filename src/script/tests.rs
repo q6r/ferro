@@ -265,3 +265,44 @@ fn modulos_es_na_pagina() {
     });
 }
 
+#[test]
+fn canvas_2d() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<canvas id=c width=40 height=20></canvas><script>
+                 const x = c.getContext('2d');
+                 x.fillStyle = 'red'; x.fillRect(0, 0, 10, 10);
+                 x.save(); x.translate(20, 0); x.fillStyle = 'rgb(0, 0, 255)';
+                 x.beginPath(); x.arc(5, 5, 4, 0, Math.PI * 2); x.fill(); x.restore();
+                 x.strokeStyle = '#0f0'; x.lineWidth = 2; x.beginPath(); x.moveTo(0, 15); x.lineTo(40, 15); x.stroke();
+                 const g = x.createLinearGradient(30, 0, 40, 0); g.addColorStop(0, 'black'); g.addColorStop(1, 'white');
+                 x.fillStyle = g; x.fillRect(30, 0, 10, 10);
+                 x.clearRect(0, 0, 2, 2);
+               </script>"#,
+        );
+        let px = |s: &mut Session, x: i32, y: i32| eval(s, &format!("Array.from(x.getImageData({x}, {y}, 1, 1).data).join()"));
+        assert_eq!(px(&mut s, 5, 5), "255,0,0,255");
+        assert_eq!(px(&mut s, 0, 0), "0,0,0,0");
+        assert_eq!(px(&mut s, 25, 5), "0,0,255,255");
+        assert_eq!(px(&mut s, 20, 0), "0,0,0,0");
+        assert_eq!(px(&mut s, 5, 14), "0,255,0,255");
+        assert_eq!(eval(&mut s, "x.fillStyle = 'rgba(255,0,0,.5)'; x.fillStyle"), "rgba(255, 0, 0, 0.5)");
+        assert_eq!(eval(&mut s, "x.getImageData(30, 5, 10, 1).data[0] < x.getImageData(30, 5, 10, 1).data[36]"), "true");
+        assert_eq!(eval(&mut s, "x.measureText('abc').width > 10"), "true");
+        assert_eq!(eval(&mut s, "c.toDataURL().startsWith('data:image/png;base64,iVBOR')"), "true");
+        assert_eq!(eval(&mut s, "x.isPointInPath(25, 5)"), "false");
+        assert_eq!(eval(&mut s, "x.beginPath(); x.rect(0, 0, 5, 5); x.isPointInPath(2, 2)"), "true");
+        // a página mostra o canvas
+        let frames = s.video_frames();
+        assert_eq!(frames.len(), 1);
+        // putImageData e texto
+        eval(&mut s, "const d = x.createImageData(1, 1); d.data.set([1, 2, 3, 255]); x.putImageData(d, 39, 19);");
+        assert_eq!(px(&mut s, 39, 19), "1,2,3,255");
+        eval(&mut s, "x.fillStyle = '#000'; x.font = 'bold 16px sans-serif'; x.fillText('W', 0, 18)");
+        assert_eq!(eval(&mut s, "Array.from(x.getImageData(0, 4, 14, 14).data).some((v, i) => i % 4 == 3 && v > 200)"), "true");
+        // redimensionar apaga
+        eval(&mut s, "c.width = 10");
+        assert_eq!(eval(&mut s, "x.getImageData(5, 5, 1, 1).data[3] + ',' + c.width"), "0,10");
+    });
+}
+
