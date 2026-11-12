@@ -124,3 +124,74 @@ const MouseEvent = eventClass('MouseEvent', UIEvent, {
 hidden(MouseEvent.prototype, 'getModifierState', function (k) {
   return !!{ Control: this.ctrlKey, Shift: this.shiftKey, Alt: this.altKey, Meta: this.metaKey }[k];
 });
+hidden(MouseEvent.prototype, 'initMouseEvent', function (type, b, c, view, detail, sx, sy, cx, cy, ctrl, alt, shift, meta, button, related) {
+  this.initEvent(type, b, c);
+  Object.assign(this, { view, detail, screenX: sx, screenY: sy, clientX: cx, clientY: cy, ctrlKey: ctrl, altKey: alt, shiftKey: shift, metaKey: meta, button, relatedTarget: related });
+});
+eventClass('PointerEvent', MouseEvent, {
+  pointerId: 1, width: 1, height: 1, pressure: 0, tangentialPressure: 0, tiltX: 0, tiltY: 0, twist: 0,
+  pointerType: 'mouse', isPrimary: true,
+});
+eventClass('WheelEvent', MouseEvent, { deltaX: 0, deltaY: 0, deltaZ: 0, deltaMode: 0 });
+eventClass('DragEvent', MouseEvent, { dataTransfer: null });
+const KeyboardEvent = eventClass('KeyboardEvent', UIEvent, {
+  key: '', code: '', location: 0, repeat: false, isComposing: false, charCode: 0, keyCode: 0, ...MODS,
+});
+hidden(KeyboardEvent.prototype, 'getModifierState', MouseEvent.prototype.getModifierState);
+eventClass('FocusEvent', UIEvent, { relatedTarget: null });
+eventClass('InputEvent', UIEvent, { data: null, inputType: '', isComposing: false, dataTransfer: null });
+eventClass('CompositionEvent', UIEvent, { data: '' });
+eventClass('ErrorEvent', Event, { message: '', filename: '', lineno: 0, colno: 0, error: null });
+eventClass('PopStateEvent', Event, { state: null });
+eventClass('HashChangeEvent', Event, { oldURL: '', newURL: '' });
+const MessageEvent = eventClass('MessageEvent', Event, { data: null, origin: '', lastEventId: '', source: null, ports: [] });
+const ProgressEvent = eventClass('ProgressEvent', Event, { lengthComputable: false, loaded: 0, total: 0 });
+eventClass('PageTransitionEvent', Event, { persisted: false });
+eventClass('AnimationEvent', Event, { animationName: '', elapsedTime: 0, pseudoElement: '' });
+eventClass('TransitionEvent', Event, { propertyName: '', elapsedTime: 0, pseudoElement: '' });
+eventClass('SubmitEvent', Event, { submitter: null });
+eventClass('StorageEvent', Event, { key: null, oldValue: null, newValue: null, url: '', storageArea: null });
+eventClass('PromiseRejectionEvent', Event, { promise: null, reason: undefined });
+eventClass('SecurityPolicyViolationEvent', Event, { blockedURI: '', violatedDirective: '' });
+eventClass('ClipboardEvent', Event, { clipboardData: null });
+eventClass('BeforeUnloadEvent', Event, {});
+
+const ETP = EventTarget.prototype;
+function flagsOf(o) {
+  if (typeof o === 'boolean') return { capture: o };
+  if (o && typeof o === 'object') return { capture: !!o.capture, once: !!o.once, passive: !!o.passive, signal: o.signal };
+  return { capture: false };
+}
+methods(ETP, {
+  addEventListener(type, cb, opts) {
+    const t = this ?? G;
+    if (cb == null) return;
+    const f = flagsOf(opts);
+    if (f.signal && f.signal.aborted) return;
+    type = String(type);
+    let m = LISTENERS.get(t);
+    if (!m) LISTENERS.set(t, m = new Map());
+    let list = m.get(type);
+    if (!list) m.set(type, list = []);
+    if (list.some((l) => l.cb === cb && l.capture === f.capture)) return;
+    list.push({ cb, capture: f.capture, once: !!f.once, passive: !!f.passive, removed: false });
+    if (f.signal) f.signal.addEventListener('abort', () => t.removeEventListener(type, cb, f));
+  },
+  removeEventListener(type, cb, opts) {
+    const t = this ?? G;
+    const m = LISTENERS.get(t);
+    const list = m && m.get(String(type));
+    if (!list) return;
+    const cap = flagsOf(opts).capture;
+    const i = list.findIndex((l) => l.cb === cb && l.capture === cap);
+    if (i >= 0) { list[i].removed = true; list.splice(i, 1); }
+  },
+  dispatchEvent(ev) {
+    if (!(ev instanceof Event)) throw new TypeError("Failed to execute 'dispatchEvent' on 'EventTarget': parameter 1 is not of type 'Event'.");
+    const s = EV.get(ev);
+    if (s.dispatching) throw new DOMException('The event is already being dispatched.', 'InvalidStateError');
+    s.trusted = false;
+    return dispatch(this ?? G, ev);
+  },
+});
+
