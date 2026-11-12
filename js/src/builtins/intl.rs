@@ -1190,3 +1190,84 @@ fn date_format_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     intl_obj(vm, &a.new_target, &a.callee, IntlObj::DateTimeFormat(opts))
 }
 
+/// `required`: "date", "time" ou "any"; `defaults`: o que mostrar se nada foi pedido.
+pub fn make_date_opts(vm: &mut Vm, locale: String, o: &Value, required: &str, defaults: &str) -> Result<DateOpts, Value> {
+    let mut d = DateOpts {
+        locale,
+        ..Default::default()
+    };
+    let tz = opt_str(vm, o, "timeZone", &[])?;
+    d.time_zone = match tz {
+        Some(z) => {
+            let canon = if z.eq_ignore_ascii_case("utc") || z.eq_ignore_ascii_case("etc/utc") || z.eq_ignore_ascii_case("gmt") { "UTC".to_string() } else { z };
+            if (vm.tz)(Some(&canon), 0.0).is_none() {
+                return Err(vm.range_error(format!("Invalid time zone specified: {canon}")));
+            }
+            Some(canon)
+        }
+        None => None,
+    };
+    let text = ["narrow", "short", "long"];
+    let num = ["numeric", "2-digit"];
+    d.weekday = opt_str(vm, o, "weekday", &text)?;
+    d.era = opt_str(vm, o, "era", &text)?;
+    d.year = opt_str(vm, o, "year", &num)?;
+    d.month = opt_str(vm, o, "month", &["numeric", "2-digit", "narrow", "short", "long"])?;
+    d.day = opt_str(vm, o, "day", &num)?;
+    d.hour = opt_str(vm, o, "hour", &num)?;
+    d.minute = opt_str(vm, o, "minute", &num)?;
+    d.second = opt_str(vm, o, "second", &num)?;
+    d.frac = opt_num(vm, o, "fractionalSecondDigits", 1.0, 3.0)?;
+    d.tz_name = opt_str(vm, o, "timeZoneName", &["short", "long", "shortOffset", "longOffset", "shortGeneric", "longGeneric"])?;
+    d.hour12 = opt_bool(vm, o, "hour12")?;
+    if d.hour12.is_none()
+        && let Some(hc) = opt_str(vm, o, "hourCycle", &["h11", "h12", "h23", "h24"])?
+    {
+        d.hour12 = Some(hc == "h11" || hc == "h12");
+    }
+    let styles = ["full", "long", "medium", "short"];
+    d.date_style = opt_str(vm, o, "dateStyle", &styles)?;
+    d.time_style = opt_str(vm, o, "timeStyle", &styles)?;
+    let has_date = d.weekday.is_some() || d.year.is_some() || d.month.is_some() || d.day.is_some();
+    let has_time = d.hour.is_some() || d.minute.is_some() || d.second.is_some() || d.frac.is_some();
+    if (d.date_style.is_some() || d.time_style.is_some()) && (has_date || has_time) {
+        return Err(vm.type_error("Can't set option dateStyle or timeStyle when other date/time options are set"));
+    }
+    let need_defaults = d.date_style.is_none()
+        && d.time_style.is_none()
+        && match required {
+            "date" => !has_date,
+            "time" => !has_time,
+            _ => !has_date && !has_time,
+        };
+    if need_defaults {
+        if defaults == "date" || defaults == "all" {
+            d.year = Some("numeric".into());
+            d.month = Some("numeric".into());
+            d.day = Some("numeric".into());
+        }
+        if defaults == "time" || defaults == "all" {
+            d.hour = Some("numeric".into());
+            d.minute = Some("numeric".into());
+            d.second = Some("numeric".into());
+        }
+    }
+    Ok(d)
+}
+
+/// Componentes de data/hora (já no fuso pedido).
+struct Fields {
+    year: i64,
+    month: usize,
+    day: i64,
+    weekday: usize,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    ms: i64,
+}
+
+fn pad2(n: i64) -> String {
+    format!("{n:02}")
+}
+
