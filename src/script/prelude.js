@@ -940,3 +940,55 @@ accessor(FORM, 'elements', function () {
   return list;
 });
 accessor(FORM, 'length', function () { return this.elements.length; });
+/// Pares nome/valor que um formulário envia.
+function formEntries(form, submitter) {
+  const out = [];
+  for (const el of form.elements) {
+    const name = el.getAttribute('name');
+    if (!name || el.disabled || el.closest('fieldset[disabled]')) continue;
+    const tag = el.localName;
+    if (tag === 'input') {
+      const t = el.type;
+      if ((t === 'checkbox' || t === 'radio') && !el.checked) continue;
+      if (t === 'submit' || t === 'image' || t === 'button' || t === 'reset') { if (el !== submitter) continue; }
+      if (t === 'file') continue;
+      out.push([name, el.value]);
+    } else if (tag === 'select') {
+      for (const o of el.options) if (o.selected) out.push([name, o.value]);
+    } else if (tag === 'textarea') {
+      out.push([name, el.value]);
+    } else if (tag === 'button') {
+      if (el === submitter) out.push([name, el.value]);
+    }
+  }
+  return out;
+}
+function submitForm(form, submitter) {
+  const method = ((submitter && submitter.getAttribute('formmethod')) || form.method).toLowerCase();
+  const action = (submitter && submitter.getAttribute('formaction')) ? resolveURL(submitter.getAttribute('formaction')) : form.action;
+  const entries = formEntries(form, submitter);
+  const query = entries.map(([k, v]) => N.formEncode(k) + '=' + N.formEncode(v)).join('&');
+  if (method === 'get') {
+    N.navigate(N.urlSet(action, 'search', query));
+  } else if ((form.getAttribute('enctype') || '').toLowerCase() === 'multipart/form-data') {
+    const fd = new FormData();
+    for (const [k, v] of entries) fd.append(k, v);
+    const [bytes, ct] = encodeBody(fd);
+    N.navigatePost(action, ct, bytes);
+  } else {
+    N.navigatePost(action, 'application/x-www-form-urlencoded', query);
+  }
+}
+methods(FORM, {
+  submit() { submitForm(this, null); },
+  requestSubmit(submitter) {
+    const ev = new (G.SubmitEvent)('submit', { bubbles: true, cancelable: true, submitter: submitter || null });
+    if (this.dispatchEvent(ev)) submitForm(this, submitter || null);
+  },
+  reset() {
+    for (const el of this.elements) VALUES.delete(el);
+    this.dispatchEvent(new Event('reset', { bubbles: true, cancelable: true }));
+  },
+  checkValidity() { return true; },
+  reportValidity() { return true; },
+});
