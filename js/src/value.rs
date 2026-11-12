@@ -518,3 +518,72 @@ impl WeakColl {
     }
 }
 
+#[derive(Default)]
+pub struct Collection {
+    pub entries: Vec<Option<(Value, Value)>>,
+    pub index: crate::fxhash::FxHashMap<MapKey, usize>,
+}
+
+impl Collection {
+    pub fn get(&self, k: &Value) -> Option<Value> {
+        let i = *self.index.get(&MapKey::of(k))?;
+        self.entries[i].as_ref().map(|e| e.1.clone())
+    }
+
+    pub fn has(&self, k: &Value) -> bool {
+        self.index.contains_key(&MapKey::of(k))
+    }
+
+    pub fn set(&mut self, k: Value, v: Value) {
+        let k = match k {
+            Value::Number(n) if n == 0.0 => Value::Number(0.0),
+            other => other,
+        };
+        let key = MapKey::of(&k);
+        match self.index.get(&key) {
+            Some(&i) => self.entries[i] = Some((k, v)),
+            None => {
+                self.index.insert(key, self.entries.len());
+                self.entries.push(Some((k, v)));
+            }
+        }
+    }
+
+    pub fn delete(&mut self, k: &Value) -> bool {
+        match self.index.remove(&MapKey::of(k)) {
+            Some(i) => {
+                self.entries[i] = None;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        for e in self.entries.iter_mut() {
+            *e = None;
+        }
+        self.index.clear();
+    }
+
+    pub fn size(&self) -> usize {
+        self.index.len()
+    }
+}
+
+/// Tipo de elemento de um typed array.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaKind {
+    I8,
+    U8,
+    U8C,
+    I16,
+    U16,
+    I32,
+    U32,
+    F32,
+    F64,
+    BI64,
+    BU64,
+}
+
