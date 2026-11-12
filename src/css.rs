@@ -974,3 +974,69 @@ pub fn supports_matches(cond: &str) -> bool {
     false
 }
 
+fn parse_font_face(block: &str) -> Option<FontFaceRule> {
+    let decls = parse_declarations(block);
+    let get = |n: &str| decls.iter().find(|d| d.name == n).map(|d| d.value.as_str());
+    let family = get("font-family")?
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_ascii_lowercase();
+    let mut sources: Vec<(u8, String)> = Vec::new();
+    for part in split_top_level(get("src")?, ',') {
+        let Some(url) = css_url(&part) else { continue };
+        let lower = part.to_ascii_lowercase();
+        let rank = if lower.contains("woff2") {
+            0
+        } else if lower.contains("woff") {
+            1
+        } else if lower.contains("truetype") || lower.contains("opentype") || url.ends_with(".ttf") || url.ends_with(".otf") {
+            2
+        } else if lower.contains("embedded-opentype") || lower.contains("format(\"svg") || url.ends_with(".eot") {
+            continue;
+        } else {
+            3
+        };
+        sources.push((rank, url));
+    }
+    sources.sort_by_key(|s| s.0);
+    let weight = match get("font-weight").map(str::trim) {
+        None | Some("normal") => (400, 400),
+        Some("bold") => (700, 700),
+        Some(w) => {
+            let nums: Vec<u16> = w.split_whitespace().filter_map(|t| t.parse().ok()).collect();
+            match nums.as_slice() {
+                [a] => (*a, *a),
+                [a, b, ..] => (*a, *b),
+                _ => (400, 400),
+            }
+        }
+    };
+    let italic = get("font-style").is_some_and(|v| v.contains("italic") || v.contains("oblique"));
+    if sources.is_empty() {
+        return None;
+    }
+    // unicode-range: U+0000-00FF, U+0131, U+2000-206F...
+    let latin = match get("unicode-range") {
+        None => true,
+        Some(r) => r.split(',').any(|part| {
+            let p = part.trim().trim_start_matches(['U', 'u']).trim_start_matches('+');
+            let (a, b) = match p.split_once('-') {
+                Some((a, b)) => (a.to_string(), b.to_string()),
+                None if p.contains('?') => (p.replace('?', "0"), p.replace('?', "F")),
+                None => (p.to_string(), p.to_string()),
+            };
+            match (u32::from_str_radix(&a, 16), u32::from_str_radix(&b, 16)) {
+                (Ok(a), Ok(b)) => a <= 0x7A && b >= 0x41,
+                _ => false,
+            }
+        }),
+    };
+    Some(FontFaceRule {
+        family,
+        sources: sources.into_iter().map(|s| s.1).collect(),
+        weight,
+        italic,
+        latin,
+    })
+}
+
