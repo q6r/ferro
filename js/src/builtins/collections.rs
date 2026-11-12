@@ -358,3 +358,50 @@ fn iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     }
 }
 
+fn map_group_by(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let items = vm.iterate_to_vec(&a.arg(0))?;
+    let f = a.arg(1);
+    let mut c = Collection::default();
+    for (i, item) in items.into_iter().enumerate() {
+        let k = vm.call(&f, Value::Undefined, vec![item.clone(), Value::Number(i as f64)])?;
+        match c.get(&k) {
+            Some(Value::Object(arr)) => {
+                if let Kind::Array(v) = &mut arr.borrow_mut().kind {
+                    v.push(item);
+                }
+            }
+            _ => {
+                let arr = vm.array_value(vec![item]);
+                c.set(k, arr);
+            }
+        }
+    }
+    Ok(Value::Object(ObjRef::new(Object::new(Some(vm.realm.map_proto.clone()), Kind::Map(c)))))
+}
+
+fn weakref_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let nt = require_new(vm, a, "WeakRef")?;
+    if !can_be_weak(&a.arg(0)) {
+        return Err(vm.type_error("WeakRef: target must be an object"));
+    }
+    let def = vm.realm.object_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    let Some((_, target)) = WeakKey::of(&a.arg(0)) else { return Err(vm.type_error("WeakRef: target must be an object")) };
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::WeakRef(target)))))
+}
+
+fn weakref_deref(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::WeakRef(t) = &o.borrow().kind
+    {
+        return Ok(t.get().unwrap_or(Value::Undefined));
+    }
+    Err(vm.type_error("WeakRef.prototype.deref called on incompatible receiver"))
+}
+
+fn finreg_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let nt = require_new(vm, a, "FinalizationRegistry")?;
+    let def = vm.realm.object_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Ordinary))))
+}
