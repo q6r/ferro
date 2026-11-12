@@ -1033,3 +1033,49 @@ fn to_sorted(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(sorted))
 }
 
+fn to_spliced(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let start = rel_index(vm, &a.arg(0), len, 0)?;
+    let skip = if a.args.is_empty() {
+        0
+    } else if a.args.len() == 1 {
+        len - start
+    } else {
+        let n = vm.to_integer(&a.arg(1))?;
+        (n.max(0.0) as usize).min(len - start)
+    };
+    let mut out = Vec::new();
+    for i in 0..start {
+        out.push(get_i(vm, &o, i)?);
+    }
+    out.extend(a.args.iter().skip(2).cloned());
+    for i in start + skip..len {
+        out.push(get_i(vm, &o, i)?);
+    }
+    Ok(vm.array_value(out))
+}
+
+fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let j = vm.get_obj(&o, &PropKey::str("join"))?;
+    if j.is_callable() {
+        return vm.call(&j, Value::Object(o), Vec::new());
+    }
+    super::object::to_string(vm, a)
+}
+
+fn with(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    let len = vm.length_of(&o)?;
+    let n = vm.to_integer(&a.arg(0))?;
+    let idx = if n >= 0.0 { n } else { len as f64 + n };
+    if idx < 0.0 || idx >= len as f64 {
+        return Err(vm.range_error("Invalid index"));
+    }
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        out.push(if i == idx as usize { a.arg(1) } else { get_i(vm, &o, i)? });
+    }
+    Ok(vm.array_value(out))
+}
