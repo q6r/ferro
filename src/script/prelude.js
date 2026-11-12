@@ -330,3 +330,56 @@ for (const P of [NodeList.prototype, HTMLCollection.prototype, NamedNodeMap.prot
   hidden(P, Symbol.iterator, AP.values);
 }
 methods(NodeList.prototype, { forEach: AP.forEach, entries: AP.entries, keys: AP.keys, values: AP.values });
+methods(HTMLCollection.prototype, {
+  namedItem(name) {
+    for (const e of this) if (e.id === name || e.getAttribute('name') === name) return e;
+    return null;
+  },
+});
+methods(NamedNodeMap.prototype, {
+  getNamedItem(name) {
+    name = String(name).toLowerCase();
+    for (const a of this) if (a.name === name) return a;
+    return null;
+  },
+});
+
+// ------------------------------------------------------------ DOMRect
+class DOMRectReadOnly {
+  constructor(x = 0, y = 0, width = 0, height = 0) {
+    Object.assign(this, { x: +x, y: +y, width: +width, height: +height });
+  }
+  get top() { return Math.min(this.y, this.y + this.height); }
+  get left() { return Math.min(this.x, this.x + this.width); }
+  get right() { return Math.max(this.x, this.x + this.width); }
+  get bottom() { return Math.max(this.y, this.y + this.height); }
+  toJSON() {
+    const { x, y, width, height, top, left, right, bottom } = this;
+    return { x, y, width, height, top, left, right, bottom };
+  }
+  static fromRect(r = {}) { return new this(r.x, r.y, r.width, r.height); }
+}
+class DOMRect extends DOMRectReadOnly {}
+hidden(G, 'DOMRectReadOnly', DOMRectReadOnly);
+hidden(G, 'DOMRect', DOMRect);
+
+// ----------------------------------------------------------- classList
+const TOKENS = new WeakMap();
+class DOMTokenList {
+  constructor() { throw new TypeError('Illegal constructor'); }
+}
+function tokensOf(list) {
+  const { el, attr } = TOKENS.get(list);
+  const v = el.getAttribute(attr) || '';
+  return [...new Set(v.split(/[ \t\n\f\r]+/).filter(Boolean))];
+}
+function writeTokens(list, toks) {
+  const { el, attr } = TOKENS.get(list);
+  el.setAttribute(attr, toks.join(' '));
+}
+function checkToken(t, fn) {
+  t = String(t);
+  if (t === '') throw new DOMException(`Failed to execute '${fn}' on 'DOMTokenList': The token provided must not be empty.`, 'SyntaxError');
+  if (/\s/.test(t)) throw new DOMException(`Failed to execute '${fn}' on 'DOMTokenList': The token provided ('${t}') contains HTML space characters, which are not valid in tokens.`, 'InvalidCharacterError');
+  return t;
+}
