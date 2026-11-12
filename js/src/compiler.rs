@@ -662,3 +662,91 @@ impl Usage {
         }
     }
 
+    fn expr(&mut self, e: &Expr, d: u32, a: bool) {
+        match e {
+            Expr::Ident(n, _) => {
+                if &**n == "arguments" && a {
+                    self.uses_arguments = true;
+                }
+                self.name(n, d);
+            }
+            Expr::This => self.special("this", d, a),
+            Expr::NewTarget => self.special("new.target", d, a),
+            Expr::SuperMember(_) => self.special("this", d, a),
+            Expr::SuperIndex(i) => {
+                self.special("this", d, a);
+                self.expr(i, d, a);
+            }
+            Expr::SuperCall(args) => {
+                self.special("this", d, a);
+                self.elems(args, d, a);
+            }
+            Expr::Num(_) | Expr::BigInt(_) | Expr::Str(_) | Expr::Regex(..) | Expr::Null | Expr::Bool(_) | Expr::Unsupported(_) => {}
+            Expr::ImportCall(e) => self.expr(e, d, a),
+            Expr::ImportMeta => {}
+            Expr::Template(_, es) => {
+                for e in es {
+                    self.expr(e, d, a);
+                }
+            }
+            Expr::Tagged { tag, exprs, .. } => {
+                self.expr(tag, d, a);
+                for e in exprs {
+                    self.expr(e, d, a);
+                }
+            }
+            Expr::Array(es) => self.elems(es, d, a),
+            Expr::Object(props) => {
+                for p in props {
+                    if let PropKeyExpr::Computed(k) = &p.key {
+                        self.expr(k, d, a);
+                    }
+                    self.expr(&p.value, d, a);
+                }
+            }
+            Expr::Function(f) => self.func(f, d, a),
+            Expr::Class(c) => self.class(c, d, a),
+            Expr::Unary(_, x) | Expr::Await(x) | Expr::Spread(x) | Expr::OptionalChain(x) => self.expr(x, d, a),
+            Expr::Update { target, .. } => self.expr(target, d, a),
+            Expr::Binary(_, l, r) | Expr::Logical(_, l, r) => {
+                self.expr(l, d, a);
+                self.expr(r, d, a);
+            }
+            Expr::Assign(_, p, v) => {
+                self.pattern(p, d, a);
+                self.expr(v, d, a);
+            }
+            Expr::Cond(t, c, e) => {
+                self.expr(t, d, a);
+                self.expr(c, d, a);
+                self.expr(e, d, a);
+            }
+            Expr::Call { callee, args, .. } => {
+                self.expr(callee, d, a);
+                self.elems(args, d, a);
+            }
+            Expr::New(c, args, _) => {
+                self.expr(c, d, a);
+                self.elems(args, d, a);
+            }
+            Expr::Member { obj, .. } => self.expr(obj, d, a),
+            Expr::Index { obj, index, .. } => {
+                self.expr(obj, d, a);
+                self.expr(index, d, a);
+            }
+            Expr::PrivateMember(o, _) => self.expr(o, d, a),
+            Expr::PrivateIn(_, o) => self.expr(o, d, a),
+            Expr::Seq(es) => {
+                for e in es {
+                    self.expr(e, d, a);
+                }
+            }
+            Expr::Yield(x, _) => {
+                if let Some(x) = x {
+                    self.expr(x, d, a);
+                }
+            }
+        }
+    }
+}
+
