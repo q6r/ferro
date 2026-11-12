@@ -650,3 +650,55 @@ fn has_own(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(vm.has_own(&o, &key)?))
 }
 
+fn group_by(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let items = vm.iterate_to_vec(&a.arg(0))?;
+    let f = a.arg(1);
+    let out = ObjRef::new(Object::new(None, Kind::Ordinary));
+    for (i, item) in items.into_iter().enumerate() {
+        let k = vm.call(&f, Value::Undefined, vec![item.clone(), Value::Number(i as f64)])?;
+        let key = vm.to_property_key(&k)?;
+        let existing = out.borrow().own(&key);
+        match existing {
+            Some(Property {
+                slot: Slot::Data { value: Value::Object(arr), .. },
+                ..
+            }) => {
+                if let Kind::Array(v) = &mut arr.borrow_mut().kind {
+                    v.push(item);
+                }
+            }
+            _ => {
+                let arr = vm.array_value(vec![item]);
+                vm.define_data(&out, key, arr);
+            }
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+fn has_own_property(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let key = vm.to_property_key(&a.arg(0))?;
+    let o = this_obj(vm, a)?;
+    Ok(Value::Bool(vm.has_own(&o, &key)?))
+}
+
+fn is_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(v) = a.arg(0) else { return Ok(Value::Bool(false)) };
+    let o = this_obj(vm, a)?;
+    let mut cur = v.proto();
+    while let Some(p) = cur {
+        if p.ptr_eq(&o) {
+            return Ok(Value::Bool(true));
+        }
+        cur = p.proto();
+    }
+    Ok(Value::Bool(false))
+}
+
+fn property_is_enumerable(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let key = vm.to_property_key(&a.arg(0))?;
+    let o = this_obj(vm, a)?;
+    let r = o.borrow().is_enumerable(&key);
+    Ok(Value::Bool(r))
+}
+
