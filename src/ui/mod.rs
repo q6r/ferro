@@ -1252,3 +1252,41 @@ impl App {
         }
     }
 
+    /// Avisa o motor da aba ativa da posição do mouse na página (só se mudou).
+    fn send_mouse(&mut self, point: Option<(f32, f32)>) {
+        let tab = &mut self.tabs[self.active];
+        let same = match (tab.sent_mouse, point) {
+            (Some(a), Some(b)) => (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            tab.sent_mouse = point;
+            tab.engine.mouse_move(tab.nav, point);
+        }
+    }
+
+    fn on_mouse_move(&mut self, x: f32, y: f32) {
+        self.mouse = (x, y);
+        if let Some(off) = self.drag_scroll {
+            self.drag_scrollbar(y - off);
+            return;
+        }
+        // arrastando sobre a página: seleção de texto
+        if self.tools.selecting
+            && let Some((sx, sy)) = self.tools.press
+            && ((x - sx).abs() > 3.0 || (y - sy).abs() > 3.0)
+        {
+            let c = self.geo().content;
+            let (cx, cy) = (x.clamp(c.x, c.x + c.w - 1.0), y.clamp(c.y, c.y + c.h - 1.0));
+            if let Some((px, py)) = self.page_point(cx, cy)
+                && let Some(caret) = self.tools.caret_at(&self.fonts, px, py)
+                && let Some((a, _)) = self.tools.sel
+            {
+                self.tools.sel = Some((a, caret));
+                self.request_redraw();
+            }
+        }
+        self.update_hover(x, y);
+    }
+
