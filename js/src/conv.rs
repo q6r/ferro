@@ -410,3 +410,68 @@ pub fn to_precision(n: f64, p: usize) -> String {
     if neg { format!("-{out}") } else { out }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn n2s(n: f64) -> String {
+        number_to_string(n)
+    }
+
+    #[test]
+    fn numeros_para_texto() {
+        assert_eq!(n2s(0.1), "0.1");
+        assert_eq!(n2s(0.1 + 0.2), "0.30000000000000004");
+        assert_eq!(n2s(123.0), "123");
+        assert_eq!(n2s(-1.5), "-1.5");
+        assert_eq!(n2s(1e21), "1e+21");
+        assert_eq!(n2s(1e-7), "1e-7");
+        assert_eq!(n2s(1.5e-7), "1.5e-7");
+        assert_eq!(n2s(0.000001), "0.000001");
+        assert_eq!(n2s(123456789012345680000.0), "123456789012345680000");
+        assert_eq!(n2s(f64::NAN), "NaN");
+        assert_eq!(n2s(-0.0), "0");
+        assert_eq!(number_to_string_radix(255.0, 16), "ff");
+        assert_eq!(number_to_string_radix(0.5, 2), "0.1");
+        assert_eq!(number_to_string_radix(-10.0, 2), "-1010");
+    }
+
+    #[test]
+    fn texto_para_numeros() {
+        let s = |x: &str| string_to_number(&x.encode_utf16().collect::<Vec<_>>());
+        assert_eq!(s("  42 "), 42.0);
+        assert_eq!(s("0x1F"), 31.0);
+        assert_eq!(s(""), 0.0);
+        assert_eq!(s("1e3"), 1000.0);
+        assert_eq!(s(".5"), 0.5);
+        assert_eq!(s("5."), 5.0);
+        assert!(s("inf").is_nan());
+        assert!(s("12px").is_nan());
+        assert_eq!(s("-Infinity"), f64::NEG_INFINITY);
+        let pi = |x: &str, r| parse_int(&x.encode_utf16().collect::<Vec<_>>(), r);
+        assert_eq!(pi("12px", 0), 12.0);
+        assert_eq!(pi("0x10", 0), 16.0);
+        assert_eq!(pi("-7.9", 10), -7.0);
+        assert!(pi("abc", 10).is_nan());
+        let pf = |x: &str| parse_float(&x.encode_utf16().collect::<Vec<_>>());
+        assert_eq!(pf("3.14abc"), 3.14);
+        assert_eq!(pf("1e3x"), 1000.0);
+        assert_eq!(pf("-.5"), -0.5);
+    }
+
+    #[test]
+    fn formatos() {
+        assert_eq!(to_fixed(1.005, 2), "1.00");
+        assert_eq!(to_fixed(2.5, 0), "3");
+        assert_eq!(to_fixed(1.25, 1), "1.3");
+        assert_eq!(to_fixed(123.456, 1), "123.5");
+        assert_eq!(to_fixed(-1.5, 0), "-2");
+        assert_eq!(to_exponential(12345.0, Some(2)), "1.23e+4");
+        assert_eq!(to_precision(123.456, 4), "123.5");
+        assert_eq!(to_precision(0.00012, 2), "0.00012");
+        assert_eq!(to_precision(123456.0, 2), "1.2e+5");
+        assert_eq!(to_int32(4294967297.0), 1);
+        assert_eq!(to_int32(-1.0), -1);
+        assert_eq!(to_uint32(-1.0), 4294967295);
+    }
+}
