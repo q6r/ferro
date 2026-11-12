@@ -111,3 +111,63 @@ fn entries(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(out))
 }
 
+fn assign(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let target = arg_obj(vm, a, 0)?;
+    let tv = Value::Object(target.clone());
+    for src in a.args.iter().skip(1).cloned().collect::<Vec<_>>() {
+        if src.is_nullish() {
+            continue;
+        }
+        let so = vm.to_object(&src)?;
+        for k in vm.own_keys(&so)? {
+            if !vm.is_enumerable_own(&so, &k)? {
+                continue;
+            }
+            let v = vm.get_with(&so, &k, &src)?;
+            vm.put(&tv, k, v, true)?;
+        }
+    }
+    Ok(tv)
+}
+
+fn create(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let proto = match a.arg(0) {
+        Value::Object(p) => Some(p),
+        Value::Null => None,
+        _ => return Err(vm.type_error("Object prototype may only be an Object or null")),
+    };
+    let o = ObjRef::new(Object::new(proto, Kind::Ordinary));
+    let props = a.arg(1);
+    if !props.is_undefined() {
+        define_props_from(vm, &o, &props)?;
+    }
+    Ok(Value::Object(o))
+}
+
+/// Descritor de propriedade parcial (campos ausentes = None).
+#[derive(Default, Clone)]
+pub struct Descriptor {
+    pub value: Option<Value>,
+    pub writable: Option<bool>,
+    pub get: Option<Option<ObjRef>>,
+    pub set: Option<Option<ObjRef>>,
+    pub enumerable: Option<bool>,
+    pub configurable: Option<bool>,
+}
+
+impl Descriptor {
+    pub fn is_accessor(&self) -> bool {
+        self.get.is_some() || self.set.is_some()
+    }
+
+    pub fn data(v: Value, all: bool) -> Descriptor {
+        Descriptor {
+            value: Some(v),
+            writable: Some(all),
+            enumerable: Some(all),
+            configurable: Some(all),
+            ..Default::default()
+        }
+    }
+}
+
