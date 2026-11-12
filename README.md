@@ -47,3 +47,42 @@ Captura da interface sem janela: `--captura x.png --tema <carvao|moca|crepusculo
 | Canvas 2D (rasterizador) | `src/canvas.rs` | próprio |
 | Busca na página, seleção, avisos | `src/ui/pagetools.rs` | próprio |
 
+## Ferro JS
+
+Motor de JavaScript próprio, em `js/`: lexer → parser (AST) → análise de capturas → compilador para bytecode → máquina virtual.
+
+| Parte | Arquivo |
+|---|---|
+| Lexer e parser (ES2023) | `js/src/lexer.rs`, `js/src/parser.rs`, `js/src/ast.rs` |
+| Análise de capturas (o que vai para o heap) | `js/src/resolve.rs` |
+| Compilador para bytecode | `js/src/compiler.rs` |
+| Máquina virtual, operações do spec | `js/src/vm.rs`, `js/src/ops.rs` |
+| Strings UTF-16 com cordas | `js/src/string.rs` |
+| Expressões regulares (parser, bytecode, backtracking) | `js/src/regex.rs` |
+| BigInt (precisão arbitrária) | `js/src/bigint.rs` |
+| Idioma e fuso do sistema para o motor | `src/jshost.rs` |
+| Objetos embutidos (Object, Array, JSON, Map, Date, console...) | `js/src/builtins/` |
+| Módulos ES (cada módulo vira uma função assíncrona) | `js/src/module.rs` |
+| Coletor de ciclos (trial deletion sobre os `Rc`) | `js/src/gc.rs` |
+
+Testes: `cargo test -p ferro-js` e o teste diferencial contra o Node (`python js/testes/diferencial.py`), que roda os
+scripts de `js/testes/` nos dois motores e compara a saída linha a linha.
+
+Suporta ES2023 quase completo: classes com `#privados`, desestruturação, geradores, Promise, `async`/`await`, geradores async,
+`for await`, timers, fila de microtarefas, expressões regulares (motor próprio, com lookbehind e `\p{...}`), BigInt,
+ArrayBuffer/typed arrays/DataView, Proxy/Reflect, Date no fuso local e Intl (en, pt, es, fr, de, it), módulos ES
+(`import`/`export`, `import()`, `import.meta`, `await` no topo).
+
+Memória: os objetos são contados por referência e um coletor de ciclos (`gc.rs`) acha os ciclos sem dono — sem
+precisar conhecer as raízes. WeakMap/WeakSet/WeakRef não seguram as chaves (efêmeros). `FERRO_SEM_GC=1` desliga,
+`FERRO_GC_DEBUG=1` mostra o que está vivo. `FERRO_BYTECODE=1` mostra o bytecode (com as superinstruções do otimizador
+de janela; `FERRO_SEM_PEEPHOLE=1` desliga o otimizador).
+
+## Visual
+
+- Dois layouts: **Lateral** (trilho de ícones + lista de abas, kit 4) e **Cápsulas** (abas em pílulas no topo).
+- A página fica num painel flutuante; o endereço é uma cápsula; a busca é uma paleta de vidro fosco (kit "Search or Ask").
+- UI kits e paletas: `assets/uikits`, `assets/pallets`.
+- Temas: Carvão, Moca, Crepúsculo, Névoa e Claro (`src/ui/theme.rs`).
+- Ícones: [Mage Icons](https://mageicons.com), licença Apache 2.0 (`assets/icons/mage/LICENSE.txt`).
+
