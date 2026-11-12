@@ -837,3 +837,76 @@ pub fn sort_values(vm: &mut Vm, mut vals: Vec<Value>, cmp: &Value) -> Result<Vec
     };
     let mut idx: Vec<usize> = (0..vals.len()).collect();
     let mut err: Option<Value> = None;
+    // merge sort com comparador falível
+    fn merge_sort(idx: &mut [usize], buf: &mut Vec<usize>, less_eq: &mut dyn FnMut(usize, usize) -> bool) {
+        let n = idx.len();
+        if n <= 1 {
+            return;
+        }
+        if n <= 8 {
+            for i in 1..n {
+                let mut j = i;
+                while j > 0 && !less_eq(idx[j - 1], idx[j]) {
+                    idx.swap(j - 1, j);
+                    j -= 1;
+                }
+            }
+            return;
+        }
+        let mid = n / 2;
+        merge_sort(&mut idx[..mid], buf, less_eq);
+        merge_sort(&mut idx[mid..], buf, less_eq);
+        buf.clear();
+        let (mut i, mut j) = (0, mid);
+        while i < mid && j < n {
+            if less_eq(idx[i], idx[j]) {
+                buf.push(idx[i]);
+                i += 1;
+            } else {
+                buf.push(idx[j]);
+                j += 1;
+            }
+        }
+        buf.extend_from_slice(&idx[i..mid]);
+        buf.extend_from_slice(&idx[j..n]);
+        idx.copy_from_slice(buf);
+    }
+    let mut buf = Vec::with_capacity(idx.len());
+    {
+        let mut less_eq = |x: usize, y: usize| -> bool {
+            if err.is_some() {
+                return true;
+            }
+            match &keys {
+                Some(ks) => ks[x].units() <= ks[y].units(),
+                None => match vm.call(cmp, Value::Undefined, vec![vals[x].clone(), vals[y].clone()]) {
+                    Ok(r) => {
+                        let n = match r {
+                            Value::Number(n) => n,
+                            other => match vm.to_number(&other) {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    err = Some(e);
+                                    0.0
+                                }
+                            },
+                        };
+                        !(n > 0.0)
+                    }
+                    Err(e) => {
+                        err = Some(e);
+                        true
+                    }
+                },
+            }
+        };
+        merge_sort(&mut idx, &mut buf, &mut less_eq);
+    }
+    if let Some(e) = err {
+        return Err(e);
+    }
+    let mut out: Vec<Value> = idx.into_iter().map(|i| vals[i].clone()).collect();
+    out.extend(std::iter::repeat_n(Value::Undefined, undef_count));
+    Ok(out)
+}
+
