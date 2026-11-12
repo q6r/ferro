@@ -139,3 +139,80 @@ pub enum Pseudo {
     Never,
 }
 
+/// Estado do mouse e do foco, para `:hover`, `:active`, `:focus`...
+#[derive(Default, Clone, Debug, PartialEq)]
+pub struct DynState {
+    /// Elemento sob o mouse e os ancestrais dele (árvore achatada).
+    pub hover: Vec<NodeId>,
+    /// Elemento com o botão do mouse apertado e os ancestrais.
+    pub active: Vec<NodeId>,
+    pub focus: Option<NodeId>,
+    /// O foco veio do teclado (ou é um campo de texto): `:focus-visible`.
+    pub focus_visible: bool,
+    /// Elemento com foco e os ancestrais.
+    pub focus_within: Vec<NodeId>,
+    /// Elemento em tela cheia.
+    pub fullscreen: Option<NodeId>,
+}
+
+thread_local! {
+    static DYN: std::cell::RefCell<DynState> = std::cell::RefCell::new(DynState::default());
+}
+
+/// Diz aos seletores onde estão o mouse e o foco agora.
+pub fn set_dynamic_state(s: DynState) {
+    DYN.with(|d| *d.borrow_mut() = s);
+}
+
+fn dyn_state<R>(f: impl FnOnce(&DynState) -> R) -> R {
+    DYN.with(|d| f(&d.borrow()))
+}
+
+/// Especificidade (ids, classes/atributos/pseudo-classes, tags).
+pub type Specificity = (u32, u32, u32);
+
+impl Selector {
+    pub fn specificity(&self) -> Specificity {
+        let mut s = (0, 0, self.pseudo_element.is_some() as u32);
+        for c in &self.compounds {
+            let cs = c.specificity();
+            s = (s.0 + cs.0, s.1 + cs.1, s.2 + cs.2);
+        }
+        s
+    }
+}
+
+impl Compound {
+    fn specificity(&self) -> Specificity {
+        let mut a = self.id.is_some() as u32;
+        let mut b = (self.classes.len() + self.attrs.len()) as u32;
+        let mut c = self.tag.is_some() as u32;
+        for p in &self.pseudos {
+            match p {
+                Pseudo::Where(_) => {}
+                Pseudo::Not(list) | Pseudo::Is(list) => {
+                    let m = list.iter().map(Selector::specificity).max().unwrap_or((0, 0, 0));
+                    a += m.0;
+                    b += m.1;
+                    c += m.2;
+                }
+                Pseudo::Never => b += 1,
+                _ => b += 1,
+            }
+        }
+        (a, b, c)
+    }
+}
+
+pub fn parse_selector_list(src: &str) -> Option<Vec<Selector>> {
+    let mut out = Vec::new();
+    for part in split_top_level(src, ',') {
+        let part = part.trim();
+        if part.is_empty() {
+            return None;
+        }
+        out.push(parse_selector(part)?);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
