@@ -56,3 +56,49 @@ impl Value {
 pub struct ObjRef(pub Rc<RefCell<Object>>);
 
 impl ObjRef {
+    pub fn new(obj: Object) -> ObjRef {
+        let rc = Rc::new(RefCell::new(obj));
+        crate::gc::track_object(&rc);
+        ObjRef(rc)
+    }
+
+    pub fn ptr_eq(&self, other: &ObjRef) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub fn borrow(&self) -> std::cell::Ref<'_, Object> {
+        self.0.borrow()
+    }
+
+    pub fn borrow_mut(&self) -> std::cell::RefMut<'_, Object> {
+        self.0.borrow_mut()
+    }
+
+    pub fn id(&self) -> usize {
+        Rc::as_ptr(&self.0) as *const u8 as usize
+    }
+
+    pub fn is_callable(&self) -> bool {
+        match &self.borrow().kind {
+            Kind::Function(_) => true,
+            Kind::Proxy { target: Some(t), .. } => t.is_callable(),
+            _ => false,
+        }
+    }
+
+    pub fn is_constructor(&self) -> bool {
+        match &self.borrow().kind {
+            Kind::Function(Func::Closure(c)) => c.code.is_constructor(),
+            Kind::Function(Func::Native(n)) => n.ctor,
+            Kind::Function(Func::Bound { target, .. }) => target.is_constructor(),
+            Kind::Proxy { target: Some(t), .. } => t.is_constructor(),
+            _ => false,
+        }
+    }
+
+    pub fn proto(&self) -> Option<ObjRef> {
+        self.borrow().proto.clone()
+    }
+}
+
+impl PartialEq for ObjRef {
