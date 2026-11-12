@@ -805,3 +805,72 @@ fn parent_post(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `__native.frameParentOrigin()`: origem da página-mãe, ou null na página da aba.
+fn frame_parent_origin(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(read(vm, |h| h.parent_origin.clone()).map_or(Value::Null, |o| Value::str(&o)))
+}
+
+/// `__native.requestFullscreen(el)`: o elemento passa a cobrir a janela.
+fn request_fullscreen(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::Bool(false)) };
+    write(vm, |h| {
+        h.fullscreen = Some(n);
+        h.fullscreen_changed = true;
+        h.dirty = true;
+        crate::css::set_dynamic_state(super::dynamic_state(h));
+    });
+    Ok(Value::Bool(true))
+}
+
+/// `__native.exitFullscreen()`: devolve o elemento que estava em tela cheia.
+fn exit_fullscreen(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = write(vm, |h| {
+        let n = h.fullscreen.take();
+        if n.is_some() {
+            h.fullscreen_changed = true;
+            h.dirty = true;
+            crate::css::set_dynamic_state(super::dynamic_state(h));
+        }
+        n
+    });
+    Ok(super::wrap_opt(vm, n))
+}
+
+fn fullscreen_element(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = read(vm, |h| h.fullscreen);
+    Ok(super::wrap_opt(vm, n))
+}
+
+/// `__native.scrollTo(y)`: a página pede rolagem.
+fn scroll_to(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let y = vm.to_number(&a.arg(0))?;
+    if y.is_finite() {
+        write(vm, |h| {
+            h.scroll_y = y.max(0.0) as f32;
+            h.page_scroll_request = Some(h.scroll_y);
+        });
+    }
+    Ok(Value::Undefined)
+}
+
+fn observing(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    write(vm, |h| h.observing = true);
+    Ok(Value::Undefined)
+}
+
+fn alert(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let t = if a.arg(0).is_undefined() { String::new() } else { arg_string(vm, a, 0)? };
+    eprintln!("[alerta] {t}");
+    Ok(Value::Undefined)
+}
+
+fn confirm(vm: &mut Vm, a: &mut CallArgs) -> R {
+    alert(vm, a)?;
+    Ok(Value::Bool(false))
+}
+
+fn prompt(vm: &mut Vm, a: &mut CallArgs) -> R {
+    alert(vm, a)?;
+    Ok(Value::Null)
+}
+
