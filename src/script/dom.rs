@@ -790,3 +790,75 @@ fn path_to_root(doc: &Document, mut n: NodeId) -> Vec<NodeId> {
     p
 }
 
+fn compare_document_position(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    let o = arg_node(vm, a, 0)?;
+    if n == o {
+        return Ok(Value::Number(0.0));
+    }
+    let r = read(vm, |h| {
+        let doc = &h.page.doc;
+        let (pa, pb) = (path_to_root(doc, n), path_to_root(doc, o));
+        if pa[0] != pb[0] {
+            return 1 | 32 | if o < n { 2 } else { 4 };
+        }
+        let mut i = 0;
+        while i < pa.len() && i < pb.len() && pa[i] == pb[i] {
+            i += 1;
+        }
+        if i == pa.len() {
+            // o é descendente de n
+            return 16 | 4;
+        }
+        if i == pb.len() {
+            return 8 | 2;
+        }
+        let kids = &doc.node(pa[i - 1]).children;
+        let ia = kids.iter().position(|&c| c == pa[i]);
+        let ib = kids.iter().position(|&c| c == pb[i]);
+        if ib < ia { 2 } else { 4 }
+    });
+    Ok(Value::Number(r as f64))
+}
+
+fn normalize(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = this(vm, a)?;
+    write(vm, |h| {
+        let doc = &mut h.page.doc;
+        let mut stack = vec![n];
+        while let Some(p) = stack.pop() {
+            let kids = doc.node(p).children.clone();
+            let mut prev_text: Option<NodeId> = None;
+            for k in kids {
+                let text = match &doc.node(k).data {
+                    NodeData::Text(t) => Some(t.clone()),
+                    _ => None,
+                };
+                match text {
+                    Some(t) if t.is_empty() => doc.detach(k),
+                    Some(t) => match prev_text {
+                        Some(pt) => {
+                            let mut joined = match &doc.node(pt).data {
+                                NodeData::Text(x) => x.clone(),
+                                _ => String::new(),
+                            };
+                            joined.push_str(&t);
+                            doc.set_data(pt, &joined);
+                            doc.detach(k);
+                        }
+                        None => prev_text = Some(k),
+                    },
+                    None => {
+                        prev_text = None;
+                        stack.push(k);
+                    }
+                }
+            }
+        }
+        h.dirty = true;
+    });
+    Ok(Value::Undefined)
+}
+
+// --------------------------------------------------------- CharacterData
+
