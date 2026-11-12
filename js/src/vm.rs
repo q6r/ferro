@@ -1727,3 +1727,71 @@ impl Vm {
         Ok(())
     }
 
+    fn private_get(&mut self, obj: &Value, s: &Value) -> Result<Value, Value> {
+        let (Value::Object(o), Value::Symbol(s)) = (obj, s) else {
+            return Err(self.type_error("Cannot read private member from a non-object"));
+        };
+        let prop = o.borrow().props.get(&PropKey::Sym(s.clone())).cloned();
+        match prop {
+            Some(Property {
+                slot: Slot::Data { value, .. },
+                ..
+            }) => Ok(value),
+            Some(Property {
+                slot: Slot::Accessor { get: Some(g), .. },
+                ..
+            }) => self.call_obj(&g, obj.clone(), Vec::new()),
+            Some(_) => {
+                let d = s.description().map(|d| d.to_rust()).unwrap_or_default();
+                Err(self.type_error(format!("'{d}' was defined without a getter")))
+            }
+            None => {
+                let d = s.description().map(|d| d.to_rust()).unwrap_or_default();
+                Err(self.type_error(format!("Cannot read private member {d} from an object whose class did not declare it")))
+            }
+        }
+    }
+
+    fn private_set(&mut self, obj: &Value, s: &Value, v: Value) -> Result<(), Value> {
+        let (Value::Object(o), Value::Symbol(s)) = (obj, s) else {
+            return Err(self.type_error("Cannot write private member to a non-object"));
+        };
+        let key = PropKey::Sym(s.clone());
+        let setter = {
+            let mut b = o.borrow_mut();
+            match b.props.get_mut(&key) {
+                Some(Property {
+                    slot: Slot::Data { value, writable },
+                    ..
+                }) => {
+                    if !*writable {
+                        drop(b);
+                        let d = s.description().map(|d| d.to_rust()).unwrap_or_default();
+                        return Err(self.type_error(format!("Private method {d} is not writable")));
+                    }
+                    *value = v.clone();
+                    return Ok(());
+                }
+                Some(Property {
+                    slot: Slot::Accessor { set, .. },
+                    ..
+                }) => set.clone(),
+                None => {
+                    drop(b);
+                    let d = s.description().map(|d| d.to_rust()).unwrap_or_default();
+                    return Err(self.type_error(format!("Cannot write private member {d} to an object whose class did not declare it")));
+                }
+            }
+        };
+        match setter {
+            Some(st) => {
+                self.call_obj(&st, obj.clone(), vec![v])?;
+                Ok(())
+            }
+            None => {
+                let d = s.description().map(|d| d.to_rust()).unwrap_or_default();
+                Err(self.type_error(format!("'{d}' was defined without a setter")))
+            }
+        }
+    }
+
