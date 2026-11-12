@@ -604,3 +604,72 @@ impl Lexer {
         }
     }
 
+    /// Lê um pedaço de template a partir do caractere depois de "`" ou "}".
+    pub fn read_template_part(&mut self) -> Result<Tok, LexError> {
+        let mut cooked: Option<Vec<u16>> = Some(Vec::new());
+        let mut raw = String::new();
+        loop {
+            if self.pos >= self.src.len() {
+                return Err(self.err("template sem fim"));
+            }
+            let c = self.peek();
+            if c == '`' {
+                self.pos += 1;
+                return Ok(Tok::Template {
+                    cooked: cooked.map(|v| v.into()),
+                    raw: raw.into(),
+                    tail: true,
+                });
+            }
+            if c == '$' && self.peek_at(1) == '{' {
+                self.pos += 2;
+                return Ok(Tok::Template {
+                    cooked: cooked.map(|v| v.into()),
+                    raw: raw.into(),
+                    tail: false,
+                });
+            }
+            if c == '\\' {
+                let start = self.pos;
+                self.pos += 1;
+                let mut tmp = Vec::new();
+                match self.read_escape(&mut tmp, true) {
+                    Ok(_) => {
+                        if let Some(v) = cooked.as_mut() {
+                            v.extend(tmp);
+                        }
+                    }
+                    Err(_) => {
+                        // escape inválido em template marcado: cooked vira undefined
+                        cooked = None;
+                        self.pos = start + 2;
+                    }
+                }
+                raw.extend(self.src[start..self.pos].iter());
+                continue;
+            }
+            if c == '\r' {
+                // \r\n e \r viram \n
+                self.pos += 1;
+                if self.peek() == '\n' {
+                    self.pos += 1;
+                }
+                self.line += 1;
+                raw.push('\n');
+                if let Some(v) = cooked.as_mut() {
+                    v.push(10);
+                }
+                continue;
+            }
+            if c == '\n' {
+                self.line += 1;
+            }
+            raw.push(c);
+            if let Some(v) = cooked.as_mut() {
+                let mut buf = [0u16; 2];
+                v.extend_from_slice(c.encode_utf16(&mut buf));
+            }
+            self.pos += 1;
+        }
+    }
+
