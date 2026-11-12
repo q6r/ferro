@@ -455,3 +455,56 @@ impl TreeBuilder {
         }
     }
 
+    fn ensure_body(&mut self) {
+        self.ensure_head();
+        if self.body.is_none() {
+            // fecha o <head> (e o que estiver aberto dentro dele)
+            if let Some(pos) = self.stack.iter().position(|&n| Some(n) == self.head) {
+                self.stack.truncate(pos);
+            }
+            let b = self.new_element("body", Vec::new());
+            self.doc.append(self.html.unwrap(), b);
+            self.stack.push(b);
+            self.body = Some(b);
+        }
+    }
+
+    /// Procura `tag` na pilha de abertos, do topo para baixo, parando nos
+    /// limites de escopo e nos nomes em `stop`. Devolve o índice na pilha.
+    fn find_in_scope(&self, tag: &str, stop: &[&str]) -> Option<usize> {
+        for idx in (0..self.stack.len()).rev() {
+            let t = self.tag_at(idx);
+            if t == tag {
+                return Some(idx);
+            }
+            if SCOPE_BOUNDARY.contains(&t) || stop.contains(&t) || t == "body" {
+                return None;
+            }
+        }
+        None
+    }
+
+    fn close_if_open(&mut self, tag: &str, stop: &[&str]) {
+        if let Some(idx) = self.find_in_scope(tag, stop) {
+            self.stack.truncate(idx);
+        }
+    }
+
+    fn in_foreign(&self) -> bool {
+        self.stack
+            .iter()
+            .any(|&n| matches!(self.doc.tag(n), Some("svg") | Some("math")))
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        let parent = self.current();
+        if let Some(&last) = self.doc.nodes[parent].children.last()
+            && let NodeData::Text(t) = &mut self.doc.nodes[last].data
+        {
+            t.push_str(text);
+            return;
+        }
+        let n = self.doc.create(NodeData::Text(text.to_string()));
+        self.doc.append(parent, n);
+    }
+
