@@ -275,3 +275,59 @@ impl Fonts {
         Ok(fonts)
     }
 
+    fn face(&self, id: FontId) -> Option<FontRef<'_>> {
+        if id >= WEB_FONT_BASE {
+            let list = web_fonts().read().unwrap();
+            return list.get(id - WEB_FONT_BASE).map(|w| FontRef::Web(w.font.clone()));
+        }
+        self.faces
+            .get(id)?
+            .font
+            .get_or_init(|| {
+                self.faces[id].candidates.iter().find_map(|p| {
+                    let bytes = std::fs::read(PathBuf::from(p)).ok()?;
+                    // emoji: guarda as camadas coloridas, se a fonte tiver
+                    let _ = self.faces[id].colr.set(ColorTable::parse(&bytes));
+                    Font::from_bytes(bytes, FontSettings::default()).ok()
+                })
+            })
+            .as_ref()
+            .map(FontRef::Sys)
+    }
+
+    /// Fonte de um estilo: primeiro as fontes web pelo nome da família,
+    /// depois a família genérica do sistema.
+    pub fn for_style(&self, s: &ComputedStyle) -> FontId {
+        for name in s.font_names.iter() {
+            if let Some(id) = find_web(name, s.font_weight, s.italic) {
+                return id;
+            }
+        }
+        self.pick(s.font_family, s.font_weight, s.italic)
+    }
+
+    /// Fonte web (`@font-face`) com esse nome de família, se já carregou.
+    pub fn web_font(&self, family: &str, weight: u16, italic: bool) -> Option<FontId> {
+        find_web(family, weight, italic)
+    }
+
+    /// Escolhe a face para um estilo; cai para sans regular se não existir.
+    pub fn pick(&self, family: FontFamily, weight: u16, italic: bool) -> FontId {
+        let base = match family {
+            FontFamily::Sans => 0,
+            FontFamily::Serif => 4,
+            FontFamily::Mono => 8,
+            FontFamily::System => 12,
+        };
+        if family == FontFamily::System && (550..700).contains(&weight) && !italic && self.face(SEMIBOLD).is_some() {
+            return SEMIBOLD;
+        }
+        let id = base + (weight >= 600) as usize + 2 * italic as usize;
+        [id, base, 0, 4].into_iter().find(|&i| self.face(i).is_some()).unwrap_or(0)
+    }
+
+    /// Fonte de ícones do sistema (Segoe Fluent Icons / MDL2), se existir.
+    pub fn icons(&self) -> Option<FontId> {
+        self.face(ICONS).map(|_| ICONS)
+    }
+
