@@ -1284,3 +1284,45 @@ impl Vm {
         Ok(())
     }
 
+    /// Todos os valores de um iterável (spread, Array.from...).
+    pub fn iterate_to_vec(&mut self, v: &Value) -> Result<Vec<Value>, Value> {
+        // caminho rápido: array comum com o iterador padrão
+        if let Value::Object(o) = v
+            && self.has_default_array_iterator(o)
+            && let Kind::Array(items) = &o.borrow().kind
+        {
+            return Ok(items
+                .iter()
+                .map(|x| match x {
+                    Value::Empty => Value::Undefined,
+                    x => x.clone(),
+                })
+                .collect());
+        }
+        let rec = self.get_iterator(v)?;
+        let mut out = Vec::new();
+        while let Some(x) = self.iter_step(&rec)? {
+            out.push(x);
+        }
+        Ok(out)
+    }
+
+    pub fn has_default_array_iterator(&self, o: &ObjRef) -> bool {
+        let b = o.borrow();
+        if !matches!(b.kind, Kind::Array(_)) {
+            return false;
+        }
+        let key = PropKey::Sym(self.realm.sym_iterator.clone());
+        if b.props.contains(&key) {
+            return false;
+        }
+        let Some(p) = &b.proto else { return false };
+        if !p.ptr_eq(&self.realm.array_proto) {
+            return false;
+        }
+        matches!(
+            self.realm.array_proto.borrow().props.get(&key),
+            Some(Property { slot: Slot::Data { value: Value::Object(f), .. }, .. }) if f.ptr_eq(&self.realm.array_values)
+        )
+    }
+
