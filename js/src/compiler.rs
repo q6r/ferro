@@ -1133,3 +1133,43 @@ impl Compiler {
         f.ops.len() - 1
     }
 
+    fn here(&self) -> usize {
+        self.fr().ops.len()
+    }
+
+    fn patch(&mut self, at: usize) {
+        let t = self.here() as u32;
+        self.f().ops[at].set_target(t);
+    }
+
+    fn patch_to(&mut self, at: usize, t: usize) {
+        self.f().ops[at].set_target(t as u32);
+    }
+
+    fn konst(&mut self, s: &str) -> u32 {
+        self.konst_js(JsStr::new(s))
+    }
+
+    fn konst_js(&mut self, s: JsStr) -> u32 {
+        let f = self.f();
+        if let Some(&i) = f.const_map.get(&s) {
+            return i;
+        }
+        let i = f.consts.len() as u32;
+        f.consts.push(Value::String(s.clone()));
+        f.const_map.insert(s, i);
+        i
+    }
+
+    fn line(&mut self, line: u32) {
+        let f = self.f();
+        if line != 0 && f.last_line != line {
+            f.last_line = line;
+            let pc = f.ops.len() as u32;
+            match f.lines.last_mut() {
+                Some(l) if l.0 == pc => l.1 = line,
+                _ => f.lines.push((pc, line)),
+            }
+        }
+    }
+
