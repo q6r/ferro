@@ -278,3 +278,58 @@ fn quote_str(s: &str) -> String {
     out
 }
 
+fn is_ident(s: &str) -> bool {
+    let mut cs = s.chars();
+    match cs.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    cs.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn key_text(k: &PropKey) -> String {
+    match k {
+        PropKey::Str(s) => {
+            let s = s.to_rust();
+            if is_ident(&s) { s } else { quote_str(&s) }
+        }
+        PropKey::Sym(s) => super::symbol::symbol_descriptive(s),
+    }
+}
+
+fn fmt_number(n: f64) -> String {
+    if n == 0.0 && n.is_sign_negative() { "-0".into() } else { number_to_string(n) }
+}
+
+impl Inspector {
+    /// Devolve o texto e quantos níveis de objetos há dentro.
+    fn fmt(&mut self, v: &Value, depth: usize, indent: usize, nested: bool) -> (String, usize) {
+        match v {
+            Value::Undefined | Value::Empty => ("undefined".into(), 0),
+            Value::Null => ("null".into(), 0),
+            Value::Bool(b) => (b.to_string(), 0),
+            Value::Number(n) => (fmt_number(*n), 0),
+            Value::String(s) => {
+                if nested {
+                    (quote_str(&s.to_rust()), 0)
+                } else {
+                    (s.to_rust(), 0)
+                }
+            }
+            Value::Symbol(s) => (super::symbol::symbol_descriptive(s), 0),
+            Value::BigInt(b) => (format!("{}n", b.to_string_radix(10)), 0),
+            Value::Object(o) => self.fmt_object(o, depth, indent),
+        }
+    }
+
+    fn ctor_name(&self, o: &ObjRef) -> Option<String> {
+        let proto = o.proto()?;
+        match data_in_chain(&proto, "constructor") {
+            Some(Value::Object(c)) => match data_in_chain(&c, "name") {
+                Some(Value::String(s)) if !s.is_empty() => Some(s.to_rust()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
