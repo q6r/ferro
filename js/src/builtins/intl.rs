@@ -670,3 +670,111 @@ fn supported_values_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(vm.array_value(vals.iter().map(|s| Value::str(s)).collect()))
 }
 
+fn resolved_options(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let pairs: Vec<(String, Value)> = with_intl(vm, &a.this, |x| {
+        let s = |v: &str| Value::str(v);
+        Some(match x {
+            IntlObj::NumberFormat(o) => {
+                let mut v = vec![
+                    ("locale".into(), s(&o.locale)),
+                    ("numberingSystem".into(), s("latn")),
+                    ("style".into(), s(&o.style)),
+                ];
+                if let Some(c) = &o.currency {
+                    v.push(("currency".into(), s(c)));
+                    v.push(("currencyDisplay".into(), s(&o.currency_display)));
+                }
+                if let Some(u) = &o.unit {
+                    v.push(("unit".into(), s(u)));
+                    v.push(("unitDisplay".into(), s(&o.unit_display)));
+                }
+                v.push(("minimumIntegerDigits".into(), Value::Number(o.min_int as f64)));
+                v.push(("minimumFractionDigits".into(), Value::Number(o.min_frac as f64)));
+                v.push(("maximumFractionDigits".into(), Value::Number(o.max_frac as f64)));
+                if let Some(m) = o.max_sig {
+                    v.push(("minimumSignificantDigits".into(), Value::Number(o.min_sig.unwrap_or(1) as f64)));
+                    v.push(("maximumSignificantDigits".into(), Value::Number(m as f64)));
+                }
+                v.push(("useGrouping".into(), if o.grouping { s("auto") } else { Value::Bool(false) }));
+                v.push(("notation".into(), s(&o.notation)));
+                if o.notation == "compact" {
+                    v.push(("compactDisplay".into(), s(&o.compact_display)));
+                }
+                v.push(("signDisplay".into(), s(&o.sign_display)));
+                v
+            }
+            IntlObj::DateTimeFormat(o) => {
+                let mut v = vec![
+                    ("locale".into(), s(&o.locale)),
+                    ("calendar".into(), s("gregory")),
+                    ("numberingSystem".into(), s("latn")),
+                    ("timeZone".into(), s(o.time_zone.as_deref().unwrap_or("UTC"))),
+                ];
+                if o.hour.is_some() || o.time_style.is_some() {
+                    let h12 = o.hour12.unwrap_or_else(|| data_for(&o.locale).hour12);
+                    v.push(("hourCycle".into(), s(if h12 { "h12" } else { "h23" })));
+                    v.push(("hour12".into(), Value::Bool(h12)));
+                }
+                for (k, val) in [
+                    ("weekday", &o.weekday),
+                    ("era", &o.era),
+                    ("year", &o.year),
+                    ("month", &o.month),
+                    ("day", &o.day),
+                    ("hour", &o.hour),
+                    ("minute", &o.minute),
+                    ("second", &o.second),
+                    ("timeZoneName", &o.tz_name),
+                    ("dateStyle", &o.date_style),
+                    ("timeStyle", &o.time_style),
+                ] {
+                    if let Some(x) = val {
+                        v.push((k.into(), s(x)));
+                    }
+                }
+                v
+            }
+            IntlObj::PluralRules { locale, ordinal } => vec![
+                ("locale".into(), s(locale)),
+                ("type".into(), s(if *ordinal { "ordinal" } else { "cardinal" })),
+                ("minimumIntegerDigits".into(), Value::Number(1.0)),
+                ("minimumFractionDigits".into(), Value::Number(0.0)),
+                ("maximumFractionDigits".into(), Value::Number(3.0)),
+            ],
+            IntlObj::RelativeTime { locale, numeric_auto, style } => vec![
+                ("locale".into(), s(locale)),
+                ("style".into(), s(style)),
+                ("numeric".into(), s(if *numeric_auto { "auto" } else { "always" })),
+                ("numberingSystem".into(), s("latn")),
+            ],
+            IntlObj::ListFormat { locale, kind, style } => vec![
+                ("locale".into(), s(locale)),
+                ("type".into(), s(kind)),
+                ("style".into(), s(style)),
+            ],
+            IntlObj::Collator { locale, numeric, sensitivity } => vec![
+                ("locale".into(), s(locale)),
+                ("usage".into(), s("sort")),
+                ("sensitivity".into(), s(sensitivity)),
+                ("ignorePunctuation".into(), Value::Bool(false)),
+                ("collation".into(), s("default")),
+                ("numeric".into(), Value::Bool(*numeric)),
+                ("caseFirst".into(), s("false")),
+            ],
+            IntlObj::Segmenter { locale, granularity } => vec![
+                ("locale".into(), s(locale)),
+                ("granularity".into(), s(granularity)),
+            ],
+            IntlObj::Locale(t) => vec![("locale".into(), s(t))],
+            IntlObj::DisplayNames { locale, kind } => vec![("locale".into(), s(locale)), ("type".into(), s(kind))],
+        })
+    })?;
+    let o = vm.new_object();
+    for (k, v) in pairs {
+        vm.define_data(&o, PropKey::Str(JsStr::new(&k)), v);
+    }
+    Ok(Value::Object(o))
+}
+
+// ---------------------------------------------------------------- números
+
