@@ -1933,3 +1933,65 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn layout_block_children(
+        &mut self,
+        b: &'a LayoutBox,
+        x: f32,
+        y: f32,
+        w: f32,
+        inh: &Inherited,
+    ) -> (f32, Option<f32>) {
+        let mut cursor = y;
+        let mut prev_mb: Option<f32> = None;
+        let mut first_baseline = None;
+        let mut counter: i64 = b
+            .node()
+            .and_then(|n| self.doc.element(n))
+            .and_then(|e| e.attr("start"))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(1);
+        for child in &b.children {
+            if child.is_out_of_flow() {
+                self.add_pending(child, x, cursor, inh);
+                continue;
+            }
+            let bm = match child.kind {
+                BoxKind::Anonymous => BoxModel::anonymous(w),
+                _ if child.style.display == Display::Table => self.shrink_bm(child, w, true),
+                _ => self.box_model(&child.style, w),
+            };
+            let mut top = cursor + collapse_margins(prev_mb, bm.margin[TOP]);
+            if child.style.clear != Clear::None {
+                top = top.max(self.clear_y(child.style.clear));
+            }
+            let marker = if child.style.display == Display::ListItem {
+                if let Some(v) = child
+                    .node()
+                    .and_then(|n| self.doc.element(n))
+                    .and_then(|e| e.attr("value"))
+                    .and_then(|v| v.trim().parse().ok())
+                {
+                    counter = v;
+                }
+                let m = list_marker(child.style.list_style, counter);
+                counter += 1;
+                m
+            } else {
+                None
+            };
+            let opts = Opts {
+                marker,
+                ..Opts::default()
+            };
+            let r = self.layout_block(child, &bm, x, top, inh, opts);
+            if first_baseline.is_none() {
+                first_baseline = r.first_baseline;
+            }
+            cursor = top + r.height;
+            prev_mb = Some(bm.margin[BOTTOM]);
+        }
+        (cursor + prev_mb.unwrap_or(0.0) - y, first_baseline)
+    }
+
+    // -------------------------------------------------------- posicionados
+
