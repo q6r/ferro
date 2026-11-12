@@ -417,3 +417,53 @@ fn navigate_post(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+fn reload(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    write(vm, |h| h.navigate = Some(h.page.url.clone()));
+    Ok(Value::Undefined)
+}
+
+// ---------------------------------------------------------------- cookies
+
+fn cookie(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let url = read(vm, |h| h.page.url.clone());
+    Ok(s(&crate::cookies::for_script(&url)))
+}
+
+fn set_cookie(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let line = arg_string(vm, a, 0)?;
+    let url = read(vm, |h| h.page.url.clone());
+    crate::cookies::store_from_script(&url, &line);
+    Ok(Value::Undefined)
+}
+
+// ----------------------------------------------------------- armazenamento
+
+/// localStorage: um mapa por origem, para todas as abas.
+static LOCAL: Mutex<Option<HashMap<String, BTreeMap<String, String>>>> = Mutex::new(None);
+
+thread_local! {
+    /// sessionStorage: por aba (cada aba tem a sua thread).
+    static SESSION: std::cell::RefCell<HashMap<String, BTreeMap<String, String>>> = Default::default();
+}
+
+fn origin(vm: &Vm) -> String {
+    read(vm, |h| h.page.url.origin().ascii_serialization())
+}
+
+fn with_store<T>(vm: &mut Vm, a: &CallArgs, f: impl FnOnce(&mut BTreeMap<String, String>) -> T) -> T {
+    let key = origin(vm);
+    if ferro_js::vm::truthy(&a.arg(0)) {
+        SESSION.with(|m| f(m.borrow_mut().entry(key).or_default()))
+    } else {
+        let mut g = LOCAL.lock().unwrap_or_else(|e| e.into_inner());
+        f(g.get_or_insert_with(HashMap::new).entry(key).or_default())
+    }
+}
+
+/// Avisa que o localStorage mudou (para gravar em disco).
+fn local_changed(a: &CallArgs) {
+    if !ferro_js::vm::truthy(&a.arg(0)) {
+        crate::dados::storage_changed();
+    }
+}
+
