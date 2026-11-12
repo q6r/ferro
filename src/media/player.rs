@@ -264,3 +264,65 @@ impl AudioPipe {
     }
 }
 
+/// Abre a saída de som padrão; a callback tira PCM da fila (com reamostragem
+/// linear para a taxa do aparelho).
+fn open_output(shared: Arc<AudioShared>) -> Option<cpal::Stream> {
+    use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    let supported = device.default_output_config().ok()?;
+    if supported.sample_format() != cpal::SampleFormat::F32 {
+        eprintln!("[mídia] formato de saída de som não suportado: {:?}", supported.sample_format());
+        return None;
+    }
+    let config = supported.config();
+    if log_on() {
+        eprintln!("[mídia] saída de som: {} Hz, {} canais", config.sample_rate, config.channels);
+    }
+    let out_rate = config.sample_rate as f64;
+    let out_ch = config.channels as usize;
+    // posição fracionária na fonte (reamostragem)
+    let mut frac = 0.0f64;
+    let stream = device
+        .build_output_stream::<f32, _, _>(
+            config,
+            move |out: &mut [f32], _| {
+                out.iter_mut().for_each(|s| *s = 0.0);
+                if !shared.playing.load(Ordering::Relaxed) {
+                    return;
+                }
+                let vol = f32::from_bits(shared.volume.load(Ordering::Relaxed));
+                let in_ch = shared.channels.load(Ordering::Relaxed).max(1) as usize;
+                let step = shared.rate.load(Ordering::Relaxed) as f64 / out_rate;
+                let Ok(mut pcm) = shared.pcm.try_lock() else { return };
+                for frame in out.chunks_mut(out_ch) {
+                    if pcm.len() < in_ch * 2 {
+                        break;
+                    }
+                    let t = frac as f32;
+                    for (c, slot) in frame.iter_mut().enumerate() {
+                        if c >= in_ch.max(2) {
+                            break;
+                        }
+                        let ic = c.min(in_ch - 1);
+                        let a = pcm[ic];
+                        let b = pcm[in_ch + ic];
+                        *slot = (a + (b - a) * t) * vol;
+                    }
+                    frac += step;
+                    while frac >= 1.0 {
+                        frac -= 1.0;
+                        for _ in 0..in_ch {
+                            pcm.pop_front();
+                        }
+                    }
+                }
+            },
+            |e| eprintln!("[mídia] saída de som: {e}"),
+            None,
+        )
+        .ok()?;
+    stream.play().ok()?;
+    Some(stream)
+}
+
