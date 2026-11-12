@@ -135,3 +135,67 @@ impl Session {
         hb.dirty = true;
     }
 
+    /// Uma volta nos quadros: scripts, timers, mensagens, `load` e o desenho.
+    pub(crate) fn tick_frames(&mut self) {
+        let mut frames = std::mem::take(&mut self.host.borrow_mut().frames);
+        if frames.is_empty() {
+            return;
+        }
+        let mut loaded = Vec::new();
+        let mut messages: Vec<(NodeId, Message)> = Vec::new();
+        let mut navigations = Vec::new();
+        for (&n, c) in frames.iter_mut() {
+            let s = &mut c.session;
+            if s.scripts_pending() {
+                s.step_scripts(std::time::Duration::from_millis(20));
+            }
+            s.tick();
+            if !c.loaded && !s.scripts_pending() && s.idle() {
+                s.finish_load();
+                c.loaded = true;
+                loaded.push(n);
+            }
+            for m in std::mem::take(&mut s.host.borrow_mut().outbox) {
+                messages.push((n, m));
+            }
+            if let Some(nav) = s.take_navigation() {
+                navigations.push((n, nav.url));
+            }
+            if s.wants_frame() {
+                c.stale = true;
+            }
+        }
+        // devolve os quadros (os eventos abaixo podem mexer no documento)
+        {
+            let mut hb = self.host.borrow_mut();
+            let added = std::mem::replace(&mut hb.frames, frames);
+            hb.frames.extend(added);
+        }
+        for n in loaded {
+            let el = wrap(&mut self.js.vm, n);
+            self.hook("fire", vec![el, Value::str("load")]);
+        }
+        for (n, (data, origin, target)) in messages {
+            let mine = self.host.borrow().page.url.origin().ascii_serialization();
+            if target != "*" && target != mine && !target.starts_with(&mine) {
+                continue;
+            }
+            let el = wrap(&mut self.js.vm, n);
+            self.hook("frameMessage", vec![el, Value::str(&data), Value::str(&origin)]);
+        }
+        // link clicado dentro do quadro: o quadro troca de página
+        for (n, url) in navigations {
+            let mut hb = self.host.borrow_mut();
+            hb.frames.remove(&n);
+            hb.frame_loading.insert(n, url.clone());
+            let net = hb.net.clone();
+            let referrer = hb.page.url.clone();
+            hb.in_flight += 1;
+            hb.pool.submit(Box::new(move || {
+                let result = crate::engine::load_frame(&net, &url, Some(&referrer)).map(Box::new);
+                Done::Frame { node: n, url, result }
+            }));
+        }
+        self.paint_frames(false);
+    }
+
