@@ -134,3 +134,65 @@ impl App {
 
     // ----------------------------------------------------- moldura
 
+    pub(super) fn draw_chrome(&self, p: &mut Painter, t: &Theme, g: &Geo, hits: &mut Hits) {
+        if let Some(r) = g.rail {
+            self.draw_rail(p, t, r, g.panel.is_some(), hits);
+        }
+        if let Some(r) = g.panel {
+            self.draw_tab_panel(p, t, r, hits);
+        }
+        if let Some(r) = g.tabs_row {
+            self.draw_tab_chips(p, t, r, hits);
+        }
+        self.draw_bar(p, t, g, hits);
+    }
+
+    fn logo(&self, p: &mut Painter, t: &Theme, x: f32, y: f32, size: f32, on_rail: bool) {
+        if on_rail {
+            let bg = if t.dark { t.rail_icon_active() } else { Color::WHITE };
+            let spark = if t.dark { t.rail() } else { t.accent };
+            p.logo(x, y, size, bg, t.rail(), spark);
+        } else {
+            p.logo(x, y, size, t.text, t.frame, if t.dark { t.frame } else { t.accent });
+        }
+    }
+
+    /// Trilho de ícones (kit 4).
+    fn draw_rail(&self, p: &mut Painter, t: &Theme, r: Rect, panel_open: bool, hits: &mut Hits) {
+        p.rrect(r, 16.0, t.rail());
+        self.logo(p, t, r.x + 11.0, r.y + 12.0, 36.0, true);
+        let kind = self.tab().kind();
+        let top = [
+            (Hit::NewTab, Icon::Plus, false),
+            (Hit::Search, Icon::Search, self.palette_open),
+            (Hit::Home, Icon::Home, kind == Kind::NewTab),
+        ];
+        let mut y = r.y + 76.0;
+        for (hit, icon, active) in top {
+            self.rail_button(p, t, rect(r.x + 7.0, y, 44.0, 44.0), hit, icon, active, hits);
+            y += 52.0;
+        }
+        let bottom = [
+            (Hit::Settings, Icon::Settings, matches!(kind, Kind::Settings(_))),
+            (Hit::TogglePanel, Icon::Panel, panel_open),
+        ];
+        let mut y = r.y + r.h - 54.0;
+        for (hit, icon, active) in bottom {
+            self.rail_button(p, t, rect(r.x + 7.0, y, 44.0, 44.0), hit, icon, active, hits);
+            y -= 52.0;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn rail_button(&self, p: &mut Painter, t: &Theme, b: Rect, hit: Hit, icon: Icon, active: bool, hits: &mut Hits) {
+        let hovered = self.hover == Some(hit);
+        if active {
+            p.rrect(b, 12.0, t.rail_active());
+        } else if hovered {
+            p.rrect(b, 12.0, with_alpha(t.rail_active(), 140));
+        }
+        let color = if active || hovered { t.rail_icon_active() } else { t.rail_icon() };
+        p.icon(b.x + 22.0, b.y + 22.0, icon, 22.0, color);
+        hits.push((b, hit));
+    }
+
