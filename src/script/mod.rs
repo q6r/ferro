@@ -1230,3 +1230,51 @@ impl Session {
         out
     }
 
+    /// Copia os canvas que mudaram. Devolve as cópias novas.
+    fn snapshot_canvases(&mut self) -> Vec<(NodeId, Arc<ImageData>)> {
+        let mut hb = self.host.borrow_mut();
+        if hb.canvas_dirty.is_empty() {
+            return Vec::new();
+        }
+        hb.last_canvas_snap = Some(Instant::now());
+        let dirty: Vec<NodeId> = hb.canvas_dirty.drain().collect();
+        let mut out = Vec::new();
+        for n in dirty {
+            let Some(img) = hb.canvases.get(&n).map(|b| Arc::new(b.snapshot())) else { continue };
+            hb.canvas_snaps.insert(n, img.clone());
+            out.push((n, img));
+        }
+        out
+    }
+
+    /// Canvas redesenhados (no máximo ~60 vezes por segundo): as imagens novas
+    /// vão para a tela sem refazer o layout.
+    pub fn take_canvas_frames(&mut self) -> Vec<(NodeId, Arc<ImageData>)> {
+        let mut out: Vec<(NodeId, Arc<ImageData>)> = {
+            let mut hb = self.host.borrow_mut();
+            let changed: Vec<NodeId> = hb.frames_changed.drain().collect();
+            changed.into_iter().filter_map(|n| hb.frame_images.get(&n).map(|i| (n, i.clone()))).collect()
+        };
+        out.extend(self.take_canvas_images());
+        out
+    }
+
+    fn take_canvas_images(&mut self) -> Vec<(NodeId, Arc<ImageData>)> {
+        let due = self
+            .host
+            .borrow()
+            .last_canvas_snap
+            .is_none_or(|t| t.elapsed() >= Duration::from_millis(16));
+        if !due {
+            return Vec::new();
+        }
+        let connected = {
+            let hb = self.host.borrow();
+            hb.canvas_dirty.iter().any(|&n| hb.page.doc.is_connected(n))
+        };
+        if !connected {
+            return Vec::new();
+        }
+        self.snapshot_canvases()
+    }
+
