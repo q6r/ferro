@@ -280,3 +280,77 @@ pub struct FunctionDef {
     pub line: u32,
 }
 
+#[derive(Debug, Clone)]
+pub enum MemberKind {
+    Method,
+    Getter,
+    Setter,
+    Field(Option<Expr>),
+    StaticBlock(Vec<Stmt>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ClassMember {
+    pub key: PropKeyExpr,
+    pub is_static: bool,
+    pub kind: MemberKind,
+    pub func: Option<Rc<FunctionDef>>,
+}
+
+#[derive(Debug)]
+pub struct ClassDef {
+    pub name: Option<Name>,
+    pub superclass: Option<Expr>,
+    pub constructor: Option<Rc<FunctionDef>>,
+    pub members: Vec<ClassMember>,
+    pub source: Rc<str>,
+    pub line: u32,
+}
+
+#[derive(Debug)]
+pub struct Program {
+    pub body: Vec<Stmt>,
+    pub strict: bool,
+    /// Módulos: nome local importado → (variável com o namespace do módulo
+    /// de origem, nome exportado lá; None = o namespace inteiro).
+    pub imports: crate::fxhash::FxHashMap<Name, (Name, Option<Name>)>,
+}
+
+/// Um item do topo de um módulo.
+#[derive(Debug, Clone)]
+pub enum ModuleItem {
+    Stmt(Stmt),
+    Import(ImportDecl),
+    Export(ExportDecl),
+}
+
+/// `import ... from "x"`.
+#[derive(Debug, Clone)]
+pub struct ImportDecl {
+    pub specifier: String,
+    /// (o que importa, nome local)
+    pub bindings: Vec<(ImportName, Name)>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ImportName {
+    Default,
+    Named(String),
+    Namespace,
+}
+
+#[derive(Debug, Clone)]
+pub enum ExportDecl {
+    /// `export var/let/const/function/class ...`: exporta os nomes declarados.
+    Decl(Stmt),
+    /// `export default function f() {}` / `export default class C {}`.
+    DefaultDecl(Stmt, Name),
+    /// `export default expressão`.
+    DefaultExpr(Expr),
+    /// `export { a, b as c }` (nome local, nome exportado).
+    Names(Vec<(Name, String)>),
+    /// `export { a as b } from "x"` (nome lá, nome exportado aqui).
+    From(String, Vec<(String, String)>),
+    /// `export * from "x"` / `export * as ns from "x"`.
+    All(String, Option<String>),
+}
