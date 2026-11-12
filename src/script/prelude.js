@@ -2756,3 +2756,39 @@ class FormData {
   entries() { return this._list.map((e) => [e[0], e[1]]).values(); }
   [Symbol.iterator]() { return this.entries(); }
 }
+hidden(G, 'FormData', FormData);
+
+// ------------------------------------------------- Abort
+class AbortSignal extends EventTarget {
+  constructor() { super(); this.aborted = false; this.reason = undefined; this.onabort = null; }
+  throwIfAborted() { if (this.aborted) throw this.reason; }
+  static abort(reason) { const c = new AbortController(); c.abort(reason); return c.signal; }
+  static timeout(ms) {
+    const c = new AbortController();
+    setTimeout(() => c.abort(new DOMException('signal timed out', 'TimeoutError')), ms);
+    return c.signal;
+  }
+  static any(signals) {
+    const c = new AbortController();
+    for (const s of signals) {
+      if (s.aborted) { c.abort(s.reason); break; }
+      s.addEventListener('abort', () => c.abort(s.reason));
+    }
+    return c.signal;
+  }
+}
+class AbortController {
+  constructor() { this.signal = new AbortSignal(); }
+  abort(reason) {
+    const s = this.signal;
+    if (s.aborted) return;
+    s.aborted = true;
+    s.reason = reason === undefined ? new DOMException('signal is aborted without reason', 'AbortError') : reason;
+    const ev = new Event('abort');
+    if (typeof s.onabort === 'function') s.onabort(ev);
+    s.dispatchEvent(ev);
+  }
+}
+hidden(G, 'AbortSignal', AbortSignal);
+hidden(G, 'AbortController', AbortController);
+
