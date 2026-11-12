@@ -1063,3 +1063,59 @@ impl Session {
             .map(|(n, _, _)| *n)
     }
 
+    /// O mouse andou sobre a página (coordenadas do documento) ou saiu dela
+    /// (`None`). Dispara mouseover/out/enter/leave/move e atualiza `:hover`.
+    /// Devolve o ponteiro que o CSS pede para o ponto.
+    pub fn mouse_move(&mut self, point: Option<(f32, f32)>) -> Cursor {
+        self.last_input = Some(Instant::now());
+        let target = point.and_then(|(x, y)| self.hit(x, y));
+        // sobre um <iframe>: o quadro decide o ponteiro (e recebe o mouse)
+        if let (Some(t), Some((x, y))) = (target, point)
+            && let Some((n, fx, fy)) = self.frame_at(t, x, y)
+        {
+            let c = self.host.borrow_mut().frames.remove(&n);
+            if let Some(mut c) = c {
+                let cursor = c.session.mouse_move(Some((fx, fy)));
+                if c.session.wants_frame() {
+                    c.stale = true;
+                }
+                self.host.borrow_mut().frames.insert(n, c);
+                return cursor;
+            }
+        }
+        let prev = self.host.borrow().hover;
+        if target != prev {
+            let mut hb = self.host.borrow_mut();
+            hb.hover = target;
+            if hb.dyn_rules.is_none() {
+                let uses = hb.page.css.iter().any(|c| c.text.contains(":hover") || c.text.contains(":active"));
+                hb.dyn_rules = Some(uses);
+            }
+            if hb.dyn_rules == Some(true) {
+                hb.dirty = true;
+            }
+            crate::css::set_dynamic_state(dynamic_state(&hb));
+        }
+        let (x, y) = point.unwrap_or((0.0, 0.0));
+        if target.is_some() || prev.is_some() {
+            let scroll = self.host.borrow().scroll_y;
+            let connected = |s: &Self, n: NodeId| {
+                let hb = s.host.borrow();
+                n < hb.page.doc.nodes.len() && hb.page.doc.is_connected(n)
+            };
+            let t = match target {
+                Some(n) => wrap(&mut self.js.vm, n),
+                None => Value::Null,
+            };
+            let p = match prev.filter(|&n| target != prev && connected(self, n)) {
+                Some(n) => wrap(&mut self.js.vm, n),
+                None => Value::Null,
+            };
+            self.hook(
+                "move",
+                vec![t, Value::Number(x as f64), Value::Number((y - scroll) as f64), p, Value::Bool(target != prev)],
+            );
+        }
+        self.cursor_at(target)
+    }
+
