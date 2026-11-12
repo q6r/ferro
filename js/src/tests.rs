@@ -135,3 +135,65 @@ fn objetos_arrays_desestruturacao() {
     );
 }
 
+#[test]
+fn classes() {
+    check(
+        r#"
+        class Animal {
+            #nome;
+            static total = 0;
+            constructor(nome) { this.#nome = nome; Animal.total++; }
+            get nome() { return this.#nome; }
+            fala() { return `${this.#nome} faz barulho`; }
+            static criar(n) { return new this(n); }
+            #segredo() { return "s"; }
+            revela() { return this.#segredo(); }
+            static #privado = 42;
+            static lerPrivado() { return Animal.#privado; }
+        }
+        class Cao extends Animal {
+            raca = "vira-lata";
+            constructor(nome) { super(nome); }
+            fala() { return super.fala() + " (au)"; }
+        }
+        const d = new Cao("Rex");
+        console.log(d.fala(), d.nome, d.raca, Animal.total, d instanceof Animal, d.revela());
+        console.log(Cao.criar("Bob").nome, Animal.total, Animal.lerPrivado());
+        class Ponto { constructor(x, y) { this.x = x; this.y = y; } toString() { return `(${this.x}, ${this.y})`; } }
+        console.log(String(new Ponto(1, 2)), `${new Ponto(3, 4)}`, new Ponto(5, 6));
+        try { Animal(); } catch (e) { console.log(e.message); }
+        class Erro extends Error { constructor(m) { super(m); this.name = "Erro"; } }
+        const e = new Erro("falhou");
+        console.log(e instanceof Error, e.name, e.message, String(e));
+        class A { static { A.iniciado = true; } }
+        console.log(A.iniciado, typeof A, Object.getPrototypeOf(Cao) === Animal);
+        "#,
+        "Rex faz barulho (au) Rex vira-lata 1 true s\nBob 2 42\n(1, 2) (3, 4) Ponto { x: 5, y: 6 }\nClass constructor Animal cannot be invoked without 'new'\ntrue Erro falhou Erro: falhou\ntrue function true",
+    );
+}
+
+#[test]
+fn funcoes_this_bind() {
+    check(
+        r#"
+        function soma(...xs) { return xs.reduce((a, b) => a + b, 0); }
+        console.log(soma(1, 2, 3), soma.apply(null, [4, 5]), soma.call(null, 6), soma.length, soma.name);
+        const o = { v: 10, f() { return this.v; }, g: () => typeof this };
+        const solto = o.f;
+        console.log(o.f(), solto.call({ v: 20 }), o.f.bind({ v: 30 })(), o.g());
+        function padrao(a, b = a * 2, { c } = { c: 3 }) { return [a, b, c]; }
+        console.log(padrao(1), padrao(1, 5, { c: 7 }));
+        const fat = function f(n) { return n <= 1 ? 1 : n * f(n - 1); };
+        console.log(fat(10), (x => y => x + y)(1)(2));
+        function Pessoa(nome) { this.nome = nome; }
+        Pessoa.prototype.oi = function () { return "oi " + this.nome; };
+        console.log(new Pessoa("Ana").oi(), new Pessoa("Bia") instanceof Pessoa);
+        console.log(new Function("a", "b", "return a * b")(6, 7));
+        const tag = (s, ...v) => s.raw.join("|") + v.join(",");
+        console.log(tag`a${1}b${2}c`);
+        console.log([1, 2, 3].map(String), ["1", "2", "3"].map(Number), ["a", "b"].map((x, i) => x + i));
+        "#,
+        "6 9 6 0 soma\n10 20 30 object\n[ 1, 2, 3 ] [ 1, 5, 7 ]\n3628800 3\noi Ana true\n42\na|b|c1,2\n[ '1', '2', '3' ] [ 1, 2, 3 ] [ 'a0', 'b1' ]",
+    );
+}
+
