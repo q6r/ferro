@@ -117,3 +117,29 @@ pub fn format_args(vm: &mut Vm, args: &[Value]) -> Result<String, Value> {
     Ok(out)
 }
 
+fn log(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = format_args(vm, &a.args)?;
+    emit(vm, Out::Log, &s);
+    Ok(Value::Undefined)
+}
+
+fn warn(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = format_args(vm, &a.args)?;
+    emit(vm, Out::Error, &s);
+    Ok(Value::Undefined)
+}
+
+fn trace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = format_args(vm, &a.args)?;
+    let header = if s.is_empty() { "Trace".to_string() } else { format!("Trace: {s}") };
+    let st = vm.stack_trace(&header);
+    emit(vm, Out::Error, &st);
+    Ok(Value::Undefined)
+}
+
+fn dir(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = inspect(vm, &a.arg(0), 2);
+    emit(vm, Out::Log, &s);
+    Ok(Value::Undefined)
+}
+
