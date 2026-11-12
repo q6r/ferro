@@ -228,3 +228,58 @@ pub fn parse_float(units: &[u16]) -> f64 {
     s[..end].trim_end_matches('.').parse::<f64>().unwrap_or(f64::NAN)
 }
 
+/// `parseInt(texto, base)`.
+pub fn parse_int(units: &[u16], radix: i32) -> f64 {
+    let t = trim_js(units);
+    let mut i = 0;
+    let mut neg = false;
+    if i < t.len() && (t[i] == b'+' as u16 || t[i] == b'-' as u16) {
+        neg = t[i] == b'-' as u16;
+        i += 1;
+    }
+    let mut radix = radix;
+    let mut strip_prefix = true;
+    if radix != 0 {
+        if !(2..=36).contains(&radix) {
+            return f64::NAN;
+        }
+        if radix != 16 {
+            strip_prefix = false;
+        }
+    } else {
+        radix = 10;
+    }
+    if strip_prefix && i + 1 < t.len() && t[i] == b'0' as u16 && (t[i + 1] == b'x' as u16 || t[i + 1] == b'X' as u16) {
+        i += 2;
+        radix = 16;
+    }
+    let mut v = 0f64;
+    let mut any = false;
+    while i < t.len() {
+        let c = t[i];
+        let d = match c {
+            0x30..=0x39 => (c - 0x30) as i32,
+            0x61..=0x7a => (c - 0x61) as i32 + 10,
+            0x41..=0x5a => (c - 0x41) as i32 + 10,
+            _ => break,
+        };
+        if d >= radix {
+            break;
+        }
+        v = v * radix as f64 + d as f64;
+        any = true;
+        i += 1;
+    }
+    if !any {
+        return f64::NAN;
+    }
+    if radix == 10 && v >= 1e21 {
+        // precisão: deixa o Rust converter o texto decimal
+        let s: String = t[..i].iter().map(|&c| c as u8 as char).collect();
+        if let Ok(x) = s.trim_start_matches(['+', '-']).parse::<f64>() {
+            v = x;
+        }
+    }
+    if neg { -v } else { v }
+}
+
