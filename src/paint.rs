@@ -720,3 +720,68 @@ impl Canvas {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_text(
+        &mut self,
+        fonts: &Fonts,
+        x: f32,
+        baseline: f32,
+        text: &str,
+        font: FontId,
+        size: f32,
+        color: Color,
+        clip: Option<Rect>,
+    ) {
+        let c = self.clip(clip);
+        self.text_clip(fonts, x, baseline, text, font, size, color, c);
+    }
+
+    pub fn draw_image(&mut self, img: &ImageData, r: Rect, clip: Option<Rect>) {
+        let c = self.clip(clip);
+        self.image_clip(img, r, c);
+    }
+
+    // ---------------------------------------------------------- implementação
+
+    #[inline]
+    fn blend(&mut self, x: i32, y: i32, color: Color, coverage: u32) {
+        let a = color.a as u32 * coverage / 255;
+        if a == 0 {
+            return;
+        }
+        let i = y as usize * self.width + x as usize;
+        self.pixels[i] = if a == 255 {
+            pack(color)
+        } else {
+            mix(self.pixels[i], color.r as u32, color.g as u32, color.b as u32, a)
+        };
+    }
+
+    fn fill_clip(&mut self, r: Rect, color: Color, clip: Clip) {
+        if color.a == 0 {
+            return;
+        }
+        let c = clip.intersect(Clip {
+            x0: r.x.round() as i32,
+            y0: r.y.round() as i32,
+            x1: (r.x + r.w).round() as i32,
+            y1: (r.y + r.h).round() as i32,
+        });
+        if c.is_empty() {
+            return;
+        }
+        if color.a == 255 {
+            let p = pack(color);
+            for y in c.y0..c.y1 {
+                let row = y as usize * self.width;
+                self.pixels[row + c.x0 as usize..row + c.x1 as usize].fill(p);
+            }
+        } else {
+            for y in c.y0..c.y1 {
+                for x in c.x0..c.x1 {
+                    self.blend(x, y, color, 255);
+                }
+            }
+        }
+    }
+
