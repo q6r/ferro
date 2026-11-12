@@ -979,3 +979,79 @@ impl Canvas {
         self.image_tinted(img, r, clip, None);
     }
 
+    /// Imagem escalada: bilinear para ampliar, média de amostras para reduzir.
+    /// Com `tint`, usa só o alfa da imagem e pinta com essa cor.
+    fn image_tinted(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>) {
+        if img.width == 0 || img.height == 0 || r.w < 0.5 || r.h < 0.5 {
+            return;
+        }
+        let c = clip.intersect(Clip {
+            x0: r.x.round() as i32,
+            y0: r.y.round() as i32,
+            x1: (r.x + r.w).round() as i32,
+            y1: (r.y + r.h).round() as i32,
+        });
+        if c.is_empty() {
+            return;
+        }
+        let (iw, ih) = (img.width as usize, img.height as usize);
+        let sx = iw as f32 / r.w;
+        let sy = ih as f32 / r.h;
+        let px = |x: usize, y: usize| {
+            let i = (y * iw + x) * 4;
+            [img.rgba[i] as f32, img.rgba[i + 1] as f32, img.rgba[i + 2] as f32, img.rgba[i + 3] as f32]
+        };
+        // número de amostras por eixo ao reduzir
+        let nx = sx.ceil().clamp(1.0, 4.0) as usize;
+        let ny = sy.ceil().clamp(1.0, 4.0) as usize;
+        for y in c.y0..c.y1 {
+            for x in c.x0..c.x1 {
+                let mut acc = [0.0f32; 4];
+                for j in 0..ny {
+                    for i in 0..nx {
+                        let fx = (x as f32 + (i as f32 + 0.5) / nx as f32 - r.x) * sx - 0.5;
+                        let fy = (y as f32 + (j as f32 + 0.5) / ny as f32 - r.y) * sy - 0.5;
+                        let fx = fx.clamp(0.0, (iw - 1) as f32);
+                        let fy = fy.clamp(0.0, (ih - 1) as f32);
+                        let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);
+                        let (x1, y1) = ((x0 + 1).min(iw - 1), (y0 + 1).min(ih - 1));
+                        let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+                        let (a, b, cc, d) = (px(x0, y0), px(x1, y0), px(x0, y1), px(x1, y1));
+                        for k in 0..4 {
+                            let top = a[k] + (b[k] - a[k]) * tx;
+                            let bot = cc[k] + (d[k] - cc[k]) * tx;
+                            acc[k] += top + (bot - top) * ty;
+                        }
+                    }
+                }
+                let n = (nx * ny) as f32;
+                let col = match tint {
+                    Some(t) => Color {
+                        a: ((acc[3] / n) * t.a as f32 / 255.0) as u8,
+                        ..t
+                    },
+                    None => Color {
+                        r: (acc[0] / n) as u8,
+                        g: (acc[1] / n) as u8,
+                        b: (acc[2] / n) as u8,
+                        a: (acc[3] / n) as u8,
+                    },
+                };
+                self.blend(x, y, col, 255);
+            }
+        }
+    }
+
+    pub fn save_png(&self, path: &Path) -> Result<(), String> {
+        let file = std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), self.width as u32, self.height as u32);
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        let mut w = enc.write_header().map_err(|e| e.to_string())?;
+        let mut data = Vec::with_capacity(self.pixels.len() * 3);
+        for p in &self.pixels {
+            data.extend_from_slice(&[(p >> 16) as u8, (p >> 8) as u8, *p as u8]);
+        }
+        w.write_image_data(&data).map_err(|e| e.to_string())
+    }
+}
