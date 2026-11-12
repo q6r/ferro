@@ -281,3 +281,80 @@ fn coll_for_each(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Undefined)
 }
 
+fn make_iter(vm: &mut Vm, a: &CallArgs, kind: IterKind) -> Result<Value, Value> {
+    let Value::Object(o) = &a.this else {
+        return Err(vm.type_error("Method called on incompatible receiver"));
+    };
+    let proto = match &o.borrow().kind {
+        Kind::Map(_) => vm.realm.map_iter_proto.clone(),
+        Kind::Set(_) => vm.realm.set_iter_proto.clone(),
+        _ => return Err(vm.type_error("Method called on incompatible receiver")),
+    };
+    Ok(Value::Object(ObjRef::new(Object::new(
+        Some(proto),
+        Kind::MapIter {
+            target: o.clone(),
+            index: 0,
+            kind,
+        },
+    ))))
+}
+
+fn coll_keys(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    make_iter(vm, a, IterKind::Keys)
+}
+
+fn coll_values(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    make_iter(vm, a, IterKind::Values)
+}
+
+fn coll_entries(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    make_iter(vm, a, IterKind::Entries)
+}
+
+fn iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(it) = &a.this else {
+        return Err(vm.type_error("next method called on incompatible receiver"));
+    };
+    let (target, index, kind) = match &it.borrow().kind {
+        Kind::MapIter { target, index, kind } => (target.clone(), *index, *kind),
+        _ => return Err(vm.type_error("next method called on incompatible receiver")),
+    };
+    let found = {
+        let b = target.borrow();
+        let c = match &b.kind {
+            Kind::Map(c) | Kind::Set(c) => c,
+            _ => return Ok(iter_result(vm, Value::Undefined, true)),
+        };
+        let mut i = index;
+        let mut out = None;
+        while i < c.entries.len() {
+            if let Some(e) = &c.entries[i] {
+                out = Some((i, e.clone()));
+                break;
+            }
+            i += 1;
+        }
+        out
+    };
+    match found {
+        Some((i, (k, v))) => {
+            if let Kind::MapIter { index, .. } = &mut it.borrow_mut().kind {
+                *index = i + 1;
+            }
+            let val = match kind {
+                IterKind::Keys => k,
+                IterKind::Values => v,
+                IterKind::Entries => vm.array_value(vec![k, v]),
+            };
+            Ok(iter_result(vm, val, false))
+        }
+        None => {
+            if let Kind::MapIter { index, .. } = &mut it.borrow_mut().kind {
+                *index = usize::MAX / 2;
+            }
+            Ok(iter_result(vm, Value::Undefined, true))
+        }
+    }
+}
+
