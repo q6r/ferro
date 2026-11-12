@@ -178,3 +178,61 @@ pub fn build_box_tree(doc: &Document, styles: &Styles) -> Option<LayoutBox> {
     Some(root)
 }
 
+fn build(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox> {
+    let Some(style) = styles[node].clone() else {
+        return Vec::new();
+    };
+    match &doc.node(node).data {
+        NodeData::Text(t) if !t.is_empty() => vec![LayoutBox::new(BoxKind::Text(node), style, Vec::new())],
+        NodeData::Element(el) => {
+            if style.display == Display::None || style.visually_hidden() {
+                return Vec::new();
+            }
+            let boxed = style.is_out_of_flow() || style.float != Float::None;
+            if REPLACED.contains(&el.tag.as_str()) {
+                let atomic = LayoutBox::new(BoxKind::Atomic(node), style.clone(), Vec::new());
+                if boxed {
+                    // caixa posicionada/flutuante em volta do elemento substituído
+                    return vec![LayoutBox::new(BoxKind::Block(node), style, vec![atomic])];
+                }
+                return vec![atomic];
+            }
+            let mut children: Vec<LayoutBox> = Vec::new();
+            if let Some(ps) = styles.before.get(&node) {
+                children.extend(pseudo_box(doc, el, node, ps.clone()));
+            }
+            if !style.content_hidden {
+                children.extend(doc.flat_children(node).iter().flat_map(|&c| build(doc, styles, c)));
+            }
+            if let Some(ps) = styles.after.get(&node) {
+                children.extend(pseudo_box(doc, el, node, ps.clone()));
+            }
+            if style.display == Display::Contents {
+                return children;
+            }
+            let inline_block = !boxed && style.display.is_inline_block();
+            // Um elemento em linha que contém blocos vira bloco (simplificação
+            // do "block-in-inline" do CSS); posicionados e floats também.
+            let block = !inline_block
+                && (boxed || style.display.is_block_level() || children.iter().any(LayoutBox::is_inflow_block));
+            let kind = if inline_block {
+                BoxKind::InlineBlock(node)
+            } else if block {
+                BoxKind::Block(node)
+            } else {
+                BoxKind::Inline(node)
+            };
+            let mut b = LayoutBox::new(kind, style, children);
+            if block || inline_block {
+                if b.style.display.is_flex() || b.style.display.is_grid() {
+                    make_flex_items(doc, &mut b);
+                } else {
+                    wrap_inline_children(doc, &mut b);
+                }
+            }
+            vec![b]
+        }
+        _ => Vec::new(),
+    }
+}
+
