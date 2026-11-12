@@ -508,3 +508,53 @@ impl TreeBuilder {
         self.doc.append(parent, n);
     }
 
+    fn process(&mut self, token: Token) {
+        let skip_newline = std::mem::take(&mut self.skip_newline);
+        match token {
+            Token::Doctype(d) => {
+                if self.html.is_none() {
+                    let n = self.doc.create(NodeData::Doctype(d));
+                    self.doc.append(Document::ROOT, n);
+                }
+            }
+            Token::Comment(c) => {
+                let n = self.doc.create(NodeData::Comment(c));
+                let parent = self.current();
+                self.doc.append(parent, n);
+            }
+            Token::Text(mut t) => {
+                if skip_newline {
+                    if t.starts_with("\r\n") {
+                        t.drain(..2);
+                    } else if t.starts_with('\n') {
+                        t.drain(..1);
+                    }
+                    if t.is_empty() {
+                        return;
+                    }
+                }
+                if self.body.is_none() {
+                    let in_head_text = self
+                        .stack
+                        .last()
+                        .is_some_and(|&n| matches!(self.doc.tag(n), Some("title" | "style" | "script")));
+                    if in_head_text {
+                        self.insert_text(&t);
+                        return;
+                    }
+                    if t.chars().all(char::is_whitespace) {
+                        return;
+                    }
+                    self.ensure_body();
+                }
+                self.insert_text(&t);
+            }
+            Token::StartTag {
+                name,
+                attrs,
+                self_closing,
+            } => self.start_tag(name, attrs, self_closing),
+            Token::EndTag { name } => self.end_tag(&name),
+        }
+    }
+
