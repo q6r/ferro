@@ -702,3 +702,61 @@ fn property_is_enumerable(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value>
     Ok(Value::Bool(r))
 }
 
+/// Object.prototype.toString: "[object Tipo]".
+pub fn to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let tag = match &a.this {
+        Value::Undefined | Value::Empty => return Ok(Value::str("[object Undefined]")),
+        Value::Null => return Ok(Value::str("[object Null]")),
+        _ => {
+            let o = vm.to_object(&a.this)?;
+            let builtin = {
+                let b = o.borrow();
+                match &b.kind {
+                    Kind::Array(_) => "Array",
+                    Kind::Function(_) => "Function",
+                    Kind::Error => "Error",
+                    Kind::Boolean(_) => "Boolean",
+                    Kind::Number(_) => "Number",
+                    Kind::String(_) => "String",
+                    Kind::Date(_) => "Date",
+                    Kind::RegExp { .. } => "RegExp",
+                    Kind::Arguments => "Arguments",
+                    _ => "Object",
+                }
+            };
+            let key = PropKey::Sym(vm.realm.sym_to_string_tag.clone());
+            match vm.get_obj(&o, &key)? {
+                Value::String(s) => s.to_rust(),
+                _ => builtin.to_string(),
+            }
+        }
+    };
+    Ok(Value::str(&format!("[object {tag}]")))
+}
+
+fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let f = vm.get_str(&a.this, "toString")?;
+    vm.call(&f, a.this.clone(), Vec::new())
+}
+
+fn value_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Object(this_obj(vm, a)?))
+}
+
+fn proto_get(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let o = this_obj(vm, a)?;
+    Ok(o.proto().map(Value::Object).unwrap_or(Value::Null))
+}
+
+fn proto_set(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if let Value::Object(o) = &a.this {
+        let p = match a.arg(0) {
+            Value::Object(p) => Some(p),
+            Value::Null => None,
+            _ => return Ok(Value::Undefined),
+        };
+        set_proto_checked(vm, o, p)?;
+    }
+    Ok(Value::Undefined)
+}
+
