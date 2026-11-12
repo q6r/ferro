@@ -376,3 +376,53 @@ impl Vm {
         }
     }
 
+    fn big_op(&mut self, k: Arith, x: &crate::bigint::BigInt, y: &crate::bigint::BigInt) -> Result<Value, Value> {
+        use crate::bigint::BigInt;
+        let small = |v: &BigInt| -> Option<u64> {
+            if v.is_negative() {
+                return None;
+            }
+            let f = v.to_f64();
+            if f > 1e9 { None } else { Some(f as u64) }
+        };
+        let r: BigInt = match k {
+            Arith::Add => x.add(y),
+            Arith::Sub => x.sub(y),
+            Arith::Mul => x.mul(y),
+            Arith::Div => match x.div(y) {
+                Some(v) => v,
+                None => return Err(self.range_error("Division by zero")),
+            },
+            Arith::Mod => match x.rem(y) {
+                Some(v) => v,
+                None => return Err(self.range_error("Division by zero")),
+            },
+            Arith::Exp => {
+                if y.is_negative() {
+                    return Err(self.range_error("Exponent must be non-negative"));
+                }
+                match small(y) {
+                    Some(e) if e <= 10_000_000 => x.pow(e),
+                    _ => return Err(self.range_error("Maximum BigInt size exceeded")),
+                }
+            }
+            Arith::And => x.and(y),
+            Arith::Or => x.or(y),
+            Arith::Xor => x.xor(y),
+            Arith::Shl | Arith::Shr => {
+                let left = (k == Arith::Shl) != y.is_negative();
+                let n = small(&if y.is_negative() { y.neg() } else { (*y).clone() });
+                match (n, left) {
+                    (Some(n), true) if n <= 1 << 30 => x.shl(n),
+                    (Some(n), false) => x.shr(n),
+                    (None, false) => {
+                        if x.is_negative() { BigInt::from_i64(-1) } else { BigInt::zero() }
+                    }
+                    _ => return Err(self.range_error("Maximum BigInt size exceeded")),
+                }
+            }
+            Arith::UShr => return Err(self.type_error("BigInts have no unsigned right shift, use >> instead")),
+        };
+        Ok(Value::BigInt(std::rc::Rc::new(r)))
+    }
+
