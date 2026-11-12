@@ -1196,3 +1196,59 @@ impl App {
             .map(|(_, h)| h.clone())
     }
 
+    fn update_hover(&mut self, x: f32, y: f32) {
+        let hit = self.hit_at(x, y);
+        let link = if hit.is_none() { self.link_at(x, y) } else { None };
+        if hit != self.hover || link != self.hover_link {
+            self.hover = hit;
+            self.hover_link = link;
+            self.request_redraw();
+        }
+        // a página fica sabendo onde o mouse está (hover, mousemove)
+        let point = if hit.is_none() { self.page_point(x, y) } else { None };
+        self.send_mouse(point);
+        let mut visible = true;
+        let cursor = if self.hover_link.is_some() {
+            CursorIcon::Pointer
+        } else if point.is_some() {
+            use crate::style::Cursor as C;
+            match self.tab().cursor {
+                C::Auto | C::Default => CursorIcon::Default,
+                C::Pointer => CursorIcon::Pointer,
+                C::Text => CursorIcon::Text,
+                C::Move => CursorIcon::Move,
+                C::NotAllowed => CursorIcon::NotAllowed,
+                C::Grab => CursorIcon::Grab,
+                C::Grabbing => CursorIcon::Grabbing,
+                C::Wait => CursorIcon::Wait,
+                C::Progress => CursorIcon::Progress,
+                C::Help => CursorIcon::Help,
+                C::Crosshair => CursorIcon::Crosshair,
+                C::EwResize => CursorIcon::EwResize,
+                C::NsResize => CursorIcon::NsResize,
+                C::NeswResize => CursorIcon::NeswResize,
+                C::NwseResize => CursorIcon::NwseResize,
+                C::ZoomIn => CursorIcon::ZoomIn,
+                C::ZoomOut => CursorIcon::ZoomOut,
+                C::None => {
+                    visible = false;
+                    CursorIcon::Default
+                }
+            }
+        } else {
+            match hit {
+                Some(Hit::PaletteInput) => CursorIcon::Text,
+                None | Some(Hit::ScrollThumb | Hit::ScrollTrack | Hit::Scrim) => CursorIcon::Default,
+                Some(_) => CursorIcon::Pointer,
+            }
+        };
+        if cursor != self.cursor || visible != self.cursor_visible {
+            self.cursor = cursor;
+            self.cursor_visible = visible;
+            if let Some(w) = &self.window {
+                w.set_cursor(cursor);
+                w.set_cursor_visible(visible);
+            }
+        }
+    }
+
