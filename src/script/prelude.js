@@ -383,3 +383,69 @@ function checkToken(t, fn) {
   if (/\s/.test(t)) throw new DOMException(`Failed to execute '${fn}' on 'DOMTokenList': The token provided ('${t}') contains HTML space characters, which are not valid in tokens.`, 'InvalidCharacterError');
   return t;
 }
+methods(DOMTokenList.prototype, {
+  item(i) { return tokensOf(this)[i] ?? null; },
+  contains(t) { return tokensOf(this).includes(String(t)); },
+  add(...ts) {
+    const toks = tokensOf(this);
+    for (let t of ts) { t = checkToken(t, 'add'); if (!toks.includes(t)) toks.push(t); }
+    writeTokens(this, toks);
+  },
+  remove(...ts) {
+    ts = ts.map((t) => checkToken(t, 'remove'));
+    const toks = tokensOf(this).filter((t) => !ts.includes(t));
+    const { el, attr } = TOKENS.get(this);
+    if (el.hasAttribute(attr)) writeTokens(this, toks);
+  },
+  toggle(t, force) {
+    t = checkToken(t, 'toggle');
+    const has = this.contains(t);
+    const want = force === undefined ? !has : !!force;
+    if (want && !has) this.add(t);
+    else if (!want && has) this.remove(t);
+    return want;
+  },
+  replace(a, b) {
+    a = checkToken(a, 'replace'); b = checkToken(b, 'replace');
+    const toks = tokensOf(this);
+    const i = toks.indexOf(a);
+    if (i < 0) return false;
+    toks[i] = b;
+    writeTokens(this, [...new Set(toks)]);
+    return true;
+  },
+  supports() { return true; },
+  toString() { return this.value; },
+  forEach(cb, thisArg) { tokensOf(this).forEach((t, i) => cb.call(thisArg, t, i, this)); },
+  entries() { return tokensOf(this).entries(); },
+  keys() { return tokensOf(this).keys(); },
+  values() { return tokensOf(this).values(); },
+  [Symbol.iterator]() { return tokensOf(this).values(); },
+});
+accessor(DOMTokenList.prototype, 'length', function () { return tokensOf(this).length; });
+accessor(DOMTokenList.prototype, 'value', function () {
+  const { el, attr } = TOKENS.get(this);
+  return el.getAttribute(attr) || '';
+}, function (v) {
+  const { el, attr } = TOKENS.get(this);
+  el.setAttribute(attr, String(v));
+});
+hidden(G, 'DOMTokenList', DOMTokenList);
+const TOKEN_CACHE = new WeakMap();
+function tokenList(el, attr) {
+  let m = TOKEN_CACHE.get(el);
+  if (!m) TOKEN_CACHE.set(el, m = {});
+  if (!m[attr]) {
+    const l = Object.create(DOMTokenList.prototype);
+    TOKENS.set(l, { el, attr });
+    m[attr] = l;
+  }
+  return m[attr];
+}
+accessor(Element.prototype, 'classList', function () { return tokenList(this, 'class'); },
+  function (v) { this.setAttribute('class', String(v)); });
+for (const P of [HTMLAnchorElement.prototype, HTMLLinkElement.prototype, HTMLAreaElement.prototype])
+  accessor(P, 'relList', function () { return tokenList(this, 'rel'); });
+
+// --------------------------------------------------------------- style
+const STYLE = new WeakMap();
