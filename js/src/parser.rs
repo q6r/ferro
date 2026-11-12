@@ -1786,3 +1786,34 @@ impl Parser {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ok(src: &str) {
+        if let Err(e) = parse_program(src) {
+            panic!("falhou: {src}\n  linha {}: {}", e.line, e.msg);
+        }
+    }
+
+    #[test]
+    fn sintaxe_moderna() {
+        ok("let x = 1; const {a, b: [c, d = 2], ...rest} = obj; var f = (a, b = 1, ...r) => a + b;");
+        ok("class A extends B { #p = 1; static s = 2; constructor(x) { super(x); this.#p = x; } get v() { return this.#p; } static { init(); } }");
+        ok("async function f() { await g(); for await (const x of xs) {} } function* g() { yield 1; yield* h(); }");
+        ok("const t = `a${b}c${`d${e}`}`; tag`x${1}y`; a?.b?.[c]?.(d) ?? e; x ||= 1; y ??= 2; z &&= 3;");
+        ok("label: for (let i = 0; i < 10; i++) { if (i) continue label; else break label; }");
+        ok("switch (x) { case 1: f(); break; default: g(); } try { a() } catch { b() } finally { c() }");
+        ok("for (const [k, v] of Object.entries(o)) {} for (k in o) {} [a, b] = [b, a]; ({x, y = 2} = p);");
+        ok("x = a ? b : c => d; f(...args, ...more); new A; new A.B(1)(2); new.target; x = /re[/]g/.test(s) / 2;");
+        ok("var a = 1\nvar b = 2\nreturnValue = a\n++b");
+        ok("o = { get x() { return 1 }, set x(v) {}, async m() {}, *g() {}, [k]: 1, 'q': 2, 3: 4, x, ...y }");
+    }
+
+    #[test]
+    fn erros() {
+        assert!(parse_program("let = ;").is_err());
+        assert!(parse_program("a + ;").is_err());
+        assert!(parse_program("function () {}").is_err());
+    }
+}
