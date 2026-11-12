@@ -1556,3 +1556,204 @@ impl Compiler {
 
     // ------------------------------------------------------------ funções
 
+    /// Compila uma função aninhada e devolve seu índice em `functions`.
+    fn function(&mut self, def: &FunctionDef, name: Option<Name>, source: Option<Rc<str>>, self_binding: bool) -> CResult<u32> {
+        if def.is_generator || def.is_async {
+            // geradores e async chegam no M3.2: por ora a função existe mas lança
+        }
+        let mut usage = Usage::default();
+        for p in &def.params {
+            usage.pattern(p, 0, true);
+        }
+        if let Some(r) = &def.rest {
+            usage.pattern(r, 0, true);
+        }
+        match &def.body {
+            FnBody::Block(b) => usage.stmts(b, 0, true),
+            FnBody::Expr(e) => usage.expr(e, 0, true),
+        }
+        let strict = def.strict || self.fr().strict;
+        let kind = def.kind;
+        let is_arrow = kind == FnKind::Arrow;
+        let fname = def.name.clone().or(name).unwrap_or_else(|| "".into());
+        let fname_js = match kind {
+            FnKind::Getter => JsStr::new(&format!("get {fname}")),
+            FnKind::Setter => JsStr::new(&format!("set {fname}")),
+            _ => JsStr::new(&fname),
+        };
+        let captured = usage.inner;
+        self.fns.push(FnState::new(kind, strict, captured, false));
+        self.f().is_async = def.is_async;
+        self.f().is_generator = def.is_generator;
+        self.push_scope(ScopeKind::Function, key_of(def));
+        let nparams = def.params.len() as u32;
+        {
+            let f = self.f();
+            f.reg_top = nparams;
+            f.max_regs = nparams;
+        }
+        let body_stmts: &[Stmt] = match &def.body {
+            FnBody::Block(b) => b,
+            FnBody::Expr(_) => &[],
+        };
+        // declarações
+        if self_binding && !fname.is_empty() {
+            self.declare(fname.clone(), Decl::Callee, false, true);
+        }
+        let uses_this = !is_arrow && self.fr().captured.contains("this");
+        let uses_nt = !is_arrow && self.fr().captured.contains("new.target");
+        let derived = kind == FnKind::DerivedConstructor;
+        if uses_this {
+            self.declare("this".into(), Decl::Hidden, true, !derived);
+        }
+        if uses_nt {
+            self.declare("new.target".into(), Decl::Hidden, true, true);
+        }
+        let mut param_names = Vec::new();
+        for p in &def.params {
+            bound_names(p, &mut param_names);
+        }
+        if let Some(r) = &def.rest {
+            bound_names(r, &mut param_names);
+        }
+        let uses_arguments = !is_arrow && usage.uses_arguments && !param_names.iter().any(|n| &**n == "arguments");
+        if uses_arguments {
+            let cap = self.is_captured(&"arguments".into());
+            self.declare("arguments".into(), Decl::Hidden, cap, true);
+        }
+        let simple = is_simple_params(def);
+        for (i, p) in def.params.iter().enumerate() {
+            if let (true, Pattern::Ident(n)) = (simple, p) {
+                if self.is_captured(n) {
+                    self.declare(n.clone(), Decl::Param, true, true);
+                } else {
+                    // o próprio registrador do argumento
+                    let sc = self.f().scopes.last_mut().unwrap();
+                    if let Some(j) = sc.first_where(n, |v| v.decl != Decl::Callee) {
+                        sc.vars[j].loc = Loc::Reg(i as u32);
+                    } else {
+                        sc.add(VarC {
+                            name: n.clone(),
+                            loc: Loc::Reg(i as u32),
+                            decl: Decl::Param,
+                            ready: true,
+                        });
+                    }
+                }
+            }
+        }
+        if !simple {
+            for n in &param_names {
+                self.declare(n.clone(), Decl::Param, false, true);
+            }
+        }
+        let mut vars = Vec::new();
+        var_names(body_stmts, &mut vars, !strict, false);
+        for v in &vars {
+            self.declare(v.clone(), Decl::Var, false, true);
+        }
+        let mut funcs = Vec::new();
+        for s in body_stmts {
+            if let Stmt::Function(f) = s
+                && let Some(n) = &f.name
+            {
+                self.declare(n.clone(), Decl::Func, false, true);
+                funcs.push(f.clone());
+            }
+        }
+        let var_end = self.fr().reg_top;
+        let mut lex = Vec::new();
+        lexical_decls(body_stmts, false, &mut lex);
+        for (n, d) in lex {
+            self.declare(n, d, false, false);
+        }
+        // prólogo
+        self.line(def.line);
+        self.open_env();
+        // variáveis `var` no heap começam como undefined
+        let env_vars: Vec<(Name, u32)> = self
+            .fr()
+            .scopes
+            .last()
+            .unwrap()
+            .vars
+            .iter()
+            .filter_map(|v| match (v.decl, v.loc) {
+                (Decl::Var | Decl::Func, Loc::Env(s)) => Some((v.name.clone(), s)),
+                _ => None,
+            })
+            .collect();
+        for (_, s) in env_vars {
+            self.emit(Op::Undef);
+            self.emit(Op::SetEnv(0, s));
+        }
+        if self_binding && !fname.is_empty() && matches!(self.resolve(&fname).decl, Decl::Callee) {
+            self.emit(Op::FnSelf);
+            self.init(&fname);
+        }
+        if uses_this {
+            self.emit(Op::ThisRaw);
+            self.init("this");
+        }
+        if uses_nt {
+            self.emit(Op::NewTarget);
+            self.init("new.target");
+        }
+        if uses_arguments {
+            self.emit(Op::Arguments);
+            self.init("arguments");
+        }
+        if simple {
+            for (i, p) in def.params.iter().enumerate() {
+                if let Pattern::Ident(n) = p
+                    && self.is_captured(n)
+                {
+                    self.emit(Op::GetReg(i as u32));
+                    self.init(n);
+                }
+            }
+        } else {
+            for (i, p) in def.params.iter().enumerate() {
+                self.emit(Op::GetReg(i as u32));
+                self.pattern(p, Bind::Init)?;
+            }
+            if let Some(r) = &def.rest {
+                self.emit(Op::RestArgs(nparams));
+                self.pattern(r, Bind::Init)?;
+            }
+        }
+        for f in funcs {
+            let idx = self.function(&f, None, None, false)?;
+            self.emit(Op::Closure(idx));
+            self.init(f.name.as_deref().unwrap_or(""));
+        }
+        if def.is_generator {
+            self.emit(Op::InitialYield);
+        }
+        // corpo
+        match &def.body {
+            FnBody::Block(b) => {
+                self.stmts(b)?;
+                self.emit(Op::Undef);
+                self.emit(Op::Return);
+            }
+            FnBody::Expr(e) => {
+                self.expr(e)?;
+                self.emit(Op::Return);
+            }
+        }
+        let st = self.fns.pop().unwrap();
+        let length = def
+            .params
+            .iter()
+            .take_while(|p| !matches!(p, Pattern::Default(..)))
+            .count() as u32;
+        let source = source.unwrap_or_else(|| def.source.clone());
+        let code = self.finish(st, fname_js, nparams, length, var_end, kind, def.is_async, def.is_generator, source, def.line);
+        let f = self.f();
+        f.functions.push(Rc::new(code));
+        Ok((f.functions.len() - 1) as u32)
+    }
+
+    // --------------------------------------------------------- instruções
+
