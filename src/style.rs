@@ -2885,3 +2885,65 @@ fn split_top_level_commas(s: &str) -> Vec<&str> {
     out
 }
 
+fn parse_translate(name: &str, v: &str) -> Option<[f32; 4]> {
+    let v = v.trim();
+    if v == "none" || v.is_empty() {
+        return None;
+    }
+    let one = |t: &str| -> (f32, f32) {
+        let t = t.trim();
+        if let Some(p) = t.strip_suffix('%') {
+            (0.0, p.trim().parse().unwrap_or(0.0))
+        } else {
+            let n = t.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+            let n: f32 = n.trim().parse().unwrap_or(0.0);
+            // em/rem aproximados por 16px
+            if t.ends_with("em") { (n * 16.0, 0.0) } else { (n, 0.0) }
+        }
+    };
+    let mut out = [0.0f32; 4];
+    if name == "translate" {
+        let parts: Vec<&str> = v.split_whitespace().collect();
+        let (x, xp) = one(parts.first().copied().unwrap_or("0"));
+        let (y, yp) = parts.get(1).map_or((0.0, 0.0), |p| one(p));
+        return Some([x, xp, y, yp]);
+    }
+    let mut rest = v;
+    let mut any = false;
+    while let Some(open) = rest.find('(') {
+        let fname = rest[..open].trim().to_ascii_lowercase();
+        let Some(close) = rest[open..].find(')') else { break };
+        let args: Vec<&str> = rest[open + 1..open + close].split(',').collect();
+        match fname.as_str() {
+            "translate" | "translate3d" => {
+                let (x, xp) = one(args.first().copied().unwrap_or("0"));
+                let (y, yp) = args.get(1).map_or((0.0, 0.0), |a| one(a));
+                out[0] += x;
+                out[1] += xp;
+                out[2] += y;
+                out[3] += yp;
+                any = true;
+            }
+            "translatex" => {
+                let (x, xp) = one(args.first().copied().unwrap_or("0"));
+                out[0] += x;
+                out[1] += xp;
+                any = true;
+            }
+            "translatey" => {
+                let (y, yp) = one(args.first().copied().unwrap_or("0"));
+                out[2] += y;
+                out[3] += yp;
+                any = true;
+            }
+            "matrix" if args.len() == 6 => {
+                out[0] += args[4].trim().parse::<f32>().unwrap_or(0.0);
+                out[2] += args[5].trim().parse::<f32>().unwrap_or(0.0);
+                any = true;
+            }
+            _ => {}
+        }
+        rest = &rest[open + close + 1..];
+    }
+    if any && out.iter().any(|&x| x != 0.0) { Some(out) } else { None }
+}
