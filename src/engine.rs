@@ -142,3 +142,46 @@ pub fn save_download(d: &Download) -> Result<std::path::PathBuf, String> {
     Ok(path)
 }
 
+/// Busca uma navegação: página ou download.
+pub fn fetch_page(net: &Net, url: &Url, post: Option<&crate::script::PostData>) -> Result<Fetched, String> {
+    let res = request_page(net, url, post)?;
+    if res.status < 400 && is_download(&res) {
+        let name = download_name(&res);
+        return Ok(Fetched::Download(Download { url: res.url, name, bytes: res.body }));
+    }
+    Ok(Fetched::Page(Box::new(page_from_response(net, res))))
+}
+
+fn request_page(net: &Net, url: &Url, post: Option<&crate::script::PostData>) -> Result<net::Response, String> {
+    Ok(match post {
+        None => net.fetch(url)?,
+        Some((ct, body)) => {
+            let mut req = net::Request::get(url);
+            req.method = "POST".into();
+            req.headers.push(("Content-Type".into(), ct.clone()));
+            req.headers.push(("Origin".into(), url.origin().ascii_serialization()));
+            req.body = Some(body.clone());
+            net.request(&req)?
+        }
+    })
+}
+
+/// Documento de um `<iframe>`: vai com o `Referer` da página que o contém
+/// (players embutidos, como o do YouTube, exigem).
+pub fn load_frame(net: &Net, url: &Url, referrer: Option<&Url>) -> Result<Loaded, String> {
+    let mut req = net::Request::get(url);
+    if let Some(r) = referrer.filter(|r| matches!(r.scheme(), "http" | "https")) {
+        // só a origem quando muda de site (política padrão dos navegadores)
+        let value = if r.origin() == url.origin() { r.to_string() } else { format!("{}/", r.origin().ascii_serialization()) };
+        req.headers.push(("Referer".into(), value));
+    }
+    let res = net.request(&req)?;
+    Ok(page_from_response(net, res))
+}
+
+/// Como `load`, opcionalmente enviando um formulário por POST.
+pub fn load_with(net: &Net, url: &Url, post: Option<&crate::script::PostData>) -> Result<Loaded, String> {
+    let res = request_page(net, url, post)?;
+    Ok(page_from_response(net, res))
+}
+
