@@ -365,3 +365,65 @@ fn removing(vm: &mut Vm, n: NodeId) {
     });
 }
 
+/// Um `<script>` entrou no documento (ou ganhou `src`/texto): roda ou baixa.
+pub(crate) fn start_script(vm: &mut Vm, n: NodeId) {
+    let h = host(vm);
+    let (classic, special, src, text) = {
+        let hb = h.borrow();
+        let doc = &hb.page.doc;
+        if hb.started.contains(&n) || !doc.is_connected(n) {
+            return;
+        }
+        let src = doc.element(n).and_then(|e| e.attr("src")).map(str::to_string);
+        (super::is_classic_script(doc, n), super::script_type(doc, n), src, doc.text_content(n))
+    };
+    // módulo ou import map inseridos por script
+    if let Some(ty) = special {
+        if src.is_none() && text.trim().is_empty() {
+            return;
+        }
+        h.borrow_mut().started.insert(n);
+        // os do HTML são tratados pelo parser
+        if h.borrow().parser.is_some() {
+            return;
+        }
+        if ty == "module" {
+            super::module::start_script(vm, n, src, &text);
+            super::module::drive(vm);
+        } else if src.is_none() {
+            super::module::add_import_map(vm, &text);
+        }
+        return;
+    }
+    match src {
+        Some(src) => {
+            let mut hb = h.borrow_mut();
+            hb.started.insert(n);
+            if !classic {
+                return;
+            }
+            let Ok(url) = hb.page.base.join(src.trim()) else { return };
+            let net = hb.net.clone();
+            hb.in_flight += 1;
+            hb.pool.submit(Box::new(move || {
+                let text = match net.fetch(&url) {
+                    Ok(r) if r.status < 400 => Some(crate::net::decode_text(&r.body, r.content_type.as_deref(), false)),
+                    _ => None,
+                };
+                super::Done::Script { node: n, text }
+            }));
+        }
+        None => {
+            // sem texto ainda: roda quando o texto chegar
+            if text.trim().is_empty() {
+                return;
+            }
+            h.borrow_mut().started.insert(n);
+            if classic {
+                let name = format!("{}#inline", h.borrow().page.url);
+                exec_script(vm, n, &text, &name);
+            }
+        }
+    }
+}
+
