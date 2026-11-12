@@ -142,3 +142,67 @@ impl Document {
         }
     }
 
+    /// Todos os descendentes em pré-ordem (ordem do documento).
+    pub fn descendants(&self, id: NodeId) -> Vec<NodeId> {
+        let mut out = Vec::new();
+        let mut stack: Vec<NodeId> = self.nodes[id].children.iter().rev().copied().collect();
+        while let Some(n) = stack.pop() {
+            out.push(n);
+            stack.extend(self.nodes[n].children.iter().rev().copied());
+        }
+        out
+    }
+
+    pub fn find_all(&self, tag: &str) -> Vec<NodeId> {
+        self.descendants(Self::ROOT)
+            .into_iter()
+            .filter(|&n| self.tag(n) == Some(tag))
+            .collect()
+    }
+
+    pub fn find_first(&self, tag: &str) -> Option<NodeId> {
+        self.descendants(Self::ROOT)
+            .into_iter()
+            .find(|&n| self.tag(n) == Some(tag))
+    }
+
+    pub fn text_content(&self, id: NodeId) -> String {
+        let mut s = String::new();
+        if let NodeData::Text(t) = &self.nodes[id].data {
+            s.push_str(t);
+        }
+        for d in self.descendants(id) {
+            if let NodeData::Text(t) = &self.nodes[d].data {
+                s.push_str(t);
+            }
+        }
+        s
+    }
+
+    // ------------------------------------------------------------ mutação
+    // (usada pelos scripts da página; os nós nunca saem da arena, só da árvore)
+
+    /// Está ligado ao documento? (A sombra conta pelo hospedeiro.)
+    pub fn is_connected(&self, mut id: NodeId) -> bool {
+        loop {
+            if id == Self::ROOT {
+                return true;
+            }
+            match self.nodes[id].parent {
+                Some(p) => id = p,
+                None => match self.shadow_hosts.get(&id) {
+                    Some(&h) => id = h,
+                    None => return false,
+                },
+            }
+        }
+    }
+
+    /// Cria a raiz de sombra de `host` (attachShadow).
+    pub fn attach_shadow(&mut self, host: NodeId) -> NodeId {
+        let root = self.create_fragment();
+        self.shadow_roots.insert(host, root);
+        self.shadow_hosts.insert(root, host);
+        root
+    }
+
