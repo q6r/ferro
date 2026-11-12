@@ -238,3 +238,47 @@ impl Vm {
         }
     }
 
+    pub fn call_obj(&mut self, o: &ObjRef, this: Value, args: Vec<Value>) -> Result<Value, Value> {
+        enum C {
+            Closure(Rc<Closure>),
+            Native(NativeFn),
+            Bound(ObjRef, Value, Vec<Value>),
+            Proxy,
+            Not,
+        }
+        let c = match &o.borrow().kind {
+            Kind::Function(Func::Closure(c)) => C::Closure(c.clone()),
+            Kind::Function(Func::Native(n)) => C::Native(n.f),
+            Kind::Function(Func::Bound { target, this, args }) => C::Bound(target.clone(), this.clone(), args.clone()),
+            Kind::Proxy { target: Some(t), .. } if t.is_callable() => C::Proxy,
+            _ => C::Not,
+        };
+        match c {
+            C::Proxy => self.proxy_call(o, this, args),
+            C::Closure(c) => {
+                if c.code.is_class_constructor() {
+                    let name = c.code.name.to_rust();
+                    return Err(self.type_error(format!("Class constructor {name} cannot be invoked without 'new'")));
+                }
+                self.call_closure(&c, o, this, args, None)
+            }
+            C::Native(f) => {
+                let mut ca = CallArgs {
+                    this,
+                    args,
+                    new_target: None,
+                    callee: o.clone(),
+                };
+                f(self, &mut ca)
+            }
+            C::Bound(target, bthis, mut bargs) => {
+                bargs.extend(args);
+                self.call_obj(&target, bthis, bargs)
+            }
+            C::Not => {
+                let d = self.describe(&Value::Object(o.clone()));
+                Err(self.type_error(format!("{d} is not a function")))
+            }
+        }
+    }
+
