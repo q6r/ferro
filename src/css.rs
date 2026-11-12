@@ -769,3 +769,43 @@ impl Parser<'_> {
         }
     }
 
+    fn starts_with(&self, pat: &str) -> bool {
+        pat.chars().enumerate().all(|(k, c)| self.s.get(self.pos + k) == Some(&c))
+    }
+
+    /// Lê até '{' ou ';' fora de parênteses/aspas. Não consome o delimitador.
+    fn read_prelude(&mut self) -> (String, Option<char>) {
+        let start = self.pos;
+        let mut depth = 0;
+        let mut quote: Option<char> = None;
+        while !self.eof() {
+            let c = self.s[self.pos];
+            if let Some(q) = quote {
+                if c == '\\' {
+                    self.pos += 1;
+                } else if c == q {
+                    quote = None;
+                }
+            } else {
+                match c {
+                    '"' | '\'' => quote = Some(c),
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    '{' | ';' if depth <= 0 => {
+                        let prelude = self.s[start..self.pos].iter().collect();
+                        if c == ';' {
+                            self.pos += 1;
+                        }
+                        return (prelude, Some(c));
+                    }
+                    '}' if depth <= 0 => {
+                        return (self.s[start..self.pos].iter().collect(), None);
+                    }
+                    _ => {}
+                }
+            }
+            self.pos += 1;
+        }
+        (self.s[start..].iter().collect(), None)
+    }
+
