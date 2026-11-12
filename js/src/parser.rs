@@ -1334,3 +1334,70 @@ impl Parser {
         Ok(Expr::New(Box::new(callee), args, line))
     }
 
+    fn parse_template_parts(&mut self) -> PResult<(Vec<Option<Rc<[u16]>>>, Vec<Rc<str>>, Vec<Expr>)> {
+        let mut cooked = Vec::new();
+        let mut raw = Vec::new();
+        let mut exprs = Vec::new();
+        loop {
+            let (c, r, tail) = match &self.tok.tok {
+                Tok::Template { cooked, raw, tail } => (cooked.clone(), raw.clone(), *tail),
+                _ => return self.unexpected(),
+            };
+            cooked.push(c);
+            raw.push(r);
+            if tail {
+                self.advance()?;
+                break;
+            }
+            self.advance()?;
+            exprs.push(self.parse_expression(false)?);
+            if !self.is("}") {
+                return self.err("esperava '}' no template");
+            }
+            // o lexer continua o template logo depois do "}"
+            let tpl = self.lx.read_template_part()?;
+            let line = self.lx.line();
+            self.tok = Token {
+                tok: tpl,
+                start: self.tok.start,
+                end: self.lx.pos(),
+                line,
+                nl_before: false,
+                escaped: false,
+            };
+        }
+        Ok((cooked, raw, exprs))
+    }
+
+    fn parse_prop_key(&mut self) -> PResult<PropKeyExpr> {
+        Ok(match self.tok.tok.clone() {
+            Tok::Ident(n) => {
+                self.advance()?;
+                PropKeyExpr::Name(n)
+            }
+            Tok::Str(s) => {
+                self.advance()?;
+                PropKeyExpr::Name(String::from_utf16_lossy(&s).into())
+            }
+            Tok::Num(n) => {
+                self.advance()?;
+                PropKeyExpr::Name(crate::conv::number_to_string(n).into())
+            }
+            Tok::BigInt(b) => {
+                self.advance()?;
+                PropKeyExpr::Name(b)
+            }
+            Tok::Private(n) => {
+                self.advance()?;
+                PropKeyExpr::Private(n)
+            }
+            Tok::Punct("[") => {
+                self.advance()?;
+                let e = self.parse_assign(false)?;
+                self.expect("]")?;
+                PropKeyExpr::Computed(Box::new(e))
+            }
+            _ => return self.unexpected(),
+        })
+    }
+
