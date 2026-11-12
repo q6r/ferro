@@ -44,3 +44,74 @@ struct Local {
 }
 
 impl Local {
+    const fn new() -> Local {
+        Local {
+            free: [null_mut(); NCLASS],
+            bump: null_mut(),
+            end: null_mut(),
+        }
+    }
+}
+
+thread_local! {
+    // sem destrutor: pode ser usado até o último instante da thread
+    static LOCAL: UnsafeCell<Local> = const { UnsafeCell::new(Local::new()) };
+    static GUARD: ExitGuard = const { ExitGuard };
+    /// 0 = guarda não registrada, 1 = registrando (reentrada), 2 = pronta.
+    static REGISTERED: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+/// Registra a devolução da memória ao fim da thread (registrar pode alocar:
+/// as alocações de dentro do registro passam direto).
+#[cold]
+fn ensure_guard() {
+    let _ = REGISTERED.try_with(|r| {
+        if r.get() == 0 {
+            r.set(1);
+            let _ = GUARD.try_with(|_| ());
+            r.set(2);
+        }
+    });
+}
+
+/// Estoque global: listas devolvidas por threads que terminaram.
+struct Shared {
+    free: [*mut u8; NCLASS],
+    /// Restos de blocos (início, fim).
+    spare: [(*mut u8, *mut u8); 64],
+    nspare: usize,
+}
+
+struct SpinShared {
+    lock: AtomicBool,
+    data: UnsafeCell<Shared>,
+}
+
+unsafe impl Sync for SpinShared {}
+
+static SHARED: SpinShared = SpinShared {
+    lock: AtomicBool::new(false),
+    data: UnsafeCell::new(Shared {
+        free: [null_mut(); NCLASS],
+        spare: [(null_mut(), null_mut()); 64],
+        nspare: 0,
+    }),
+};
+
+fn with_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
+    while SHARED
+        .lock
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        std::hint::spin_loop();
+    }
+    let r = f(unsafe { &mut *SHARED.data.get() });
+    SHARED.lock.store(false, Ordering::Release);
+    r
+}
+
+/// Ao fim da thread, devolve o que ela tinha ao estoque global.
+struct ExitGuard;
+
+impl Drop for ExitGuard {
