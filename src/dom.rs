@@ -206,3 +206,45 @@ impl Document {
         root
     }
 
+    /// Filhos na "árvore achatada", a que é desenhada: um hospedeiro mostra a
+    /// sombra dele, e cada `<slot>` mostra os filhos do hospedeiro destinados a ele.
+    pub fn flat_children(&self, n: NodeId) -> std::borrow::Cow<'_, [NodeId]> {
+        use std::borrow::Cow;
+        if self.shadow_roots.is_empty() {
+            return Cow::Borrowed(&self.nodes[n].children);
+        }
+        if let Some(&root) = self.shadow_roots.get(&n) {
+            return Cow::Borrowed(&self.nodes[root].children);
+        }
+        if self.tag(n) == Some("slot")
+            && let Some(host) = self.slot_host(n)
+        {
+            let assigned = self.assigned_nodes(host, n);
+            if !assigned.is_empty() {
+                return Cow::Owned(assigned);
+            }
+        }
+        Cow::Borrowed(&self.nodes[n].children)
+    }
+
+    /// Pai na árvore achatada: o `<slot>` para quem foi distribuído, o
+    /// hospedeiro para a raiz de sombra.
+    pub fn flat_parent(&self, n: NodeId) -> Option<NodeId> {
+        let Some(p) = self.nodes[n].parent else {
+            return self.shadow_hosts.get(&n).copied();
+        };
+        if let Some(&root) = self.shadow_roots.get(&p) {
+            let name = match &self.nodes[n].data {
+                NodeData::Element(e) => e.attr("slot").unwrap_or(""),
+                NodeData::Text(_) => "",
+                _ => return Some(p),
+            };
+            let slot = self.descendants(root).into_iter().find(|&d| {
+                self.element(d)
+                    .is_some_and(|e| e.tag == "slot" && e.attr("name").unwrap_or("") == name)
+            });
+            return Some(slot.unwrap_or(p));
+        }
+        Some(p)
+    }
+
