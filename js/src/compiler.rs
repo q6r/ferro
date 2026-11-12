@@ -1173,3 +1173,65 @@ impl Compiler {
         }
     }
 
+    fn alloc_reg(&mut self) -> u32 {
+        let f = self.f();
+        let r = f.reg_top;
+        f.reg_top += 1;
+        f.max_regs = f.max_regs.max(f.reg_top);
+        r
+    }
+
+    fn free_reg(&mut self, r: u32) {
+        let f = self.f();
+        if f.reg_top == r + 1 {
+            f.reg_top = r;
+        }
+    }
+
+    // ------------------------------------------------------------ escopos
+
+    fn push_scope(&mut self, kind: ScopeKind, key: usize) {
+        let base = self.fr().reg_top;
+        self.f().scopes.push(ScopeC {
+            key,
+            vars: Vec::new(),
+            index: FxHashMap::default(),
+            env_size: 0,
+            has_env: false,
+            kind,
+            reg_base: base,
+        });
+    }
+
+    /// Declara um nome no escopo atual. `force_env`: precisa ficar no heap.
+    fn declare(&mut self, name: Name, decl: Decl, force_env: bool, ready: bool) -> Loc {
+        let script_top = {
+            let f = self.fr();
+            f.is_script && f.scopes.len() == 1
+        };
+        {
+            let sc = self.f().scopes.last_mut().unwrap();
+            if let Some(i) = sc.first_where(&name, |v| v.decl != Decl::Callee) {
+                let v = &mut sc.vars[i];
+                if matches!(decl, Decl::Let | Decl::Const | Decl::Class) {
+                    v.decl = decl;
+                    v.ready = false;
+                }
+                return v.loc;
+            }
+        }
+        let loc = if script_top && decl != Decl::Hidden {
+            Loc::Global
+        } else if force_env || self.is_captured(&name) {
+            let sc = self.f().scopes.last_mut().unwrap();
+            let slot = sc.env_size;
+            sc.env_size += 1;
+            sc.has_env = true;
+            Loc::Env(slot)
+        } else {
+            Loc::Reg(self.alloc_reg())
+        };
+        self.f().scopes.last_mut().unwrap().add(VarC { name, loc, decl, ready });
+        loc
+    }
+
