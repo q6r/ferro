@@ -308,3 +308,37 @@ pub fn decode_entities(s: &str) -> String {
     out
 }
 
+/// Decodifica uma referência começando em `s` (que começa com '&').
+fn decode_one(s: &str) -> Option<(String, usize)> {
+    let body = &s[1..];
+    if let Some(num) = body.strip_prefix('#') {
+        let (digits, radix, skip) = if let Some(hex) = num.strip_prefix(['x', 'X']) {
+            let d: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            (d, 16, 3)
+        } else {
+            let d: String = num.chars().take_while(|c| c.is_ascii_digit()).collect();
+            (d, 10, 2)
+        };
+        if digits.is_empty() {
+            return None;
+        }
+        let mut used = skip + digits.len();
+        if s[used..].starts_with(';') {
+            used += 1;
+        }
+        let cp = u32::from_str_radix(&digits, radix).unwrap_or(0xFFFD);
+        let ch = char::from_u32(cp).filter(|&c| c != '\0').unwrap_or('\u{FFFD}');
+        return Some((ch.to_string(), used));
+    }
+    let name: String = body.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+    if name.is_empty() || !body[name.len()..].starts_with(';') {
+        return None;
+    }
+    ENTITIES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, v)| (v.to_string(), 1 + name.len() + 1))
+}
+
+// -------------------------------------------------------- construtor de árvore
+
