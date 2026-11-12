@@ -780,3 +780,74 @@ impl Session {
         best.map(|ms| Duration::from_secs_f64(ms.max(0.0) / 1000.0))
     }
 
+    /// Uma volta do laço de eventos: rede, timers vencidos, animação.
+    pub fn tick(&mut self) {
+        let start = Instant::now();
+        let log = std::env::var_os("FERRO_MIDIA_LOG").is_some();
+        // respostas da rede
+        loop {
+            let done = self.host.borrow().rx.try_recv();
+            let Ok(done) = done else { break };
+            self.host.borrow_mut().in_flight -= 1;
+            self.on_done(done);
+        }
+        let t_net = start.elapsed();
+        // timers vencidos (com limite, para não travar a aba)
+        let mut n = 0;
+        while n < 200 && start.elapsed() < Duration::from_millis(50) && self.js.vm.run_one_timer(false) {
+            n += 1;
+        }
+        let t_timers = start.elapsed();
+        // mídia: relógio e eventos dos <video>/<audio>
+        let media_events = self.host.borrow_mut().media.tick();
+        for (n, ty) in media_events {
+            let el = wrap(&mut self.js.vm, n);
+            self.hook("fire", vec![el, Value::str(ty)]);
+        }
+        // requestAnimationFrame
+        let due = {
+            let hb = self.host.borrow();
+            !hb.raf.is_empty() && hb.last_raf.elapsed() >= Duration::from_millis(16)
+        };
+        if due {
+            let list = {
+                let mut hb = self.host.borrow_mut();
+                hb.last_raf = Instant::now();
+                std::mem::take(&mut hb.raf)
+            };
+            let ts = Value::Number(now_ms(&self.js.vm));
+            for (_, cb) in list {
+                if let Err(e) = self.js.vm.call(&cb, Value::Undefined, vec![ts.clone()]) {
+                    self.js.vm.report_uncaught(&e);
+                }
+            }
+            self.js.vm.run_microtasks();
+        }
+        // mensagens da página-mãe e os quadros desta página
+        if !self.host.borrow().inbox.is_empty() {
+            self.deliver_inbox();
+        }
+        self.tick_frames();
+        // coletor de ciclos, entre uma tarefa e outra; com o usuário mexendo
+        // na página, só se a memória estiver crescendo muito
+        let busy = self.last_input.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
+        let collect = if busy { ferro_js::gc::should_collect_urgent() } else { ferro_js::gc::should_collect() };
+        if collect && self.host.borrow().frame_depth == 0 {
+            let st = ferro_js::gc::collect();
+            if std::env::var_os("FERRO_TEMPOS").is_some() {
+                eprintln!(
+                    "[ferro] coletor: {} examinados, {} liberados em {:.0} ms",
+                    st.examined, st.freed, st.ms
+                );
+            }
+        }
+        if log && start.elapsed().as_millis() > 80 {
+            eprintln!(
+                "[mídia] volta lenta: rede {:.0} ms, timers {:.0} ms ({n}), total {:.0} ms",
+                t_net.as_secs_f64() * 1000.0,
+                (t_timers - t_net).as_secs_f64() * 1000.0,
+                start.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    }
+
