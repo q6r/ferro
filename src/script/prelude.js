@@ -907,3 +907,36 @@ formControl(SELECT, {
   showPicker() {},
 });
 
+const BUTTON = HTMLButtonElement.prototype;
+reflectAll(BUTTON, ['name', 'value', ['disabled', 'disabled', 'bool'], ['formAction', 'formaction', 'url'],
+  ['formMethod', 'formmethod'], ['formNoValidate', 'formnovalidate', 'bool'], ['formTarget', 'formtarget'],
+  'popoverTargetElement']);
+accessor(BUTTON, 'type', function () {
+  const t = (this.getAttribute('type') || '').toLowerCase();
+  return t === 'button' || t === 'reset' ? t : 'submit';
+}, function (v) { this.setAttribute('type', String(v)); });
+formControl(BUTTON, {});
+formControl(HTMLOutputElement.prototype, {});
+formControl(HTMLFieldSetElement.prototype, {});
+reflectAll(HTMLFieldSetElement.prototype, ['name', ['disabled', 'disabled', 'bool']]);
+
+const FORM = HTMLFormElement.prototype;
+reflectAll(FORM, ['name', 'target', 'enctype', 'accept-charset', 'autocomplete', ['noValidate', 'novalidate', 'bool'],
+  ['acceptCharset', 'accept-charset'], 'rel']);
+accessor(FORM, 'action', function () {
+  const a = this.getAttribute('action');
+  return a === null || a === '' ? document.URL : resolveURL(a);
+}, function (v) { this.setAttribute('action', String(v)); });
+accessor(FORM, 'method', function () {
+  return (this.getAttribute('method') || '').toLowerCase() === 'post' ? 'post' : 'get';
+}, function (v) { this.setAttribute('method', String(v)); });
+accessor(FORM, 'encoding', function () { return this.enctype; }, function (v) { this.enctype = v; });
+const CONTROLS = 'input, select, textarea, button, fieldset, output, object';
+accessor(FORM, 'elements', function () {
+  const id = this.id;
+  const list = [...this.querySelectorAll(CONTROLS)];
+  if (id) for (const e of document.querySelectorAll(`[form="${CSS.escape(id)}"]`)) if (!list.includes(e)) list.push(e);
+  Object.setPrototypeOf(list, HTMLCollection.prototype);
+  return list;
+});
+accessor(FORM, 'length', function () { return this.elements.length; });
