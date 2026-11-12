@@ -282,3 +282,51 @@ fn normalize(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::String(s))
 }
 
+fn pad(vm: &mut Vm, a: &CallArgs, at_start: bool) -> Result<Value, Value> {
+    let s = this_str(vm, a, if at_start { "padStart" } else { "padEnd" })?;
+    let max = vm.to_integer(&a.arg(0))?;
+    let fill = if a.arg(1).is_undefined() { JsStr::new(" ") } else { vm.to_string(&a.arg(1))? };
+    if max <= s.len() as f64 || fill.is_empty() {
+        return Ok(Value::String(s));
+    }
+    if max > 536870888.0 {
+        return Err(vm.range_error("Invalid string length"));
+    }
+    let need = max as usize - s.len();
+    let mut filler: Vec<u16> = Vec::with_capacity(need);
+    while filler.len() < need {
+        let take = (need - filler.len()).min(fill.len());
+        filler.extend_from_slice(&fill.units()[..take]);
+    }
+    let out = if at_start {
+        let mut v = filler;
+        v.extend_from_slice(s.units());
+        v
+    } else {
+        let mut v = s.units().to_vec();
+        v.extend(filler);
+        v
+    };
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
+fn pad_start(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    pad(vm, a, true)
+}
+
+fn pad_end(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    pad(vm, a, false)
+}
+
+fn repeat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = this_str(vm, a, "repeat")?;
+    let n = vm.to_integer(&a.arg(0))?;
+    if n < 0.0 || n.is_infinite() {
+        return Err(vm.range_error(format!("Invalid count value: {}", crate::conv::number_to_string(n))));
+    }
+    if s.len() as f64 * n > 536870888.0 {
+        return Err(vm.range_error("Invalid string length"));
+    }
+    Ok(Value::String(JsStr::from_units(s.units().repeat(n as usize))))
+}
+
