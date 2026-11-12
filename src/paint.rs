@@ -402,3 +402,29 @@ impl Canvas {
         }
     }
 
+    /// Sombra desfocada: camadas de retângulos arredondados que vão
+    /// crescendo, cada uma um pouco transparente (aproxima a gaussiana).
+    fn shadow_clip(&mut self, r: Rect, radius: f32, blur: f32, color: Color, clip: Clip) {
+        if color.a == 0 || r.w <= 0.0 || r.h <= 0.0 {
+            return;
+        }
+        if blur < 1.0 {
+            self.round_rect_clip(r, radius, color, None, clip);
+            return;
+        }
+        let steps = ((blur / 2.0).ceil() as usize).clamp(3, 10);
+        // alfa de cada camada para que o miolo chegue perto do alfa pedido
+        let total = color.a as f32 / 255.0;
+        let each = 1.0 - (1.0 - total).powf(1.0 / steps as f32);
+        let c = Color { a: (each * 255.0).round().max(1.0) as u8, ..color };
+        for i in 0..steps {
+            // de fora (blur/2 maior) para dentro (blur/2 menor)
+            let grow = blur / 2.0 - blur * i as f32 / (steps - 1).max(1) as f32;
+            let rr = Rect { x: r.x - grow, y: r.y - grow, w: r.w + 2.0 * grow, h: r.h + 2.0 * grow };
+            if rr.w <= 0.0 || rr.h <= 0.0 {
+                continue;
+            }
+            self.round_rect_clip(rr, (radius + grow).max(0.0), c, None, clip);
+        }
+    }
+
