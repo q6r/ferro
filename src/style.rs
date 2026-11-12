@@ -960,3 +960,46 @@ fn bloom_has(f: &Bloom, h: u32) -> bool {
     f[bit / 64] & (1 << (bit % 64)) != 0
 }
 
+/// Uma regra no índice: onde está (folha, regra, seletor) e quanto pesa.
+#[derive(Clone)]
+struct Entry {
+    sheet: u32,
+    rule: u32,
+    sel: u32,
+    origin: Origin,
+    spec: Specificity,
+    order: usize,
+    /// Tags/ids/classes que algum ancestral do elemento precisa ter.
+    ancestors: Box<[u32]>,
+}
+
+/// Índice das regras pela parte mais à direita do seletor, para não testar
+/// todas as regras em todos os elementos.
+#[derive(Default)]
+struct Buckets {
+    by_id: FxMap<Box<str>, Vec<u32>>,
+    by_class: FxMap<Box<str>, Vec<u32>>,
+    by_tag: FxMap<Box<str>, Vec<u32>>,
+    by_attr: FxMap<Box<str>, Vec<u32>>,
+    universal: Vec<u32>,
+    len: usize,
+}
+
+impl Buckets {
+    fn insert(&mut self, last: &css::Compound, entry: u32) {
+        self.len += 1;
+        if let Some(id) = &last.id {
+            self.by_id.entry(id.as_str().into()).or_default().push(entry);
+        } else if let Some(class) = last.classes.first() {
+            self.by_class.entry(class.as_str().into()).or_default().push(entry);
+        } else if let Some(tag) = &last.tag {
+            self.by_tag.entry(tag.as_str().into()).or_default().push(entry);
+        } else if let Some(a) = last.attrs.first() {
+            self.by_attr.entry(a.name.to_ascii_lowercase().into()).or_default().push(entry);
+        } else if last.pseudos.iter().any(|p| matches!(p, css::Pseudo::Root)) {
+            self.by_tag.entry("html".into()).or_default().push(entry);
+        } else {
+            self.universal.push(entry);
+        }
+    }
+
