@@ -52,3 +52,38 @@ pub struct Declaration {
     pub important: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MediaContext {
+    pub width: f32,
+    pub height: f32,
+}
+
+// ------------------------------------------------------------------ seletores
+
+#[derive(Debug, Clone)]
+pub struct Selector {
+    /// Seletores compostos, da esquerda para a direita.
+    pub compounds: Vec<Compound>,
+    /// `combinators[i]` liga `compounds[i]` a `compounds[i + 1]`.
+    pub combinators: Vec<Combinator>,
+    /// `::before` / `::after` no fim do seletor.
+    pub pseudo_element: Option<PseudoElement>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Combinator {
+    Descendant,
+    Child,
+    NextSibling,
+    SubsequentSibling,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Compound {
+    pub tag: Option<String>,
+    pub id: Option<String>,
+    pub classes: Vec<String>,
+    pub attrs: Vec<AttrSelector>,
+    pub pseudos: Vec<Pseudo>,
+}
+
