@@ -438,3 +438,63 @@ impl BoxModel {
     }
 }
 
+/// O que um bloco passa para o conteúdo em linha dos descendentes:
+/// decorações de texto e o link (`<a href>`) em que está.
+#[derive(Clone, Default)]
+struct Inherited {
+    underline: bool,
+    line_through: bool,
+    link: Option<Rc<str>>,
+    /// Elemento em linha mais interno (para o retângulo de cada trecho).
+    elem: Option<NodeId>,
+    /// O mouse atravessa (pointer-events: none ou invisível).
+    no_hit: bool,
+}
+
+impl Inherited {
+    fn enter(&self, doc: &Document, node: Option<NodeId>, style: &ComputedStyle) -> Inherited {
+        let mut link = self.link.clone();
+        if let Some(n) = node
+            && let Some(el) = doc.element(n)
+            && el.tag == "a"
+            && let Some(href) = el.attr("href")
+        {
+            link = Some(Rc::from(href));
+        }
+        Inherited {
+            underline: self.underline || style.underline,
+            line_through: self.line_through || style.line_through,
+            link,
+            elem: None,
+            no_hit: !style.pointer_events || !style.visible,
+        }
+    }
+}
+
+/// Caixa absoluta/fixa esperando o tamanho do contêiner posicionado.
+struct Pending<'a> {
+    b: &'a LayoutBox,
+    /// Posição "estática": onde ela estaria no fluxo normal.
+    x: f32,
+    y: f32,
+    inh: Inherited,
+    /// Ordem na árvore (para pintar na ordem certa entre os posicionados).
+    order: usize,
+}
+
+/// Conteúdo posicionado ou flutuante, pintado por cima (ou por baixo, z < 0) do fluxo.
+struct Layer {
+    z: i32,
+    order: usize,
+    items: Vec<DisplayItem>,
+    /// Dentro de um `position: fixed` (não rola com a página).
+    fixed: bool,
+}
+
+/// Um float já posicionado (caixa de margem, coordenadas absolutas).
+#[derive(Clone, Copy)]
+struct FloatBox {
+    rect: Rect,
+    left: bool,
+}
+
