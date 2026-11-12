@@ -282,3 +282,121 @@ impl Vm {
         }
     }
 
+    fn call_closure(&mut self, c: &Rc<Closure>, fobj: &ObjRef, this: Value, args: Vec<Value>, new_target: Option<&ObjRef>) -> Result<Value, Value> {
+        let code = c.code.clone();
+        let this = if code.is_arrow() {
+            Value::Undefined
+        } else if !code.strict && this.is_nullish() {
+            Value::Object(self.realm.global.clone())
+        } else if !code.strict && !matches!(this, Value::Object(_) | Value::Empty) {
+            Value::Object(self.to_object(&this)?)
+        } else {
+            this
+        };
+        let nregs = code.nregs as usize;
+        let nparams = code.nparams as usize;
+        let var_end = code.var_end as usize;
+        let (is_generator, is_async) = (code.is_generator, code.is_async);
+        // quadros comuns usam vetores reaproveitados; geradores/async guardam o quadro
+        let pooled = !is_generator && !is_async;
+        let mut regs = if pooled { self.vpool.pop().unwrap_or_default() } else { Vec::new() };
+        regs.reserve(nregs);
+        let mut args = args;
+        if code.needs_args {
+            for i in 0..nregs {
+                regs.push(if i < nparams {
+                    args.get(i).cloned().unwrap_or(Value::Undefined)
+                } else if i < var_end {
+                    Value::Undefined
+                } else {
+                    Value::Empty
+                });
+            }
+        } else {
+            // ninguém mais olha os argumentos: vão direto para os registradores
+            args.truncate(nparams);
+            let given = args.len();
+            regs.append(&mut args);
+            for i in given..nregs {
+                regs.push(if i < var_end { Value::Undefined } else { Value::Empty });
+            }
+            regs.truncate(nregs.max(0));
+            if pooled && args.capacity() > 0 {
+                self.vpool.push(std::mem::take(&mut args));
+            }
+        }
+        let stack = if pooled { self.vpool.pop().unwrap_or_default() } else { Vec::with_capacity(8) };
+        let mut frame = Frame {
+            code,
+            pc: 0,
+            regs,
+            stack,
+            env: c.env.clone(),
+            this,
+            func: Some(fobj.clone()),
+            home: c.home.clone(),
+            new_target: match new_target {
+                Some(n) => Value::Object(n.clone()),
+                None => Value::Undefined,
+            },
+            args,
+            handlers: Vec::new(),
+            suspended: false,
+            suspend_await: false,
+        };
+        if is_generator && is_async {
+            let proto = match self.get_obj(fobj, &PropKey::str("prototype"))? {
+                Value::Object(p) => p,
+                _ => self.realm.async_generator_proto.clone(),
+            };
+            self.run_frame(&mut frame)?;
+            let state = if frame.suspended {
+                crate::builtins::generator::GenState::Start
+            } else {
+                crate::builtins::generator::GenState::Done
+            };
+            frame.suspended = false;
+            return Ok(Value::Object(ObjRef::new(Object::new(
+                Some(proto),
+                Kind::AsyncGenerator(Box::new(crate::builtins::async_generator::AsyncGenData {
+                    frame: Some(Box::new(frame)),
+                    state,
+                    queue: std::collections::VecDeque::new(),
+                })),
+            ))));
+        }
+        if is_generator {
+            // o prólogo (parâmetros) roda já; o corpo espera o primeiro next()
+            let proto = match self.get_obj(fobj, &PropKey::str("prototype"))? {
+                Value::Object(p) => p,
+                _ => self.realm.generator_proto.clone(),
+            };
+            self.run_frame(&mut frame)?;
+            let state = if frame.suspended {
+                crate::builtins::generator::GenState::Start
+            } else {
+                crate::builtins::generator::GenState::Done
+            };
+            frame.suspended = false;
+            return Ok(Value::Object(ObjRef::new(Object::new(
+                Some(proto),
+                Kind::Generator(Box::new(crate::builtins::generator::GenData {
+                    frame: Some(Box::new(frame)),
+                    state,
+                })),
+            ))));
+        }
+        if is_async {
+            return self.async_call(frame);
+        }
+        let r = self.run_frame(&mut frame);
+        // devolve os vetores (vazios) para a próxima chamada
+        for mut v in [std::mem::take(&mut frame.regs), std::mem::take(&mut frame.stack), std::mem::take(&mut frame.args)] {
+            if v.capacity() > 0 && v.capacity() <= 64 && self.vpool.len() < 256 {
+                v.clear();
+                self.vpool.push(v);
+            }
+        }
+        r
+    }
+
