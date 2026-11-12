@@ -783,3 +783,208 @@ fn send_frame(cur: &mut Current, send: &impl Fn(Update), width: f32) {
     send(Update::Frame { nav: cur.nav, frame });
 }
 
+fn worker(
+    rx: mpsc::Receiver<Command>,
+    latest: Arc<AtomicU64>,
+    send: impl Fn(Update) + Send + Sync + 'static,
+    mut width: f32,
+    mut height: f32,
+) {
+    // compartilhado com as threads que apresentam vídeo
+    let send = Arc::new(send);
+    let net = Net::new();
+    let fonts = match Fonts::system() {
+        Ok(f) => std::rc::Rc::new(f),
+        Err(e) => {
+            eprintln!("[ferro] {e}");
+            return;
+        }
+    };
+    let mut current: Option<Current> = None;
+
+    loop {
+        // espera um comando ou o próximo trabalho da página (timer, rede...)
+        let wait = current.as_ref().and_then(|c| {
+            let w = c.session.wakeup();
+            if c.loading { Some(w.unwrap_or(Duration::from_millis(50)).min(Duration::from_millis(50))) } else { w }
+        });
+        let first = match wait {
+            Some(d) => match rx.recv_timeout(d) {
+                Ok(c) => Some(c),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            },
+            None => match rx.recv() {
+                Ok(c) => Some(c),
+                Err(_) => return,
+            },
+        };
+        // junta os comandos acumulados: vale a última navegação e o último tamanho
+        let mut nav = None;
+        let mut resized = false;
+        let mut clicks = Vec::new();
+        let mut keys = Vec::new();
+        let mut scroll = None;
+        let mut el_scrolls: Vec<(u64, NodeId, f32, f32)> = Vec::new();
+        let mut mouse = None;
+        let mut exit_fs = None;
+        let mut chosen: Vec<(u64, NodeId, usize)> = Vec::new();
+        for cmd in first.into_iter().chain(rx.try_iter()) {
+            match cmd {
+                Command::Navigate { nav: n, url, post } => nav = Some((n, url, post)),
+                Command::Resize { width: w, height: h } => {
+                    resized = resized || (w - width).abs() > 0.5 || (h - height).abs() > 0.5;
+                    width = w;
+                    height = h;
+                }
+                Command::Click { nav: n, x, y } => clicks.push((n, x, y)),
+                Command::Scroll { nav: n, y } => scroll = Some((n, y)),
+                Command::ScrollElement { nav: n, node, dx, dy } => el_scrolls.push((n, node, dx, dy)),
+                // vale só a posição mais recente
+                Command::MouseMove { nav: n, point } => mouse = Some((n, point)),
+                Command::ExitFullscreen { nav: n } => exit_fs = Some(n),
+                Command::SelectChoose { nav: n, node, index } => chosen.push((n, node, index)),
+                Command::Key { nav: n, key, text, ctrl, shift, alt, meta } => {
+                    keys.push((n, key, text, ctrl, shift, alt, meta))
+                }
+                Command::Quit => return,
+            }
+        }
+
+        if let Some((n, url, post)) = nav {
+            let stale = || latest.load(Ordering::SeqCst) != n;
+            if stale() {
+                continue;
+            }
+            send(Update::Started { nav: n, url: url.clone() });
+            let loaded = match fetch_page(&net, &url, post.as_ref()) {
+                Ok(Fetched::Page(l)) => *l,
+                Ok(Fetched::Download(d)) => {
+                    // um arquivo: salva e a página atual continua
+                    let result = save_download(&d);
+                    send(Update::Downloaded { nav: n, keep: current.as_ref().map(|c| c.nav), name: d.name, result });
+                    continue;
+                }
+                Err(error) => {
+                    current = None;
+                    if !stale() {
+                        send(Update::Failed { nav: n, url, error });
+                    }
+                    continue;
+                }
+            };
+            // a página anterior (e o que ela ainda estava baixando) vai embora
+            current = None;
+            if stale() {
+                continue;
+            }
+            let mut session = crate::script::Session::new(loaded, net.clone(), fonts.clone(), width, height);
+            let s2 = send.clone();
+            session.set_frame_sink(Arc::new(move |node, img| {
+                s2(Update::VideoFrames { nav: n, frames: vec![(node, img)] });
+            }));
+            let mut cur = Current {
+                nav: n,
+                session,
+                loading: true,
+                started: std::time::Instant::now(),
+                editing: false,
+                cursor: crate::style::Cursor::Auto,
+            };
+            // primeiro desenho com o HTML como veio; os scripts rodam aos
+            // poucos no laço abaixo (a aba continua respondendo)
+            send_frame(&mut cur, &*send, width);
+            cur.session.start_scripts();
+            current = Some(cur);
+            continue;
+        }
+
+        let Some(cur) = current.as_mut() else { continue };
+        if resized {
+            cur.session.resize(width, height);
+        }
+        if let Some((sn, y)) = scroll
+            && sn == cur.nav
+        {
+            cur.session.set_scroll(y);
+        }
+        for (sn, node, dx, dy) in el_scrolls {
+            if sn == cur.nav {
+                cur.session.scroll_element(node, dx, dy);
+            }
+        }
+        if exit_fs == Some(cur.nav) {
+            cur.session.exit_fullscreen();
+        }
+        for (n, node, index) in chosen {
+            if n == cur.nav {
+                cur.session.choose_select(node, index);
+            }
+        }
+        if let Some((mn, point)) = mouse
+            && mn == cur.nav
+        {
+            let cursor = cur.session.mouse_move(point);
+            if cursor != cur.cursor {
+                cur.cursor = cursor;
+                send(Update::Cursor { nav: cur.nav, cursor });
+            }
+        }
+        let interacted = !clicks.is_empty() || !keys.is_empty();
+        for (cn, x, y) in clicks {
+            if cn == cur.nav
+                && let Some(go) = cur.session.click(x, y)
+            {
+                send(Update::Navigate { nav: cur.nav, url: go.url, post: go.post });
+            }
+        }
+        for (kn, key, text, ctrl, shift, alt, meta) in keys {
+            if kn == cur.nav {
+                cur.session.key(&key, text.as_deref(), ctrl, shift, alt, meta);
+            }
+        }
+        if interacted {
+            let editing = cur.session.editing();
+            if editing != cur.editing {
+                cur.editing = editing;
+                send(Update::Editing { nav: cur.nav, editing });
+            }
+        }
+        // scripts do HTML: um pedaço por volta
+        if cur.session.scripts_pending() {
+            cur.session.step_scripts(Duration::from_millis(80));
+        }
+        cur.session.tick();
+        // (os quadros de vídeo vão direto da thread de apresentação)
+        let _ = cur.session.take_new_frames();
+        // canvas redesenhados: só a imagem nova, sem refazer o layout
+        let frames = cur.session.take_canvas_frames();
+        if !frames.is_empty() {
+            send(Update::VideoFrames { nav: cur.nav, frames });
+        }
+        if let Some(y) = cur.session.take_page_scroll() {
+            send(Update::ScrollTo { nav: cur.nav, y });
+        }
+        if let Some(on) = cur.session.take_fullscreen() {
+            send(Update::Fullscreen { nav: cur.nav, on });
+        }
+        if let Some(popup) = cur.session.take_select_popup() {
+            send(Update::SelectPopup { nav: cur.nav, popup });
+        }
+        if let Some(go) = cur.session.take_navigation() {
+            send(Update::Navigate { nav: cur.nav, url: go.url, post: go.post });
+        }
+        // fim do carregamento: recursos chegaram (ou cansou de esperar)
+        if cur.loading
+            && (cur.session.idle() || (!cur.session.scripts_pending() && cur.started.elapsed() > Duration::from_secs(20)))
+        {
+            cur.loading = false;
+            cur.session.finish_load();
+            send_frame(cur, &*send, width);
+            continue;
+        }
+        if resized || cur.session.wants_frame() {
+            send_frame(cur, &*send, width);
+        }
+    }
+}
