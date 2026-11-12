@@ -432,3 +432,69 @@ fn parse_loose(s: &str) -> Option<(f64, bool)> {
     Some((t, !has_tz))
 }
 
+fn parse_offset(s: &str) -> Option<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Some(0);
+    }
+    let sign = match s.as_bytes()[0] {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = s[1..].chars().filter(|c| c.is_ascii_digit()).collect();
+    let (h, m) = match digits.len() {
+        1 | 2 => (digits.parse::<i64>().ok()?, 0),
+        4 => (digits[..2].parse::<i64>().ok()?, digits[2..].parse::<i64>().ok()?),
+        _ => return None,
+    };
+    Some(sign * (h * 60 + m))
+}
+
+// ------------------------------------------------------------ nativos
+
+fn this_time(vm: &mut Vm, a: &CallArgs) -> Result<f64, Value> {
+    if let Value::Object(o) = &a.this
+        && let Kind::Date(t) = o.borrow().kind
+    {
+        return Ok(t);
+    }
+    Err(vm.type_error("this is not a Date object."))
+}
+
+fn set_this_time(a: &CallArgs, t: f64) -> Value {
+    let t = time_clip(t);
+    if let Value::Object(o) = &a.this
+        && let Kind::Date(x) = &mut o.borrow_mut().kind
+    {
+        *x = t;
+    }
+    Value::Number(t)
+}
+
+/// Argumentos numéricos de construtores e setters.
+fn nums(vm: &mut Vm, a: &CallArgs, from: usize, max: usize) -> Result<Vec<f64>, Value> {
+    let mut out = Vec::new();
+    for i in from..(from + max).min(a.args.len()) {
+        out.push(vm.to_number(&a.args[i])?);
+    }
+    Ok(out)
+}
+
+fn from_components(n: &[f64]) -> f64 {
+    let mut y = n[0];
+    if !y.is_nan() {
+        let yi = y.trunc();
+        if (0.0..=99.0).contains(&yi) {
+            y = 1900.0 + yi;
+        }
+    }
+    let m = n.get(1).copied().unwrap_or(0.0);
+    let d = n.get(2).copied().unwrap_or(1.0);
+    let h = n.get(3).copied().unwrap_or(0.0);
+    let mi = n.get(4).copied().unwrap_or(0.0);
+    let s = n.get(5).copied().unwrap_or(0.0);
+    let ms = n.get(6).copied().unwrap_or(0.0);
+    make_day(y, m, d) * MS_PER_DAY + make_time(h, mi, s, ms)
+}
+
