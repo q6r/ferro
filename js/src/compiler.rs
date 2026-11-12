@@ -841,3 +841,56 @@ fn var_names_stmt(s: &Stmt, out: &mut Vec<Name>, annex_b: bool, nested: bool) {
     }
 }
 
+/// Declarações léxicas diretas de uma lista de instruções.
+pub(crate) fn lexical_decls(ss: &[Stmt], funcs: bool, out: &mut Vec<(Name, Decl)>) {
+    for s in ss {
+        match s {
+            Stmt::Var(kind @ (VarKind::Let | VarKind::Const), decls, _) => {
+                let mut names = Vec::new();
+                for d in decls {
+                    bound_names(&d.target, &mut names);
+                }
+                let decl = if *kind == VarKind::Let { Decl::Let } else { Decl::Const };
+                out.extend(names.into_iter().map(|n| (n, decl)));
+            }
+            Stmt::Class(c) => {
+                if let Some(n) = &c.name {
+                    out.push((n.clone(), Decl::Class));
+                }
+            }
+            Stmt::Function(f) if funcs => {
+                if let Some(n) = &f.name {
+                    out.push((n.clone(), Decl::Func));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn pattern_name(p: &Pattern) -> Option<Name> {
+    match p {
+        Pattern::Ident(n) => Some(n.clone()),
+        _ => None,
+    }
+}
+
+fn is_simple_params(def: &FunctionDef) -> bool {
+    def.rest.is_none() && def.params.iter().all(|p| matches!(p, Pattern::Ident(_)))
+}
+
+// ------------------------------------------------------------- estruturas
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Decl {
+    Var,
+    Let,
+    Const,
+    Class,
+    ClassInner,
+    Param,
+    Func,
+    Hidden,
+    Callee,
+}
+
