@@ -58,3 +58,63 @@ pub fn install(r: &Realm) {
     r.tag(ip, "String Iterator");
 }
 
+fn string_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = if a.args.is_empty() {
+        JsStr::empty()
+    } else {
+        match &a.args[0] {
+            Value::Symbol(s) if a.new_target.is_none() => {
+                JsStr::new(&format!("Symbol({})", s.description().map(|d| d.to_rust()).unwrap_or_default()))
+            }
+            v => vm.to_string(v)?,
+        }
+    };
+    match &a.new_target {
+        None => Ok(Value::String(s)),
+        Some(nt) => {
+            let def = vm.realm.string_proto.clone();
+            let proto = vm.proto_from_ctor(Some(nt), &def)?;
+            Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::String(s)))))
+        }
+    }
+}
+
+/// `this` como string (RequireObjectCoercible + ToString).
+pub fn this_str(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<JsStr, Value> {
+    match &a.this {
+        Value::String(s) => Ok(s.clone()),
+        Value::Undefined | Value::Null => Err(vm.type_error(format!("String.prototype.{what} called on null or undefined"))),
+        v => vm.to_string(v),
+    }
+}
+
+fn from_char_code(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut out = Vec::with_capacity(a.args.len());
+    for v in &a.args {
+        out.push(crate::conv::to_uint16(vm.to_number(v)?));
+    }
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
+fn from_code_point(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let mut out = Vec::new();
+    for v in &a.args {
+        let n = vm.to_number(v)?;
+        if n.fract() != 0.0 || !(0.0..=1114111.0).contains(&n) {
+            return Err(vm.range_error(format!("Invalid code point {}", crate::conv::number_to_string(n))));
+        }
+        push_code_point(&mut out, n as u32);
+    }
+    Ok(Value::String(JsStr::from_units(out)))
+}
+
+pub fn push_code_point(out: &mut Vec<u16>, cp: u32) {
+    if cp < 0x10000 {
+        out.push(cp as u16);
+    } else {
+        let c = cp - 0x10000;
+        out.push(0xD800 + (c >> 10) as u16);
+        out.push(0xDC00 + (c & 0x3FF) as u16);
+    }
+}
+
