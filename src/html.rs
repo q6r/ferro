@@ -436,6 +436,18 @@ impl TreeBuilder {
         }))
     }
 
+    /// Acrescenta ao elemento os atributos que ele ainda não tem (regra do
+    /// HTML para `<html>` e `<body>` que aparecem depois de criados).
+    fn merge_attrs(&mut self, n: NodeId, attrs: Vec<(String, String)>) {
+        if let NodeData::Element(e) = &mut self.doc.nodes[n].data {
+            for (k, v) in attrs {
+                if !e.attrs.iter().any(|(a, _)| *a == k) {
+                    e.attrs.push((k, v));
+                }
+            }
+        }
+    }
+
     fn ensure_html(&mut self) {
         if self.html.is_none() {
             let h = self.new_element("html", Vec::new());
@@ -562,6 +574,10 @@ impl TreeBuilder {
         match name.as_str() {
             "html" => {
                 self.ensure_html();
+                // os atributos de <html> vão para o elemento raiz (lang, class, dir, data-*)
+                if let Some(h) = self.html {
+                    self.merge_attrs(h, attrs);
+                }
                 return;
             }
             "head" => {
@@ -573,11 +589,10 @@ impl TreeBuilder {
             "body" => {
                 if self.body.is_none() {
                     self.ensure_body();
-                    if let Some(b) = self.body
-                        && let NodeData::Element(e) = &mut self.doc.nodes[b].data
-                    {
-                        e.attrs = attrs;
-                    }
+                }
+                // <body> criado sozinho ou repetido: junta os atributos que faltam
+                if let Some(b) = self.body {
+                    self.merge_attrs(b, attrs);
                 }
                 return;
             }
