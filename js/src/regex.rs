@@ -334,3 +334,44 @@ enum Node {
     Alt(Vec<Node>),
 }
 
+struct Parser {
+    s: Vec<u32>,
+    i: usize,
+    u: bool,
+    /// Há grupos nomeados (então `\k` é referência mesmo sem a flag u).
+    has_named: bool,
+    total_groups: u32,
+    ngroups: u32,
+    names: Vec<(String, u32)>,
+}
+
+fn err<T>(msg: &str) -> Result<T, RegexError> {
+    Err(RegexError(msg.into()))
+}
+
+fn is_syntax(c: u32) -> bool {
+    matches!(char::from_u32(c), Some('^' | '$' | '\\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'))
+}
+
+impl Parser {
+    fn peek(&self) -> Option<u32> {
+        self.s.get(self.i).copied()
+    }
+
+    fn peek_at(&self, k: usize) -> Option<u32> {
+        self.s.get(self.i + k).copied()
+    }
+
+    fn eat(&mut self, c: char) -> bool {
+        if self.peek() == Some(c as u32) {
+            self.i += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn is(&self, c: char) -> bool {
+        self.peek() == Some(c as u32)
+    }
+
