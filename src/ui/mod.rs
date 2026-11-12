@@ -981,3 +981,26 @@ impl App {
 
     // ------------------------------------------------------------- paleta
 
+    /// Abre a paleta de busca. Com `with_url`, começa com o endereço atual
+    /// selecionado (como clicar na barra de endereço).
+    fn open_palette(&mut self, with_url: bool) {
+        let text = if with_url && self.tab().kind() != Kind::NewTab {
+            self.tab().url().to_string()
+        } else {
+            String::new()
+        };
+        self.palette_open = true;
+        self.palette_edited = false;
+        self.omni.set(&text);
+        self.refresh_suggestions();
+        self.request_redraw();
+    }
+
+    fn close_palette(&mut self) {
+        if self.palette_open {
+            self.palette_open = false;
+            self.suggestions.clear();
+            self.request_redraw();
+        }
+    }
+
