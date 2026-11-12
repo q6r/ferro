@@ -1075,3 +1075,46 @@ impl Parser {
         })))
     }
 
+    fn parse_conditional(&mut self, no_in: bool) -> PResult<Expr> {
+        let test = self.parse_binary(0, no_in)?;
+        if !self.eat("?")? {
+            return Ok(test);
+        }
+        let cons = self.parse_assign(false)?;
+        self.expect(":")?;
+        let alt = self.parse_assign(no_in)?;
+        Ok(Expr::Cond(Box::new(test), Box::new(cons), Box::new(alt)))
+    }
+
+    fn parse_binary(&mut self, min_prec: u8, no_in: bool) -> PResult<Expr> {
+        let mut left = if let Tok::Private(name) = self.tok.tok.clone() {
+            // #x in obj
+            self.advance()?;
+            if !self.is_kw("in") {
+                return self.unexpected();
+            }
+            self.advance()?;
+            let right = self.parse_binary(9, no_in)?;
+            Expr::PrivateIn(name, Box::new(right))
+        } else {
+            self.parse_unary()?
+        };
+        loop {
+            let Some((prec, op)) = bin_prec(&self.tok.tok, no_in) else { break };
+            if prec <= min_prec && !(prec == 12 && min_prec == 12) {
+                break;
+            }
+            if prec < min_prec || (prec == min_prec && prec != 12) {
+                break;
+            }
+            self.advance()?;
+            // ** é associativo à direita
+            let right = if prec == 12 { self.parse_binary(11, no_in)? } else { self.parse_binary(prec, no_in)? };
+            left = match op {
+                BinOrLog::Bin(b) => Expr::Binary(b, Box::new(left), Box::new(right)),
+                BinOrLog::Log(l) => Expr::Logical(l, Box::new(left), Box::new(right)),
+            };
+        }
+        Ok(left)
+    }
+
