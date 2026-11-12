@@ -469,3 +469,68 @@ impl Vm {
         })
     }
 
+    pub fn to_object(&mut self, v: &Value) -> Result<ObjRef, Value> {
+        let (proto, kind) = match v {
+            Value::Object(o) => return Ok(o.clone()),
+            Value::Undefined | Value::Null | Value::Empty => {
+                return Err(self.type_error("Cannot convert undefined or null to object"));
+            }
+            Value::Bool(b) => (self.realm.boolean_proto.clone(), Kind::Boolean(*b)),
+            Value::Number(n) => (self.realm.number_proto.clone(), Kind::Number(*n)),
+            Value::String(s) => (self.realm.string_proto.clone(), Kind::String(s.clone())),
+            Value::Symbol(s) => (self.realm.symbol_proto.clone(), Kind::Symbol(s.clone())),
+            Value::BigInt(b) => (self.realm.bigint_proto.clone(), Kind::BigIntBox(b.clone())),
+        };
+        Ok(ObjRef::new(Object::new(Some(proto), kind)))
+    }
+
+    /// ToLength para array-likes.
+    pub fn length_of(&mut self, o: &ObjRef) -> Result<usize, Value> {
+        match &o.borrow().kind {
+            Kind::Array(v) => return Ok(v.len()),
+            Kind::TypedArray(t) => return Ok(t.length),
+            _ => {}
+        }
+        let l = self.get_obj(o, &PropKey::str("length"))?;
+        let n = self.to_integer(&l)?;
+        Ok(if n <= 0.0 { 0 } else { n.min(9007199254740991.0) as usize })
+    }
+
+    // ------------------------------------------------- propriedades
+
+    pub fn get(&mut self, target: &Value, key: &PropKey) -> Result<Value, Value> {
+        let proto = match target {
+            Value::Object(o) => return self.get_with(o, key, target),
+            Value::String(s) => {
+                if let PropKey::Str(k) = key {
+                    if k.eq_str("length") {
+                        return Ok(Value::Number(s.len() as f64));
+                    }
+                    if let Some(i) = k.as_index()
+                        && (i as usize) < s.len()
+                    {
+                        return Ok(Value::String(s.slice(i as usize, i as usize + 1)));
+                    }
+                }
+                self.realm.string_proto.clone()
+            }
+            Value::Number(_) => self.realm.number_proto.clone(),
+            Value::Bool(_) => self.realm.boolean_proto.clone(),
+            Value::Symbol(_) => self.realm.symbol_proto.clone(),
+            Value::BigInt(_) => self.realm.bigint_proto.clone(),
+            Value::Undefined | Value::Null | Value::Empty => {
+                let what = if matches!(target, Value::Null) { "null" } else { "undefined" };
+                return Err(self.type_error(format!("Cannot read properties of {what} (reading '{}')", key_display(key))));
+            }
+        };
+        self.get_with(&proto, key, target)
+    }
+
+    pub fn get_str(&mut self, target: &Value, name: &str) -> Result<Value, Value> {
+        self.get(target, &PropKey::str(name))
+    }
+
+    pub fn get_obj(&mut self, o: &ObjRef, key: &PropKey) -> Result<Value, Value> {
+        self.get_with(o, key, &Value::Object(o.clone()))
+    }
+
