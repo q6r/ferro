@@ -884,3 +884,67 @@ impl Bitmap {
         out
     }
 
+    /// `putImageData`: escreve direto (sem composição nem recorte).
+    #[allow(clippy::too_many_arguments)]
+    pub fn put_image_data(&mut self, data: &[u8], w: usize, h: usize, dx: i32, dy: i32, dirty: (i32, i32, i32, i32)) {
+        let (rx, ry, rw, rh) = dirty;
+        for row in ry.max(0)..(ry + rh).min(h as i32) {
+            let py = dy + row;
+            if py < 0 || py >= self.h as i32 {
+                continue;
+            }
+            for col in rx.max(0)..(rx + rw).min(w as i32) {
+                let px = dx + col;
+                if px < 0 || px >= self.w as i32 {
+                    continue;
+                }
+                let s = (row as usize * w + col as usize) * 4;
+                if s + 3 >= data.len() {
+                    continue;
+                }
+                let i = (py as usize * self.w + px as usize) * 4;
+                let a = data[s + 3] as u32;
+                for k in 0..3 {
+                    self.px[i + k] = ((data[s + k] as u32 * a + 127) / 255) as u8;
+                }
+                self.px[i + 3] = a as u8;
+            }
+        }
+    }
+
+    /// Cópia para pintar na página (RGBA não pré-multiplicado).
+    pub fn snapshot(&self) -> ImageData {
+        ImageData {
+            width: self.w as u32,
+            height: self.h as u32,
+            rgba: self.get_image_data(0, 0, self.w, self.h),
+        }
+    }
+}
+
+/// PNG de uma imagem (para `toDataURL`).
+pub fn encode_png(img: &ImageData) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, img.width.max(1), img.height.max(1));
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        if let Ok(mut w) = enc.write_header() {
+            let _ = w.write_image_data(&img.rgba);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn solid(c: Rgba) -> Paint {
+        Paint { style: Style::Solid(c), inv: Mat::IDENTITY, alpha: 1.0, op: Op::SourceOver }
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Vec<Cmd> {
+        vec![Cmd::Move(x, y), Cmd::Line(x + w, y), Cmd::Line(x + w, y + h), Cmd::Line(x, y + h), Cmd::Close]
+    }
+
