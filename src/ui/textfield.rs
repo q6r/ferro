@@ -131,3 +131,46 @@ impl TextField {
         self.move_to(len, extend);
     }
 
+    /// Posiciona o cursor no caractere mais próximo de `x`, dada a função
+    /// que mede a largura de um prefixo do texto.
+    pub fn click(&mut self, x: f32, measure: impl Fn(&str) -> f32, extend: bool) {
+        let mut best = 0;
+        let mut best_d = f32::MAX;
+        for i in 0..=self.len() {
+            let w = measure(&self.text[..self.byte(i)]);
+            let d = (w - x).abs();
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        self.move_to(best, extend);
+    }
+
+    /// Largura do texto antes do cursor e da seleção, para desenhar.
+    pub fn prefix(&self, idx: usize) -> &str {
+        &self.text[..self.byte(idx)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edicao_com_acentos() {
+        let mut f = TextField::default();
+        f.insert("São Paulo");
+        f.left(false, false);
+        f.backspace(false);
+        assert_eq!(f.text, "São Pauo");
+        f.home(false);
+        f.right(true, true);
+        assert_eq!(f.selected_text(), "São");
+        f.insert("Rio");
+        assert_eq!(f.text, "Rio Pauo");
+        f.select_all();
+        f.backspace(false);
+        assert_eq!(f.text, "");
+    }
+}
