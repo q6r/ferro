@@ -1278,3 +1278,83 @@ impl Session {
         self.snapshot_canvases()
     }
 
+    /// Um `<select>` pediu a lista: (nó, retângulo no documento, rótulos,
+    /// desabilitadas, escolhida).
+    pub fn take_select_popup(&mut self) -> Option<SelectPopup> {
+        let (n, labels, disabled, selected) = self.host.borrow_mut().select_popup.take()?;
+        let rect = {
+            let hb = self.host.borrow();
+            let r = frames::frame_box(&hb, n)?;
+            let fixed = hb.layout.as_ref().is_some_and(|l| l.fixed.contains(&n));
+            Rect { y: if fixed { r.y + hb.scroll_y } else { r.y }, ..r }
+        };
+        Some(SelectPopup { node: n, rect, labels, disabled, selected })
+    }
+
+    /// A pessoa escolheu a opção `index` no `<select>`.
+    pub fn choose_select(&mut self, node: NodeId, index: usize) {
+        self.last_input = Some(Instant::now());
+        let el = wrap(&mut self.js.vm, node);
+        self.hook("selectChoose", vec![el, Value::Number(index as f64)]);
+    }
+
+    /// A página entrou ou saiu da tela cheia desde a última consulta?
+    pub fn take_fullscreen(&mut self) -> Option<bool> {
+        let mut hb = self.host.borrow_mut();
+        if !std::mem::take(&mut hb.fullscreen_changed) {
+            return None;
+        }
+        Some(hb.fullscreen.is_some())
+    }
+
+    /// A interface saiu da tela cheia (Esc): avisa a página.
+    pub fn exit_fullscreen(&mut self) {
+        let el = {
+            let mut hb = self.host.borrow_mut();
+            hb.dirty = true;
+            hb.fullscreen_changed = false;
+            hb.fullscreen.take()
+        };
+        if let Some(n) = el {
+            crate::css::set_dynamic_state(dynamic_state(&self.host.borrow()));
+            let el = wrap(&mut self.js.vm, n);
+            self.hook("fullscreenChanged", vec![el]);
+        }
+    }
+
+    /// `<video controls>` parados (a pintura põe o botão de tocar).
+    pub fn paused_videos(&self) -> std::collections::HashSet<NodeId> {
+        let hb = self.host.borrow();
+        let doc = &hb.page.doc;
+        doc.find_all("video")
+            .into_iter()
+            .filter(|&n| doc.element(n).is_some_and(|e| e.attr("controls").is_some()))
+            .filter(|n| hb.media.players.get(n).is_none_or(|p| p.paused))
+            .collect()
+    }
+
+    /// Algum vídeo mudou de quadro desde a última consulta? Devolve os quadros novos.
+    pub fn take_new_frames(&mut self) -> Vec<(NodeId, Arc<ImageData>)> {
+        let mut hb = self.host.borrow_mut();
+        let ids: Vec<NodeId> = hb.media.new_frames.drain().collect();
+        ids.into_iter()
+            .filter_map(|n| hb.media.players.get(&n)?.pipeline.shown.as_ref().map(|(_, i)| (n, i.clone())))
+            .collect()
+    }
+
+    /// Não baixa imagens, fundos nem fontes (modo `--sem-imagens`).
+    pub fn disable_resources(&mut self) {
+        self.host.borrow_mut().no_resources = true;
+    }
+
+    /// Nada baixando e nenhum desenho pendente.
+    pub fn idle(&self) -> bool {
+        let hb = self.host.borrow();
+        hb.in_flight == 0
+            && !hb.dirty
+            && !hb.repaint
+            && hb.parser.is_none()
+            && hb.frame_loading.is_empty()
+            && hb.frames.values().all(|c| c.loaded)
+    }
+
