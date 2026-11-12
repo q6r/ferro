@@ -449,3 +449,45 @@ impl Document {
         }
     }
 
+    /// Representação em texto da árvore, para depuração (`--dump-dom`).
+    pub fn dump(&self) -> String {
+        let mut out = String::new();
+        self.dump_node(Self::ROOT, 0, &mut out);
+        out
+    }
+
+    fn dump_node(&self, id: NodeId, depth: usize, out: &mut String) {
+        let pad = "  ".repeat(depth);
+        match &self.nodes[id].data {
+            NodeData::Document => out.push_str("#document\n"),
+            NodeData::Doctype(d) => out.push_str(&format!("{pad}<!DOCTYPE {d}>\n")),
+            NodeData::Comment(_) => {}
+            NodeData::Text(t) => {
+                let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+                if !t.is_empty() {
+                    let short: String = t.chars().take(80).collect();
+                    out.push_str(&format!("{pad}\"{short}\"\n"));
+                }
+            }
+            NodeData::Element(e) => {
+                let mut s = format!("{pad}<{}", e.tag);
+                for (k, v) in &e.attrs {
+                    let v: String = v.chars().take(40).collect();
+                    s.push_str(&format!(" {k}=\"{v}\""));
+                }
+                s.push_str(">\n");
+                out.push_str(&s);
+            }
+        }
+        if let Some(&root) = self.shadow_roots.get(&id) {
+            out.push_str(&format!("{}  #shadow-root
+", "  ".repeat(depth)));
+            for &c in &self.nodes[root].children {
+                self.dump_node(c, depth + 2, out);
+            }
+        }
+        for &c in &self.nodes[id].children {
+            self.dump_node(c, depth + 1, out);
+        }
+    }
+}
