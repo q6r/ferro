@@ -409,3 +409,107 @@ impl Fonts {
         g
     }
 
+    fn make_color_glyph(&self, rid: FontId, ch: char, size: f32) -> Option<ColorGlyph> {
+        use crate::canvas::{Bitmap, Cmd, Mat, Op, Paint, Style};
+        if rid >= WEB_FONT_BASE {
+            return None;
+        }
+        let font = self.face(rid)?;
+        let table = self.faces.get(rid)?.colr.get()?.as_ref()?;
+        let gid = font.lookup_glyph_index(ch);
+        let &(first, n) = table.base.get(&gid)?;
+        let face = ttf_parser::Face::parse(&table.data, 0).ok()?;
+        let scale = size / face.units_per_em() as f32;
+        let layers: Vec<(u16, [u8; 4])> = (first..first + n)
+            .filter_map(|i| {
+                let (g, pi) = *table.layers.get(i as usize)?;
+                let color = if pi == 0xFFFF { [0, 0, 0, 255] } else { *table.palette.get(pi as usize)? };
+                Some((g, color))
+            })
+            .collect();
+        // caixa de todas as camadas, em unidades da fonte
+        let (mut x0, mut y0, mut x1, mut y1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for (g, _) in &layers {
+            if let Some(b) = face.glyph_bounding_box(ttf_parser::GlyphId(*g)) {
+                x0 = x0.min(b.x_min as i32);
+                y0 = y0.min(b.y_min as i32);
+                x1 = x1.max(b.x_max as i32);
+                y1 = y1.max(b.y_max as i32);
+            }
+        }
+        if x0 > x1 {
+            return None;
+        }
+        let px0 = (x0 as f32 * scale).floor();
+        let py0 = (y0 as f32 * scale).floor();
+        let w = ((x1 as f32 * scale).ceil() - px0).max(1.0) as usize + 1;
+        let h = ((y1 as f32 * scale).ceil() - py0).max(1.0) as usize + 1;
+        let top = py0 + h as f32;
+        // contorno de cada camada → caminho em pixels (y para baixo)
+        struct Path {
+            cmds: Vec<Cmd>,
+            last: (f32, f32),
+            scale: f32,
+            px0: f32,
+            top: f32,
+        }
+        impl Path {
+            fn p(&self, x: f32, y: f32) -> (f32, f32) {
+                (x * self.scale - self.px0, self.top - y * self.scale)
+            }
+        }
+        impl ttf_parser::OutlineBuilder for Path {
+            fn move_to(&mut self, x: f32, y: f32) {
+                let (a, b) = self.p(x, y);
+                self.cmds.push(Cmd::Move(a, b));
+                self.last = (a, b);
+            }
+            fn line_to(&mut self, x: f32, y: f32) {
+                let (a, b) = self.p(x, y);
+                self.cmds.push(Cmd::Line(a, b));
+                self.last = (a, b);
+            }
+            fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+                let (cx, cy) = self.p(x1, y1);
+                let (ex, ey) = self.p(x, y);
+                let (sx, sy) = self.last;
+                self.cmds.push(Cmd::Cubic(
+                    sx + 2.0 / 3.0 * (cx - sx),
+                    sy + 2.0 / 3.0 * (cy - sy),
+                    ex + 2.0 / 3.0 * (cx - ex),
+                    ey + 2.0 / 3.0 * (cy - ey),
+                    ex,
+                    ey,
+                ));
+                self.last = (ex, ey);
+            }
+            fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+                let (a, b) = self.p(x1, y1);
+                let (c, d) = self.p(x2, y2);
+                let (e, f) = self.p(x, y);
+                self.cmds.push(Cmd::Cubic(a, b, c, d, e, f));
+                self.last = (e, f);
+            }
+            fn close(&mut self) {
+                self.cmds.push(Cmd::Close);
+            }
+        }
+        let mut bmp = Bitmap::new(w, h);
+        for (g, c) in &layers {
+            let mut path = Path { cmds: Vec::new(), last: (0.0, 0.0), scale, px0, top };
+            if face.outline_glyph(ttf_parser::GlyphId(*g), &mut path).is_none() {
+                continue;
+            }
+            let color = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, c[3] as f32 / 255.0];
+            let paint = Paint { style: Style::Solid(color), inv: Mat::IDENTITY, alpha: 1.0, op: Op::SourceOver };
+            bmp.fill_path(&path.cmds, false, &paint);
+        }
+        let img = bmp.snapshot();
+        let adv = face.glyph_hor_advance(ttf_parser::GlyphId(gid)).map(|a| a as f32 * scale).unwrap_or(size);
+        let base = font.metrics(ch, size);
+        Some(ColorGlyph {
+            metrics: Metrics { xmin: px0 as i32, ymin: py0 as i32, width: w, height: h, advance_width: adv, ..base },
+            rgba: img.rgba,
+        })
+    }
+
