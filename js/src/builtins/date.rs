@@ -135,3 +135,56 @@ struct Parts {
     ms: i64,
 }
 
+fn parts(t: f64) -> Parts {
+    let days = (t / MS_PER_DAY).floor();
+    let within = t - days * MS_PER_DAY;
+    let (year, month, day) = civil_from_days(days as i64);
+    let w = within as i64;
+    Parts {
+        year,
+        month: month - 1,
+        day,
+        weekday: ((days as i64 + 4).rem_euclid(7)) as usize,
+        hour: w / 3_600_000,
+        minute: (w / 60_000) % 60,
+        second: (w / 1000) % 60,
+        ms: w % 1000,
+    }
+}
+
+/// (ano, mês 0-11, dia, dia da semana, hora, minuto, segundo, ms).
+pub fn parts_of(t: f64) -> (i64, i64, i64, usize, i64, i64, i64, i64) {
+    let p = parts(t);
+    (p.year, p.month, p.day, p.weekday, p.hour, p.minute, p.second, p.ms)
+}
+
+/// Deslocamento do fuso local em ms (local = utc + deslocamento).
+fn offset_ms(vm: &Vm, t: f64) -> f64 {
+    if !t.is_finite() {
+        return 0.0;
+    }
+    (vm.tz)(None, t).map_or(0.0, |z| z.offset_min * 60_000.0)
+}
+
+/// Hora local → UTC (considerando a mudança de horário de verão).
+pub fn local_to_utc(vm: &Vm, local: f64) -> f64 {
+    if !local.is_finite() {
+        return local;
+    }
+    let first = offset_ms(vm, local);
+    let second = offset_ms(vm, local - first);
+    local - second
+}
+
+/// "GMT-0300 (Horário Padrão de Brasília)".
+fn tz_suffix(vm: &Vm, t: f64) -> String {
+    let z = (vm.tz)(None, t).unwrap_or(crate::vm::TzInfo {
+        offset_min: 0.0,
+        short: "UTC".into(),
+        long: "Coordinated Universal Time".into(),
+    });
+    let m = z.offset_min as i64;
+    let sign = if m < 0 { '-' } else { '+' };
+    format!("GMT{sign}{:02}{:02} ({})", m.abs() / 60, m.abs() % 60, z.long)
+}
+
