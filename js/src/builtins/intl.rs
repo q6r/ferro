@@ -59,3 +59,74 @@ pub struct LocaleData {
 
 const UNITS: [&str; 8] = ["second", "minute", "hour", "day", "week", "month", "quarter", "year"];
 
+const EN_DATA: LocaleData = LocaleData {
+    lang: "en",
+    decimal: ".",
+    group: ",",
+    min_grouping: 1,
+    months: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+    months_short: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+    days: ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"],
+    days_short: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+    numeric: "{M}/{d}/{y}",
+    numeric_pad: false,
+    ymd_long: "{M} {d}, {y}",
+    ymd_medium: "{M} {d}, {y}",
+    ym_long: "{M} {y}",
+    md_long: "{M} {d}",
+    weekday_sep: ", ",
+    md_short: "{M} {d}",
+    medium_numeric: false,
+    short_year2: true,
+    sep_long: " at ",
+    sep_medium: ", ",
+    hour12: true,
+    am: "AM",
+    pm: "PM",
+    datetime_sep: ", ",
+    compact_short: ["K", "M", "B", "T"],
+    compact_long: [(" thousand", " thousand"), (" million", " million"), (" billion", " billion"), (" trillion", " trillion")],
+    currency_after: false,
+    percent_space: false,
+    list_and: "and",
+    list_or: "or",
+    oxford: true,
+    rel_future: "in {n} {u}",
+    rel_past: "{n} {u} ago",
+    rel_units: [
+        ("second", "second", "seconds"),
+        ("minute", "minute", "minutes"),
+        ("hour", "hour", "hours"),
+        ("day", "day", "days"),
+        ("week", "week", "weeks"),
+        ("month", "month", "months"),
+        ("quarter", "quarter", "quarters"),
+        ("year", "year", "years"),
+    ],
+    rel_auto: [
+        ("day", "yesterday", "today", "tomorrow"),
+        ("week", "last week", "this week", "next week"),
+        ("month", "last month", "this month", "next month"),
+        ("year", "last year", "this year", "next year"),
+        ("quarter", "last quarter", "this quarter", "next quarter"),
+    ],
+};
+
+static EN: LocaleData = EN_DATA;
+
+/// Inglês fora dos EUA (Reino Unido, Austrália, Índia...): dia/mês e 24 h.
+static EN_GB: LocaleData = LocaleData {
+    numeric: "{d}/{M}/{y}",
+    numeric_pad: true,
+    ymd_long: "{d} {M} {y}",
+    ymd_medium: "{d} {M} {y}",
+    md_long: "{d} {M}",
+    md_short: "{d} {M}",
+    short_year2: false,
+    hour12: false,
+    am: "am",
+    pm: "pm",
+    oxford: false,
+    ..EN_DATA
+};
+
