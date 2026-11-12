@@ -162,3 +162,39 @@ impl Vm {
         }
     }
 
+    /// PerformPromiseThen.
+    pub fn perform_then(&mut self, p: &ObjRef, on_ful: Value, on_rej: Value, cap: Option<Capability>) {
+        let f = Reaction {
+            cap: cap.clone(),
+            handler: if on_ful.is_callable() { on_ful } else { Value::Undefined },
+            is_reject: false,
+        };
+        let r = Reaction {
+            cap,
+            handler: if on_rej.is_callable() { on_rej } else { Value::Undefined },
+            is_reject: true,
+        };
+        let job = {
+            let mut b = p.borrow_mut();
+            let Kind::Promise(d) = &mut b.kind else { return };
+            let was_handled = d.handled;
+            d.handled = true;
+            match &d.state {
+                PState::Pending => {
+                    d.fulfill.push(f);
+                    d.reject.push(r);
+                    None
+                }
+                PState::Fulfilled(v) => Some((Job::Reaction(f, v.clone()), false)),
+                PState::Rejected(v) => Some((Job::Reaction(r, v.clone()), !was_handled)),
+            }
+        };
+        if let Some((job, late)) = job {
+            if late {
+                // tratada depois de rejeitada: não é mais "não tratada"
+                self.pending_rejections.retain(|x| !x.ptr_eq(p));
+            }
+            self.microtasks.push_back(job);
+        }
+    }
+
