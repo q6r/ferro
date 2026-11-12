@@ -171,3 +171,66 @@ impl Descriptor {
     }
 }
 
+pub fn to_descriptor(vm: &mut Vm, v: &Value) -> Result<Descriptor, Value> {
+    let Value::Object(o) = v else {
+        let d = vm.describe(v);
+        return Err(vm.type_error(format!("Property description must be an object: {d}")));
+    };
+    let mut d = Descriptor::default();
+    let has = |vm: &mut Vm, n: &str| vm.has_property(o, &PropKey::str(n)).unwrap_or(false);
+    if has(vm, "enumerable") {
+        d.enumerable = Some(truthy(&vm.get_obj(o, &PropKey::str("enumerable"))?));
+    }
+    if has(vm, "configurable") {
+        d.configurable = Some(truthy(&vm.get_obj(o, &PropKey::str("configurable"))?));
+    }
+    if has(vm, "value") {
+        d.value = Some(vm.get_obj(o, &PropKey::str("value"))?);
+    }
+    if has(vm, "writable") {
+        d.writable = Some(truthy(&vm.get_obj(o, &PropKey::str("writable"))?));
+    }
+    for (name, is_get) in [("get", true), ("set", false)] {
+        if has(vm, name) {
+            let f = vm.get_obj(o, &PropKey::str(name))?;
+            let f = match f {
+                Value::Undefined => None,
+                Value::Object(fo) if fo.is_callable() => Some(fo),
+                other => {
+                    let dsc = vm.describe(&other);
+                    return Err(vm.type_error(format!("{} must be a function: {dsc}", if is_get { "Getter" } else { "Setter" })));
+                }
+            };
+            if is_get {
+                d.get = Some(f);
+            } else {
+                d.set = Some(f);
+            }
+        }
+    }
+    if d.is_accessor() && (d.value.is_some() || d.writable.is_some()) {
+        return Err(vm.type_error("Invalid property descriptor. Cannot both specify accessors and a value or writable attribute"));
+    }
+    Ok(d)
+}
+
+pub fn from_property(vm: &mut Vm, p: &Property) -> Value {
+    let o = vm.new_object();
+    {
+        let mut b = o.borrow_mut();
+        match &p.slot {
+            Slot::Data { value, writable } => {
+                b.props.insert(PropKey::str("value"), Property::data(value.clone()));
+                b.props.insert(PropKey::str("writable"), Property::data(Value::Bool(*writable)));
+            }
+            Slot::Accessor { get, set } => {
+                b.props.insert(PropKey::str("get"), Property::data(get.clone().map(Value::Object).unwrap_or_default()));
+                b.props.insert(PropKey::str("set"), Property::data(set.clone().map(Value::Object).unwrap_or_default()));
+            }
+        }
+        b.props.insert(PropKey::str("enumerable"), Property::data(Value::Bool(p.enumerable)));
+        b.props.insert(PropKey::str("configurable"), Property::data(Value::Bool(p.configurable)));
+    }
+    Value::Object(o)
+}
+
