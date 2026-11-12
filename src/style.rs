@@ -1069,3 +1069,76 @@ impl RuleIndex {
         })
     }
 
+    fn build(sheets: &[(Rc<Stylesheet>, Origin)]) -> Self {
+        let mut idx = RuleIndex {
+            sheets: sheets.to_vec(),
+            entries: Vec::new(),
+            normal: Buckets::default(),
+            pseudo: Buckets::default(),
+        };
+        let mut order = 0;
+        for (si, (sheet, origin)) in sheets.iter().enumerate() {
+            for (ri, rule) in sheet.rules.iter().enumerate() {
+                for (xi, sel) in rule.selectors.iter().enumerate() {
+                    // pseudo-classe que nunca casa (:visited, ::first-line...): fora
+                    if sel.compounds.iter().any(|c| c.pseudos.iter().any(|p| matches!(p, css::Pseudo::Never))) {
+                        continue;
+                    }
+                    // compostos ligados por descendente/filho são ancestrais do elemento
+                    let mut ancestors = Vec::new();
+                    for (c, comb) in sel.compounds.iter().zip(&sel.combinators) {
+                        if matches!(comb, css::Combinator::Descendant | css::Combinator::Child) {
+                            if let Some(id) = &c.id {
+                                ancestors.push(feature_hash(b'#', id));
+                            }
+                            for cl in &c.classes {
+                                ancestors.push(feature_hash(b'.', cl));
+                            }
+                            if let Some(t) = &c.tag {
+                                ancestors.push(feature_hash(b't', t));
+                            }
+                        }
+                    }
+                    let id = idx.entries.len() as u32;
+                    idx.entries.push(Entry {
+                        sheet: si as u32,
+                        rule: ri as u32,
+                        sel: xi as u32,
+                        origin: *origin,
+                        spec: sel.specificity(),
+                        order,
+                        ancestors: ancestors.into_boxed_slice(),
+                    });
+                    order += 1;
+                    let last = sel.compounds.last().unwrap();
+                    if sel.pseudo_element.is_some() {
+                        idx.pseudo.insert(last, id);
+                    } else {
+                        idx.normal.insert(last, id);
+                    }
+                }
+            }
+        }
+        idx
+    }
+
+    fn rule(&self, e: &Entry) -> &css::Rule {
+        &self.sheets[e.sheet as usize].0.rules[e.rule as usize]
+    }
+}
+
+/// Estilos de todos os nós (índice = NodeId) e dos pseudo-elementos.
+pub struct Styles {
+    pub nodes: Vec<Option<Rc<ComputedStyle>>>,
+    pub before: HashMap<NodeId, Rc<ComputedStyle>>,
+    pub after: HashMap<NodeId, Rc<ComputedStyle>>,
+}
+
+impl std::ops::Index<NodeId> for Styles {
+    type Output = Option<Rc<ComputedStyle>>;
+
+    fn index(&self, i: NodeId) -> &Self::Output {
+        &self.nodes[i]
+    }
+}
+
