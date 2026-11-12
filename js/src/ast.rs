@@ -176,3 +176,73 @@ pub struct Prop {
     pub kind: PropKind,
 }
 
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Num(f64),
+    BigInt(Rc<str>),
+    Str(Rc<[u16]>),
+    Template(Vec<Rc<[u16]>>, Vec<Expr>),
+    Tagged {
+        tag: Box<Expr>,
+        cooked: Vec<Option<Rc<[u16]>>>,
+        raw: Vec<Rc<str>>,
+        exprs: Vec<Expr>,
+    },
+    Regex(Rc<str>, Rc<str>),
+    Ident(Name, u32),
+    This,
+    Null,
+    Bool(bool),
+    Array(Vec<ArrayElem>),
+    Object(Vec<Prop>),
+    Function(Rc<FunctionDef>),
+    Class(Rc<ClassDef>),
+    Unary(UnOp, Box<Expr>),
+    Update {
+        inc: bool,
+        prefix: bool,
+        target: Box<Expr>,
+    },
+    Binary(BinOp, Box<Expr>, Box<Expr>),
+    Logical(LogOp, Box<Expr>, Box<Expr>),
+    Assign(AssignOp, Box<Pattern>, Box<Expr>),
+    Cond(Box<Expr>, Box<Expr>, Box<Expr>),
+    Call {
+        callee: Box<Expr>,
+        args: Vec<ArrayElem>,
+        optional: bool,
+        line: u32,
+    },
+    New(Box<Expr>, Vec<ArrayElem>, u32),
+    Member {
+        obj: Box<Expr>,
+        prop: Name,
+        optional: bool,
+    },
+    Index {
+        obj: Box<Expr>,
+        index: Box<Expr>,
+        optional: bool,
+    },
+    PrivateMember(Box<Expr>, Name),
+    /// `#x in obj`
+    PrivateIn(Name, Box<Expr>),
+    /// Fim de uma cadeia com `?.`: se algum elo deu null/undefined, tudo vira undefined.
+    OptionalChain(Box<Expr>),
+    SuperMember(Name),
+    SuperIndex(Box<Expr>),
+    SuperCall(Vec<ArrayElem>),
+    Seq(Vec<Expr>),
+    Yield(Option<Box<Expr>>, bool),
+    Await(Box<Expr>),
+    NewTarget,
+    /// Cobertura: `...x` dentro de parênteses (vira parâmetro rest de arrow).
+    Spread(Box<Expr>),
+    /// `import(x)`: carrega um módulo (devolve uma Promise).
+    ImportCall(Box<Expr>),
+    /// `import.meta` (só em módulos).
+    ImportMeta,
+    /// Recurso que ainda não é suportado.
+    Unsupported(&'static str),
+}
+
