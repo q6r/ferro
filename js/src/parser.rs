@@ -274,3 +274,64 @@ impl Parser {
         Ok(ImportDecl { specifier, bindings })
     }
 
+    fn parse_export(&mut self) -> PResult<ExportDecl> {
+        self.expect_kw("export")?;
+        if self.eat("*")? {
+            let alias = if self.eat_kw("as")? { Some(self.module_export_name()?) } else { None };
+            let spec = self.from_clause()?;
+            self.semicolon()?;
+            return Ok(ExportDecl::All(spec, alias));
+        }
+        if self.eat("{")? {
+            let mut names = Vec::new();
+            while !self.eat("}")? {
+                let local = self.module_export_name()?;
+                let exported = if self.eat_kw("as")? { self.module_export_name()? } else { local.clone() };
+                names.push((local, exported));
+                if !self.is("}") {
+                    self.expect(",")?;
+                }
+            }
+            if self.is_kw("from") {
+                let spec = self.from_clause()?;
+                self.semicolon()?;
+                return Ok(ExportDecl::From(spec, names));
+            }
+            self.semicolon()?;
+            return Ok(ExportDecl::Names(names.into_iter().map(|(l, e)| (Name::from(l.as_str()), e)).collect()));
+        }
+        if self.eat_kw("default")? {
+            let is_async_fn = self.is_kw("async")
+                && matches!(self.peek()?.tok, Tok::Ident(ref n) if &**n == "function")
+                && !self.peek()?.nl_before;
+            if self.is_kw("function") || is_async_fn {
+                if is_async_fn {
+                    self.advance()?;
+                }
+                let f = self.parse_function(is_async_fn, true)?;
+                return Ok(match f.name.clone() {
+                    Some(n) => ExportDecl::DefaultDecl(Stmt::Function(f), n),
+                    None => ExportDecl::DefaultExpr(Expr::Function(f)),
+                });
+            }
+            if self.is_kw("class") {
+                let c = self.parse_class()?;
+                return Ok(match c.name.clone() {
+                    Some(n) => ExportDecl::DefaultDecl(Stmt::Class(c), n),
+                    None => ExportDecl::DefaultExpr(Expr::Class(c)),
+                });
+            }
+            let e = self.parse_assign(false)?;
+            self.semicolon()?;
+            return Ok(ExportDecl::DefaultExpr(e));
+        }
+        // export var/let/const/function/class
+        let s = self.parse_statement()?;
+        match &s {
+            Stmt::Var(..) | Stmt::Function(_) | Stmt::Class(_) => Ok(ExportDecl::Decl(s)),
+            _ => self.err("export inválido"),
+        }
+    }
+
+    // ------------------------------------------------------------ tokens
+
