@@ -1961,3 +1961,49 @@ fn segment(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Object(arr))
 }
 
+fn segments_containing(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Value::Object(arr) = native_data(&a.callee) else { return Ok(Value::Undefined) };
+    let i = vm.to_integer(&a.arg(0))?;
+    let len = vm.length_of(&arr)?;
+    for k in 0..len {
+        let seg = vm.get_obj(&arr, &crate::ops::index_key(k))?;
+        let idx = vm.get_str(&seg, "index")?;
+        let txt = vm.get_str(&seg, "segment")?;
+        let (start, n) = (vm.to_number(&idx)?, vm.to_string(&txt)?.len() as f64);
+        if i >= start && i < start + n {
+            return Ok(seg);
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+// ---------------------------------------------------------------- locais
+
+fn locale_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.new_target.is_none() {
+        return Err(vm.type_error("Constructor Intl.Locale requires 'new'"));
+    }
+    let t = vm.to_rust_string(&a.arg(0))?;
+    let Some(c) = canonical_tag(&t) else {
+        return Err(vm.range_error(format!("Incorrect locale information provided: {t}")));
+    };
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::Locale(c))
+}
+
+fn locale_tag(vm: &mut Vm, a: &CallArgs) -> Result<String, Value> {
+    with_intl(vm, &a.this, |x| match x {
+        IntlObj::Locale(t) => Some(t.clone()),
+        _ => None,
+    })
+}
+
+fn locale_language(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = locale_tag(vm, a)?;
+    Ok(Value::str(t.split('-').next().unwrap_or("")))
+}
+
+fn locale_region(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = locale_tag(vm, a)?;
+    Ok(t.split('-').skip(1).find(|p| p.len() == 2 || (p.len() == 3 && p.chars().all(|c| c.is_ascii_digit()))).map(Value::str).unwrap_or_default())
+}
+
