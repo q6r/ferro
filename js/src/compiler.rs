@@ -569,3 +569,42 @@ impl Usage {
         }
     }
 
+    fn decls(&mut self, decls: &[VarDecl], d: u32, a: bool) {
+        for v in decls {
+            self.pattern(&v.target, d, a);
+            if let Some(i) = &v.init {
+                self.expr(i, d, a);
+            }
+        }
+    }
+
+    fn pattern(&mut self, p: &Pattern, d: u32, a: bool) {
+        match p {
+            Pattern::Ident(n) => self.name(n, d),
+            Pattern::Object { props, rest } => {
+                for (k, v) in props {
+                    if let PropKeyExpr::Computed(e) = k {
+                        self.expr(e, d, a);
+                    }
+                    self.pattern(v, d, a);
+                }
+                if let Some(r) = rest {
+                    self.pattern(r, d, a);
+                }
+            }
+            Pattern::Array { elems, rest } => {
+                for p in elems.iter().flatten() {
+                    self.pattern(p, d, a);
+                }
+                if let Some(r) = rest {
+                    self.pattern(r, d, a);
+                }
+            }
+            Pattern::Default(p, e) => {
+                self.pattern(p, d, a);
+                self.expr(e, d, a);
+            }
+            Pattern::Target(e) => self.expr(e, d, a),
+        }
+    }
+
