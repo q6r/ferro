@@ -645,3 +645,81 @@ impl Parser {
         }
     }
 
+    fn class_escape_set(&self, c: char) -> Option<ClassSet> {
+        let mut set = ClassSet::default();
+        match c {
+            'd' => set.add_all(DIGIT_RANGES),
+            'D' => set.add_complement(DIGIT_RANGES),
+            's' => set.add_all(SPACE_RANGES),
+            'S' => set.add_complement(SPACE_RANGES),
+            'w' => set.add_all(WORD_RANGES),
+            'W' => set.add_complement(WORD_RANGES),
+            _ => return None,
+        }
+        Some(set)
+    }
+
+    fn property(&mut self) -> Result<(Prop, bool), RegexError> {
+        let negate = self.s[self.i - 1] == 'P' as u32;
+        if !self.eat('{') {
+            return err("Invalid property name");
+        }
+        let mut text = String::new();
+        loop {
+            let Some(c) = self.peek() else { return err("Invalid property name") };
+            self.i += 1;
+            if c == '}' as u32 {
+                break;
+            }
+            text.push(char::from_u32(c).unwrap_or('?'));
+        }
+        let (name, value) = match text.split_once('=') {
+            Some((a, b)) => (a, Some(b)),
+            None => (text.as_str(), None),
+        };
+        let p = prop_by_name(name, value).ok_or(RegexError("Invalid property name".into()))?;
+        Ok((p, negate))
+    }
+
+    fn hex(&mut self, n: usize) -> Option<u32> {
+        let mut v = 0u32;
+        for k in 0..n {
+            let d = char::from_u32(self.peek_at(k)?)?.to_digit(16)?;
+            v = v * 16 + d;
+        }
+        self.i += n;
+        Some(v)
+    }
+
+    /// Depois de `\u`: `XXXX`, par substituto, ou `{...}` (modo u).
+    fn unicode_escape_value(&mut self, allow_brace: bool) -> Result<Option<u32>, RegexError> {
+        if (self.u || allow_brace) && self.eat('{') {
+            let start = self.i;
+            let mut v: u32 = 0;
+            while let Some(d) = self.peek().and_then(char::from_u32).and_then(|c| c.to_digit(16)) {
+                v = v.saturating_mul(16).saturating_add(d);
+                self.i += 1;
+            }
+            if self.i == start || !self.eat('}') || v > 0x10FFFF {
+                return err("Invalid Unicode escape");
+            }
+            return Ok(Some(v));
+        }
+        let Some(v) = self.hex(4) else { return Ok(None) };
+        if self.u
+            && (0xD800..0xDC00).contains(&v)
+            && self.peek() == Some('\\' as u32)
+            && self.peek_at(1) == Some('u' as u32)
+        {
+            let save = self.i;
+            self.i += 2;
+            match self.hex(4) {
+                Some(lo) if (0xDC00..0xE000).contains(&lo) => {
+                    return Ok(Some(0x10000 + ((v - 0xD800) << 10) + (lo - 0xDC00)));
+                }
+                _ => self.i = save,
+            }
+        }
+        Ok(Some(v))
+    }
+
