@@ -476,3 +476,52 @@ impl Parser {
 
     // --------------------------------------------------------- instruções
 
+    fn parse_body_until_eof(&mut self) -> PResult<Vec<Stmt>> {
+        let mut body = Vec::new();
+        self.directives()?;
+        while self.tok.tok != Tok::Eof {
+            body.push(self.parse_statement()?);
+        }
+        Ok(body)
+    }
+
+    /// "use strict" no começo do programa/função.
+    fn directives(&mut self) -> PResult<()> {
+        if let Tok::Str(s) = &self.tok.tok {
+            let text = String::from_utf16_lossy(s);
+            let raw = self.lx.source_slice(self.tok.start + 1, self.tok.end - 1);
+            if text == "use strict" && raw == "use strict" {
+                let next = self.peek()?;
+                if matches!(next.tok, Tok::Punct(";") | Tok::Punct("}") | Tok::Eof) || next.nl_before {
+                    self.strict = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_block(&mut self) -> PResult<Vec<Stmt>> {
+        self.expect("{")?;
+        let mut body = Vec::new();
+        while !self.is("}") {
+            if self.tok.tok == Tok::Eof {
+                return self.err("bloco sem '}'");
+            }
+            body.push(self.parse_statement()?);
+        }
+        self.advance()?;
+        Ok(body)
+    }
+
+    fn starts_let_decl(&mut self) -> PResult<bool> {
+        if !self.is_kw("let") {
+            return Ok(false);
+        }
+        let next = self.peek()?;
+        Ok(match &next.tok {
+            Tok::Ident(n) => !matches!(&**n, "in" | "instanceof" | "of") || next.nl_before,
+            Tok::Punct("[") | Tok::Punct("{") => true,
+            _ => false,
+        })
+    }
+
