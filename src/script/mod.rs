@@ -963,3 +963,36 @@ impl Session {
         }
     }
 
+    /// Clique na página (coordenadas do documento). Devolve a URL a abrir,
+    /// se o clique seguiu um link.
+    pub fn click(&mut self, x: f32, y: f32) -> Option<Nav> {
+        self.last_input = Some(Instant::now());
+        self.host.borrow_mut().keyboard_focus = false;
+        let target = self.hit(x, y)?;
+        // clique dentro de um <iframe>: vai para o quadro
+        if let Some((n, fx, fy)) = self.frame_at(target, x, y) {
+            self.host.borrow_mut().focused_frame = Some(n);
+            let c = self.host.borrow_mut().frames.remove(&n);
+            if let Some(mut c) = c {
+                if let Some(nav) = c.session.click(fx, fy) {
+                    c.session.host.borrow_mut().navigate = Some(nav.url);
+                }
+                c.stale = true;
+                self.host.borrow_mut().frames.insert(n, c);
+            }
+            return None;
+        }
+        self.host.borrow_mut().focused_frame = None;
+        let el = wrap(&mut self.js.vm, target);
+        let scroll = self.host.borrow().scroll_y;
+        let ok = self.hook(
+            "click",
+            vec![el, Value::Number(x as f64), Value::Number((y - scroll) as f64)],
+        );
+        let nav = if ferro_js::vm::truthy(&ok) { self.default_click(target) } else { None };
+        match nav {
+            Some(url) => Some(Nav { url, post: None }),
+            None => self.take_navigation(),
+        }
+    }
+
