@@ -217,3 +217,68 @@ impl Property {
         }
     }
 
+    /// Propriedade não enumerável (métodos dos embutidos).
+    pub fn hidden(value: Value) -> Property {
+        Property {
+            slot: Slot::Data { value, writable: true },
+            enumerable: false,
+            configurable: true,
+        }
+    }
+}
+
+/// Propriedades em ordem de inserção. Objetos pequenos (a maioria) são
+/// buscados por varredura linear; o índice por hash só aparece quando o
+/// objeto passa de `LINEAR` propriedades.
+#[derive(Default, Clone)]
+pub struct PropMap {
+    entries: Vec<(PropKey, Property)>,
+    index: Option<Box<crate::fxhash::FxHashMap<PropKey, usize>>>,
+    /// Muda quando as posições das entradas mudam (remoção): invalida caches.
+    generation: u32,
+}
+
+const LINEAR: usize = 8;
+
+#[inline]
+fn key_eq(a: &PropKey, b: &PropKey) -> bool {
+    match (a, b) {
+        (PropKey::Str(x), PropKey::Str(y)) => x == y,
+        (PropKey::Sym(x), PropKey::Sym(y)) => x == y,
+        _ => false,
+    }
+}
+
+impl PropMap {
+    #[inline]
+    fn find(&self, k: &PropKey) -> Option<usize> {
+        match &self.index {
+            Some(ix) => ix.get(k).copied(),
+            None => self.entries.iter().position(|(e, _)| key_eq(e, k)),
+        }
+    }
+
+    fn rebuild_index(&mut self) {
+        if self.entries.len() > LINEAR {
+            let mut ix = crate::fxhash::FxHashMap::default();
+            ix.reserve(self.entries.len());
+            for (i, (k, _)) in self.entries.iter().enumerate() {
+                ix.insert(k.clone(), i);
+            }
+            self.index = Some(Box::new(ix));
+        } else {
+            self.index = None;
+        }
+    }
+
+    pub fn get(&self, k: &PropKey) -> Option<&Property> {
+        self.find(k).map(|i| &self.entries[i].1)
+    }
+
+    pub fn get_mut(&mut self, k: &PropKey) -> Option<&mut Property> {
+        match self.find(k) {
+            Some(i) => Some(&mut self.entries[i].1),
+            None => None,
+        }
+    }
+
