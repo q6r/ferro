@@ -584,3 +584,60 @@ pub fn parse(src: &str) -> Option<Svg> {
     svg
 }
 
+/// Achata as curvas em polilinhas (já em pixels). Devolve (pontos, fechado).
+fn flatten(segs: &[Seg], map: impl Fn((f32, f32)) -> (f32, f32)) -> Vec<(Vec<(f32, f32)>, bool)> {
+    let mut out: Vec<(Vec<(f32, f32)>, bool)> = Vec::new();
+    let mut cur: Vec<(f32, f32)> = Vec::new();
+    let mut start = (0.0, 0.0);
+    let mut last = (0.0, 0.0);
+    for s in segs {
+        match *s {
+            Seg::Move(p) => {
+                if cur.len() > 1 {
+                    out.push((std::mem::take(&mut cur), false));
+                }
+                cur.clear();
+                last = map(p);
+                start = last;
+                cur.push(last);
+            }
+            Seg::Line(p) => {
+                if cur.is_empty() {
+                    cur.push(last);
+                }
+                last = map(p);
+                cur.push(last);
+            }
+            Seg::Cubic(c1, c2, p) => {
+                if cur.is_empty() {
+                    cur.push(last);
+                }
+                let (p0, p1, p2, p3) = (last, map(c1), map(c2), map(p));
+                let d = |a: (f32, f32), b: (f32, f32)| ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+                let len = d(p0, p1) + d(p1, p2) + d(p2, p3);
+                let n = (len / 1.5).ceil().clamp(2.0, 96.0) as usize;
+                for i in 1..=n {
+                    let t = i as f32 / n as f32;
+                    let mt = 1.0 - t;
+                    let (a, b, c, e) = (mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t);
+                    cur.push((
+                        a * p0.0 + b * p1.0 + c * p2.0 + e * p3.0,
+                        a * p0.1 + b * p1.1 + c * p2.1 + e * p3.1,
+                    ));
+                }
+                last = map(p);
+            }
+            Seg::Close => {
+                if !cur.is_empty() {
+                    out.push((std::mem::take(&mut cur), true));
+                }
+                last = start;
+            }
+        }
+    }
+    if cur.len() > 1 {
+        out.push((cur, false));
+    }
+    out
+}
+
