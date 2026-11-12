@@ -2112,3 +2112,78 @@ fn create_element(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(el)
 }
 
+fn create_element_ns(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let tag = arg_string(vm, a, 1)?;
+    let tag = tag.rsplit(':').next().unwrap_or("").to_string();
+    let n = write(vm, |h| h.page.doc.create_element(&tag.to_ascii_lowercase()));
+    Ok(wrap(vm, n))
+}
+
+fn create_text_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?;
+    let n = write(vm, |h| h.page.doc.create(NodeData::Text(text)));
+    Ok(wrap(vm, n))
+}
+
+fn create_comment(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let text = arg_string(vm, a, 0)?;
+    let n = write(vm, |h| h.page.doc.create(NodeData::Comment(text)));
+    Ok(wrap(vm, n))
+}
+
+fn create_document_fragment(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    let n = write(vm, |h| h.page.doc.create_fragment());
+    Ok(wrap(vm, n))
+}
+
+fn import_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = arg_node(vm, a, 0)?;
+    let deep = ferro_js::vm::truthy(&a.arg(1));
+    let c = write(vm, |h| h.page.doc.clone_node(n, deep));
+    try_upgrade(vm, &[c]);
+    Ok(wrap(vm, c))
+}
+
+fn adopt_node(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let n = arg_node(vm, a, 0)?;
+    removing(vm, n);
+    write(vm, |h| h.page.doc.detach(n));
+    Ok(a.arg(0))
+}
+
+/// `document.write`: durante o carregamento, o HTML entra logo depois do
+/// script que está rodando.
+fn document_write(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let mut html = String::new();
+    for v in &a.args {
+        html.push_str(&vm.to_rust_string(v)?);
+    }
+    let (cur, loading) = read(vm, |h| (h.current_script, h.ready_state == "loading"));
+    let (parent, before) = match cur.filter(|_| loading) {
+        Some(sc) => {
+            let p = read(vm, |h| h.page.doc.node(sc).parent);
+            let Some(p) = p else { return Ok(Value::Undefined) };
+            (p, read(vm, |h| sibling(&h.page.doc, sc, 1, false)))
+        }
+        None => match find_tag(vm, "body") {
+            Some(b) => (b, None),
+            None => return Ok(Value::Undefined),
+        },
+    };
+    let nodes = write(vm, |h| {
+        let ctx = fragment_context(&h.page.doc, parent);
+        let nodes = crate::html::parse_fragment(&html, &ctx, &mut h.page.doc);
+        for &c in &nodes {
+            h.page.doc.insert_before(parent, c, before);
+        }
+        nodes
+    });
+    // scripts escritos durante o carregamento rodam no laço do parser
+    if loading {
+        write(vm, |h| h.dirty = true);
+    } else {
+        inserted(vm, &nodes, parent);
+    }
+    Ok(Value::Undefined)
+}
+
