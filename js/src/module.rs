@@ -171,3 +171,13 @@ pub fn compile_module(src: &str, url: &str) -> Result<CompiledModule, ParseError
     Ok(CompiledModule { requests, code })
 }
 
+/// Compila e devolve a função do módulo (ou SyntaxError).
+pub fn module_function(vm: &mut Vm, src: &str, url: &str) -> Result<(Vec<String>, Value), Value> {
+    match compile_module(src, url) {
+        Ok(m) => {
+            let f = vm.run_script(m.code)?;
+            Ok((m.requests, f))
+        }
+        Err(e) => Err(vm.syntax_error(format!("{} ({url}:{})", e.msg, e.line))),
+    }
+}
