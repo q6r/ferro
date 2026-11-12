@@ -886,3 +886,56 @@ impl Parser {
         Ok(set)
     }
 
+    /// Um elemento de classe: caractere (Some) ou conjunto já adicionado (None).
+    fn class_atom(&mut self, set: &mut ClassSet) -> Result<Option<u32>, RegexError> {
+        let c = self.peek().ok_or(RegexError("Unterminated character class".into()))?;
+        self.i += 1;
+        if c != '\\' as u32 {
+            // par substituto literal no modo u
+            if self.u && (0xD800..0xDC00).contains(&c)
+                && let Some(lo) = self.peek().filter(|l| (0xDC00..0xE000).contains(l))
+            {
+                self.i += 1;
+                return Ok(Some(0x10000 + ((c - 0xD800) << 10) + (lo - 0xDC00)));
+            }
+            return Ok(Some(c));
+        }
+        let Some(e) = self.peek() else { return err("\\ at end of pattern") };
+        self.i += 1;
+        let ch = char::from_u32(e).unwrap_or('\0');
+        if let Some(s) = self.class_escape_set(ch) {
+            set.ranges.extend(s.ranges);
+            return Ok(None);
+        }
+        if (ch == 'p' || ch == 'P') && self.u {
+            let p = self.property()?;
+            set.props.push(p);
+            return Ok(None);
+        }
+        if ch == 'b' {
+            return Ok(Some(0x08));
+        }
+        if ch == '-' && self.u {
+            return Ok(Some('-' as u32));
+        }
+        if ch.is_ascii_digit() && !self.u && ch != '0' {
+            if ch >= '8' {
+                return Ok(Some(e));
+            }
+            return Ok(Some(self.legacy_octal(e)));
+        }
+        if ch == '0' && self.peek().is_some_and(|d| (0x30..=0x39).contains(&d)) && !self.u {
+            return Ok(Some(self.legacy_octal(e)));
+        }
+        if let Some(v) = self.char_escape(ch, true)? {
+            return Ok(Some(v));
+        }
+        if self.u && !is_syntax(e) && ch != '/' && ch != '-' {
+            return err("Invalid escape");
+        }
+        Ok(Some(e))
+    }
+}
+
+// --------------------------------------------------------------- bytecode
+
