@@ -631,3 +631,42 @@ fn opt_num(vm: &mut Vm, opts: &Value, name: &str, min: f64, max: f64) -> Result<
     Ok(Some(n.floor() as usize))
 }
 
+fn opt_bool(vm: &mut Vm, opts: &Value, name: &str) -> Result<Option<bool>, Value> {
+    if !matches!(opts, Value::Object(_)) {
+        return Ok(None);
+    }
+    let v = vm.get_str(opts, name)?;
+    if v.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(truthy(&v)))
+}
+
+fn get_canonical_locales(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let list: Vec<Value> = requested(vm, &a.arg(0))?.into_iter().map(|s| Value::str(&s)).collect();
+    Ok(vm.array_value(list))
+}
+
+fn supported_locales_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let list: Vec<Value> = requested(vm, &a.arg(0))?
+        .into_iter()
+        .filter(|t| matches!(t.split('-').next(), Some("en" | "pt" | "es" | "fr" | "de" | "it")))
+        .map(|s| Value::str(&s))
+        .collect();
+    Ok(vm.array_value(list))
+}
+
+fn supported_values_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let k = vm.to_rust_string(&a.arg(0))?;
+    let vals: &[&str] = match k.as_str() {
+        "calendar" => &["gregory"],
+        "currency" => &["BRL", "EUR", "GBP", "JPY", "USD"],
+        "numberingSystem" => &["latn"],
+        "timeZone" => &["UTC"],
+        "unit" => &["byte", "day", "hour", "kilobyte", "kilometer", "meter", "minute", "percent", "second"],
+        "collation" => &["default"],
+        _ => return Err(vm.range_error(format!("Invalid key : {k}"))),
+    };
+    Ok(vm.array_value(vals.iter().map(|s| Value::str(s)).collect()))
+}
+
