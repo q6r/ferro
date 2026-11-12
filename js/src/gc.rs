@@ -297,3 +297,221 @@ impl Graph {
     }
 }
 
+/// Procura e desfaz os ciclos de lixo. Rode entre tarefas (com a pilha da
+/// VM vazia o resultado é melhor, mas é seguro em qualquer momento).
+pub fn collect() -> Stats {
+    let t = std::time::Instant::now();
+    let epoch = EPOCH.with(|e| {
+        e.set(e.get() + 1);
+        e.get()
+    });
+    let mut g = Graph {
+        epoch,
+        nodes: Vec::new(),
+        busy: Vec::new(),
+        edge_start: Vec::new(),
+        edges: Vec::new(),
+        ephemerons: Vec::new(),
+        weak_colls: Vec::new(),
+    };
+    // 1. nós: objetos e ambientes vivos (seguramos uma referência de cada)
+    OBJECTS.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|w| w.strong_count() > 0);
+        g.nodes.reserve(l.len() * 5 / 4);
+        for w in l.iter() {
+            if let Some(o) = w.upgrade() {
+                if let Ok(b) = o.try_borrow() {
+                    b.gc.set(epoch << 32 | g.nodes.len() as u64);
+                }
+                g.nodes.push(Node::Obj(o));
+            }
+        }
+    });
+    ENVS.with(|l| {
+        let mut l = l.borrow_mut();
+        l.retain(|w| w.strong_count() > 0);
+        for w in l.iter() {
+            if let Some(e) = w.upgrade() {
+                if let Ok(b) = e.try_borrow() {
+                    b.gc.set(epoch << 32 | g.nodes.len() as u64);
+                }
+                g.nodes.push(Node::Env(e));
+            }
+        }
+    });
+    // 2. arestas (as closures entram como nós ao aparecer)
+    let mut out: Vec<u32> = Vec::new();
+    g.edge_start.reserve(g.nodes.len() + 1);
+    let mut i = 0;
+    while i < g.nodes.len() {
+        out.clear();
+        let mut busy = false;
+        match &g.nodes[i] {
+            Node::Obj(o) => {
+                let o = o.clone();
+                match o.try_borrow() {
+                    Ok(b) => g.object(i as u32, &b, &mut out),
+                    Err(_) => busy = true,
+                }
+            }
+            Node::Env(e) => match e.try_borrow() {
+                Ok(b) => {
+                    if let Some(p) = &b.parent
+                        && let Some(j) = g.env(p)
+                    {
+                        out.push(j);
+                    }
+                    for s in &b.slots {
+                        g.value(s, &mut out);
+                    }
+                }
+                Err(_) => busy = true,
+            },
+            Node::Clo(c) => g.closure(c, &mut out),
+        }
+        g.edge_start.push(g.edges.len() as u32);
+        g.edges.extend_from_slice(&out);
+        g.busy.push(busy);
+        i += 1;
+    }
+    g.edge_start.push(g.edges.len() as u32);
+    let n = g.nodes.len();
+    // 3. saldo: referências fortes menos as que vêm de dentro (e menos a nossa)
+    let mut count: Vec<i64> = g
+        .nodes
+        .iter()
+        .map(|nd| {
+            (match nd {
+                Node::Obj(o) => Rc::strong_count(o),
+                Node::Env(e) => Rc::strong_count(e),
+                Node::Clo(c) => Rc::strong_count(c),
+            }) as i64
+                - 1
+        })
+        .collect();
+    for &j in &g.edges {
+        count[j as usize] -= 1;
+    }
+    for &(_, _, v) in &g.ephemerons {
+        count[v as usize] -= 1;
+    }
+    // 4. marca o que as raízes alcançam
+    let mut live = vec![false; n];
+    let mut stack: Vec<u32> = Vec::new();
+    for k in 0..n {
+        if (count[k] > 0 || g.busy[k]) && !live[k] {
+            live[k] = true;
+            g.mark_from(k as u32, &mut live, &mut stack);
+        }
+    }
+    // efêmeros: o valor vive se o mapa e a chave vivem (até estabilizar)
+    loop {
+        let mut changed = false;
+        for &(m, key, v) in &g.ephemerons {
+            let key_live = match key {
+                None => true,
+                Some(u32::MAX) => false,
+                Some(k) => live[k as usize],
+            };
+            if live[m as usize] && key_live && !live[v as usize] {
+                live[v as usize] = true;
+                changed = true;
+                g.mark_from(v, &mut live, &mut stack);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    if std::env::var_os("FERRO_GC_DEBUG").is_some() {
+        let mut hist: std::collections::HashMap<String, (usize, usize)> = Default::default();
+        for k in 0..n {
+            let name = match &g.nodes[k] {
+                Node::Obj(o) => o.try_borrow().map(|b| format!("obj:{}", b.tag)).unwrap_or_else(|_| "obj:ocupado".into()),
+                Node::Env(_) => "ambiente".into(),
+                Node::Clo(_) => "closure".into(),
+            };
+            let e = hist.entry(name).or_default();
+            e.0 += (count[k] > 0) as usize;
+            e.1 += live[k] as usize;
+        }
+        let mut v: Vec<_> = hist.into_iter().collect();
+        v.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        for (k, (roots, live)) in v.iter().take(10) {
+            eprintln!("[gc] {k}: {live} vivos ({roots} raízes)");
+        }
+        // formatos (nomes das propriedades) mais comuns entre os objetos vivos
+        let mut shapes: std::collections::HashMap<String, usize> = Default::default();
+        for k in 0..n {
+            if !live[k] {
+                continue;
+            }
+            if let Node::Obj(o) = &g.nodes[k]
+                && let Ok(b) = o.try_borrow()
+                && b.tag == "Object"
+            {
+                let keys: Vec<String> = b.props.iter().take(6).map(|(k, _)| match k { crate::value::PropKey::Str(s) => s.to_rust(), _ => "@@sym".into() }).collect();
+                *shapes.entry(keys.join(",")).or_default() += 1;
+            }
+        }
+        let mut v: Vec<_> = shapes.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        for (k, c) in v.iter().take(8) {
+            eprintln!("[gc] formato {c}: {{{}}}", k.chars().take(150).collect::<String>());
+        }
+    }
+    // 5. esvazia o lixo (solta as referências; os Rc liberam o ciclo)
+    let mut trash: Vec<(Option<ObjRef>, PropMap, Kind)> = Vec::new();
+    let mut env_trash: Vec<(Vec<Value>, Option<Env>)> = Vec::new();
+    let mut freed = 0;
+    for k in 0..n {
+        if live[k] {
+            continue;
+        }
+        match &g.nodes[k] {
+            Node::Obj(o) => {
+                if let Ok(mut b) = o.try_borrow_mut() {
+                    freed += 1;
+                    let proto = b.proto.take();
+                    let props = std::mem::take(&mut b.props);
+                    let kind = std::mem::replace(&mut b.kind, Kind::Ordinary);
+                    trash.push((proto, props, kind));
+                }
+            }
+            Node::Env(e) => {
+                if let Ok(mut b) = e.try_borrow_mut() {
+                    freed += 1;
+                    let slots = std::mem::take(&mut b.slots);
+                    let parent = b.parent.take();
+                    env_trash.push((slots, parent));
+                }
+            }
+            Node::Clo(_) => {}
+        }
+    }
+    // as WeakMap vivas varrem as entradas cujas chaves morreram agora
+    let weak_live: Vec<ObjRef> = g
+        .weak_colls
+        .iter()
+        .filter(|&&k| live[k as usize])
+        .filter_map(|&k| match &g.nodes[k as usize] {
+            Node::Obj(o) => Some(ObjRef(o.clone())),
+            _ => None,
+        })
+        .collect();
+    drop(g);
+    drop(trash);
+    drop(env_trash);
+    for w in weak_live {
+        if let Ok(mut b) = w.0.try_borrow_mut()
+            && let Kind::WeakMap(c) | Kind::WeakSet(c) = &mut b.kind
+        {
+            c.sweep();
+        }
+    }
+    LIVE.with(|c| c.set(n.saturating_sub(freed)));
+    SINCE.with(|s| s.set(0));
+    Stats { examined: n, freed, ms: t.elapsed().as_secs_f64() * 1000.0 }
+}
+
