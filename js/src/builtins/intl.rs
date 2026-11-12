@@ -938,3 +938,151 @@ fn plural_ordinal(lang: &str, n: f64) -> &'static str {
     }
 }
 
+/// Formata um número em partes (tipo, texto).
+pub fn format_number_parts(o: &NumOpts, x: f64) -> Vec<(&'static str, String)> {
+    let d = data_for(&o.locale);
+    let mut parts: Vec<(&'static str, String)> = Vec::new();
+    let negative = x < 0.0 || (x == 0.0 && x.is_sign_negative());
+    let mut v = if o.style == "percent" { x * 100.0 } else { x };
+    if v.is_nan() {
+        parts.push(("nan", "NaN".into()));
+        return parts;
+    }
+    // notação compacta
+    let mut compact: Option<String> = None;
+    if o.notation == "compact" && v.is_finite() && v.abs() >= 1000.0 {
+        let mag = ((v.abs().log10() / 3.0).floor() as usize).clamp(1, 4);
+        let scaled = v / 10f64.powi(3 * mag as i32);
+        let digits_int = scaled.abs().trunc().to_string().len();
+        let rounded = if o.max_sig.is_none() && o.max_frac == 0 {
+            if digits_int == 1 { (scaled * 10.0).round() / 10.0 } else { scaled.round() }
+        } else {
+            scaled
+        };
+        // 999.95K vira 1M
+        if rounded.abs() >= 1000.0 && mag < 4 {
+            v = rounded / 1000.0;
+            compact = Some(compact_suffix(d, o, mag + 1, v));
+        } else {
+            v = rounded;
+            compact = Some(compact_suffix(d, o, mag, v));
+        }
+    }
+    let (int, frac) = if !v.is_finite() {
+        ("∞".to_string(), String::new())
+    } else if let Some(ms) = o.max_sig {
+        let r = round_sig(v.abs(), ms);
+        let s = crate::conv::number_to_string(r);
+        let (i, f) = match s.split_once('.') {
+            Some((i, f)) => (i.to_string(), f.to_string()),
+            None => (s, String::new()),
+        };
+        let min_sig = o.min_sig.unwrap_or(1);
+        let mut f = f;
+        let have = i.trim_start_matches('0').len() + f.len();
+        if have < min_sig {
+            f.push_str(&"0".repeat(min_sig - have));
+        }
+        (i, f)
+    } else {
+        let max = if compact.is_some() && o.max_frac == 0 { 1 } else { o.max_frac };
+        let (i, mut f) = round_digits(v, max);
+        while f.len() > o.min_frac && f.ends_with('0') {
+            f.pop();
+        }
+        (i, f)
+    };
+    let int = if int.len() < o.min_int { format!("{}{int}", "0".repeat(o.min_int - int.len())) } else { int };
+    let is_zero = int.chars().all(|c| c == '0') && frac.chars().all(|c| c == '0');
+    let sign = match o.sign_display.as_str() {
+        "never" => "",
+        "always" => {
+            if negative {
+                "-"
+            } else {
+                "+"
+            }
+        }
+        "exceptZero" => {
+            if is_zero {
+                ""
+            } else if negative {
+                "-"
+            } else {
+                "+"
+            }
+        }
+        "negative" => {
+            if negative && !is_zero {
+                "-"
+            } else {
+                ""
+            }
+        }
+        _ => {
+            if negative && !(is_zero && x == 0.0 && o.sign_display == "auto" && !x.is_sign_negative()) {
+                "-"
+            } else {
+                ""
+            }
+        }
+    };
+    let currency = o.currency.as_deref().map(|c| currency_symbol(c, d.lang, &o.currency_display));
+    let cur_before = o.style == "currency" && !d.currency_after;
+    if !sign.is_empty() {
+        parts.push((if sign == "-" { "minusSign" } else { "plusSign" }, sign.into()));
+    }
+    if cur_before && let Some(c) = &currency {
+        parts.push(("currency", c.clone()));
+        if d.lang != "en" || o.currency_display == "code" {
+            parts.push(("literal", "\u{a0}".into()));
+        }
+    }
+    let grouped = if o.grouping && int != "∞" { group_int(&int, d.group, d.min_grouping) } else { int };
+    for (k, chunk) in grouped.split(d.group).enumerate() {
+        if k > 0 {
+            parts.push(("group", d.group.into()));
+        }
+        parts.push(("integer", chunk.into()));
+    }
+    if !frac.is_empty() {
+        parts.push(("decimal", d.decimal.into()));
+        parts.push(("fraction", frac));
+    }
+    if let Some(c) = compact {
+        if !c.is_empty() {
+            let (lit, word) = match c.strip_prefix([' ', '\u{a0}']) {
+                Some(w) => (Some(c[..c.len() - w.len()].to_string()), w.to_string()),
+                None => (None, c.clone()),
+            };
+            if let Some(l) = lit {
+                parts.push(("literal", l));
+            }
+            parts.push(("compact", word));
+        }
+    }
+    if o.style == "percent" {
+        if d.percent_space {
+            parts.push(("literal", "\u{a0}".into()));
+        }
+        parts.push(("percentSign", "%".into()));
+    }
+    if o.style == "currency"
+        && !cur_before
+        && let Some(c) = &currency
+    {
+        parts.push(("literal", "\u{a0}".into()));
+        parts.push(("currency", c.clone()));
+    }
+    if o.style == "unit"
+        && let Some(u) = &o.unit
+    {
+        let (text, space) = unit_text(u, &o.unit_display, v);
+        if space {
+            parts.push(("literal", " ".into()));
+        }
+        parts.push(("unit", text));
+    }
+    parts
+}
+
