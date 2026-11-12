@@ -443,3 +443,51 @@ fn search_url(q: &str) -> Url {
     Url::parse(&format!("https://html.duckduckgo.com/html/?q={q}")).unwrap()
 }
 
+fn resolve_input(t: &str) -> Option<Url> {
+    let t = t.trim();
+    if t.is_empty() {
+        return None;
+    }
+    if looks_like_url(t)
+        && let Some(u) = resolve_url(t)
+    {
+        return Some(u);
+    }
+    Some(search_url(t))
+}
+
+fn same_document(a: &Url, b: &Url) -> bool {
+    let (mut a, mut b) = (a.clone(), b.clone());
+    a.set_fragment(None);
+    b.set_fragment(None);
+    a == b
+}
+
+/// Desfaz os escapes %XX para exibição (só se o resultado for UTF-8 legível).
+fn pretty(s: &str) -> String {
+    match String::from_utf8(net::percent_decode(s)) {
+        Ok(t) if !t.chars().any(char::is_control) => t,
+        _ => s.to_string(),
+    }
+}
+
+/// Endereço para exibir: (domínio, resto).
+fn display_url(u: &Url) -> (String, String) {
+    match u.scheme() {
+        "http" | "https" => {
+            let host = u.host_str().unwrap_or("").trim_start_matches("www.").to_string()
+                + &u.port().map(|p| format!(":{p}")).unwrap_or_default();
+            let mut rest = u.path().to_string();
+            if let Some(q) = u.query() {
+                rest += &format!("?{q}");
+            }
+            if rest == "/" {
+                rest.clear();
+            }
+            (host, pretty(&rest))
+        }
+        "ferro" => (u.as_str().to_string(), String::new()),
+        _ => (String::new(), u.as_str().to_string()),
+    }
+}
+
