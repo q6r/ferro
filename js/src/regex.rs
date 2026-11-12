@@ -123,3 +123,54 @@ fn is_symbol(c: u32) -> bool {
 }
 
 impl Prop {
+    fn test(self, c: u32) -> bool {
+        let ch = char::from_u32(c);
+        match self {
+            Prop::Any => true,
+            Prop::Ascii => c < 0x80,
+            Prop::AsciiHex => matches!(c, 0x30..=0x39 | 0x41..=0x46 | 0x61..=0x66),
+            Prop::Alphabetic => ch.is_some_and(|c| c.is_alphabetic()),
+            Prop::Letter => ch.is_some_and(|c| c.is_alphabetic() && !c.is_numeric()),
+            Prop::Upper => ch.is_some_and(|c| c.is_uppercase()),
+            Prop::Lower => ch.is_some_and(|c| c.is_lowercase()),
+            Prop::Number => ch.is_some_and(|c| c.is_numeric()),
+            Prop::Digit => ch.is_some_and(|c| c.is_numeric()),
+            Prop::Punct => is_punct(c),
+            Prop::Symbol => is_symbol(c),
+            Prop::Space => ch.is_some_and(|c| c.is_whitespace()),
+            Prop::Control => ch.is_some_and(|c| c.is_control()),
+            Prop::Mark => matches!(c, 0x300..=0x36F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F),
+            Prop::Emoji => is_emoji(c),
+            Prop::Script(r) => r.iter().any(|&(a, b)| c >= a && c <= b),
+        }
+    }
+}
+
+fn prop_by_name(name: &str, value: Option<&str>) -> Option<Prop> {
+    if let Some(v) = value {
+        return match name {
+            "General_Category" | "gc" => prop_by_name(v, None),
+            "Script" | "sc" | "Script_Extensions" | "scx" => script(v),
+            _ => None,
+        };
+    }
+    Some(match name {
+        "Any" => Prop::Any,
+        "ASCII" => Prop::Ascii,
+        "ASCII_Hex_Digit" | "AHex" | "Hex_Digit" => Prop::AsciiHex,
+        "Alphabetic" | "Alpha" => Prop::Alphabetic,
+        "L" | "Letter" | "LC" | "Cased_Letter" | "Lo" | "Other_Letter" | "Lm" | "Lt" | "ID_Start" | "IDS" | "XID_Start" => Prop::Letter,
+        "Lu" | "Uppercase_Letter" | "Uppercase" | "Upper" => Prop::Upper,
+        "Ll" | "Lowercase_Letter" | "Lowercase" | "Lower" => Prop::Lower,
+        "N" | "Number" | "Nl" | "No" => Prop::Number,
+        "Nd" | "Decimal_Number" | "digit" => Prop::Digit,
+        "P" | "Punctuation" | "punct" | "Pc" | "Pd" | "Ps" | "Pe" | "Pi" | "Pf" | "Po" => Prop::Punct,
+        "S" | "Symbol" | "Sm" | "Sc" | "Sk" | "So" => Prop::Symbol,
+        "Z" | "Separator" | "Zs" | "Space_Separator" | "White_Space" | "space" | "Zl" | "Zp" => Prop::Space,
+        "C" | "Other" | "Cc" | "Control" | "cntrl" => Prop::Control,
+        "M" | "Mark" | "Combining_Mark" | "Mn" | "Mc" | "Me" => Prop::Mark,
+        "Emoji" | "Emoji_Presentation" | "Extended_Pictographic" | "ExtPict" => Prop::Emoji,
+        _ => return script(name),
+    })
+}
+
