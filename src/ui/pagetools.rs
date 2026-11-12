@@ -79,3 +79,57 @@ pub fn runs_of(items: &[DisplayItem]) -> Vec<Run> {
 /// Posição no texto: (trecho, byte).
 pub type Caret = (usize, usize);
 
+/// Estado das ferramentas de uma aba.
+#[derive(Default)]
+pub struct Tools {
+    pub runs: Vec<Run>,
+    /// Para qual quadro os trechos foram extraídos (endereço da lista de itens).
+    runs_of: usize,
+    pub find_open: bool,
+    pub find: TextField,
+    /// Ocorrências: (trecho, início, fim).
+    pub matches: Vec<(usize, usize, usize)>,
+    pub current: usize,
+    pub sel: Option<(Caret, Caret)>,
+    pub selecting: bool,
+    pub press: Option<(f32, f32)>,
+}
+
+impl Tools {
+    /// Atualiza os trechos se o quadro mudou.
+    pub fn sync(&mut self, items: &[DisplayItem]) -> bool {
+        let key = items.as_ptr() as usize ^ items.len();
+        if key == self.runs_of {
+            return false;
+        }
+        self.runs = runs_of(items);
+        self.runs_of = key;
+        self.sel = None;
+        true
+    }
+
+    /// Recalcula as ocorrências da busca (sem diferenciar maiúsculas).
+    pub fn search(&mut self) {
+        self.matches.clear();
+        let q = self.find.text.to_lowercase();
+        if q.is_empty() {
+            return;
+        }
+        for (ri, r) in self.runs.iter().enumerate() {
+            let lower = r.text.to_lowercase();
+            // só dá para mapear de volta se o minúsculo tem o mesmo tamanho
+            if lower.len() != r.text.len() {
+                continue;
+            }
+            let mut from = 0;
+            while let Some(p) = lower[from..].find(&q) {
+                let a = from + p;
+                self.matches.push((ri, a, a + q.len()));
+                from = a + q.len().max(1);
+            }
+        }
+        if self.current >= self.matches.len() {
+            self.current = 0;
+        }
+    }
+
