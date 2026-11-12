@@ -3187,3 +3187,92 @@ impl Compiler {
         Ok(())
     }
 
+    fn update(&mut self, inc: bool, prefix: bool, target: &Expr) -> CResult<()> {
+        let step = if inc { Op::Inc } else { Op::Dec };
+        match target {
+            Expr::Ident(n, _) => {
+                self.load(n);
+                self.emit(Op::ToNumeric);
+                if prefix {
+                    self.emit(step);
+                    self.emit(Op::Dup);
+                } else {
+                    self.emit(Op::Dup);
+                    self.emit(step);
+                }
+                self.store(n);
+            }
+            Expr::Member { obj, prop, .. } => {
+                let c = self.konst(prop);
+                self.expr(obj)?;
+                self.emit(Op::Dup);
+                self.emit(Op::GetProp(c));
+                self.emit(Op::ToNumeric);
+                if prefix {
+                    self.emit(step);
+                    self.emit(Op::SetProp(c));
+                } else {
+                    self.emit(Op::Dup);
+                    self.emit(Op::Rot3);
+                    self.emit(step);
+                    self.emit(Op::SetProp(c));
+                    self.emit(Op::Pop);
+                }
+            }
+            Expr::Index { obj, index, .. } => {
+                self.expr(obj)?;
+                self.expr(index)?;
+                self.emit(Op::ToPropertyKey);
+                self.emit(Op::Dup2);
+                self.emit(Op::GetIndex);
+                self.emit(Op::ToNumeric);
+                if prefix {
+                    self.emit(step);
+                    self.emit(Op::SetIndex);
+                } else {
+                    self.emit(Op::Dup);
+                    self.emit(Op::Rot4);
+                    self.emit(step);
+                    self.emit(Op::SetIndex);
+                    self.emit(Op::Pop);
+                }
+            }
+            Expr::PrivateMember(obj, name) => {
+                self.expr(obj)?;
+                self.load_private(name)?;
+                self.emit(Op::Dup2);
+                self.emit(Op::GetPrivate);
+                self.emit(Op::ToNumeric);
+                if prefix {
+                    self.emit(step);
+                    self.emit(Op::SetPrivate);
+                } else {
+                    self.emit(Op::Dup);
+                    self.emit(Op::Rot4);
+                    self.emit(step);
+                    self.emit(Op::SetPrivate);
+                    self.emit(Op::Pop);
+                }
+            }
+            Expr::SuperMember(name) => {
+                let c = self.konst(name);
+                self.this()?;
+                self.emit(Op::Dup);
+                self.emit(Op::GetSuper(c));
+                self.emit(Op::ToNumeric);
+                if prefix {
+                    self.emit(step);
+                    self.emit(Op::SetSuper(c));
+                } else {
+                    self.emit(Op::Dup);
+                    self.emit(Op::Rot3);
+                    self.emit(step);
+                    self.emit(Op::SetSuper(c));
+                    self.emit(Op::Pop);
+                }
+            }
+            _ => return syntax("operando inválido para ++/--", 0),
+        }
+        Ok(())
+    }
+
