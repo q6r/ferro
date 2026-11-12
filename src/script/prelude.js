@@ -1716,3 +1716,56 @@ hidden(G, 'MediaError', MediaError);
 const MS = new WeakMap();
 const SB = new WeakMap();
 const later = (f) => setTimeout(f, 0);
+class SourceBuffer extends EventTarget {
+  constructor() { throw new TypeError('Illegal constructor'); }
+  get updating() { return SB.get(this).updating; }
+  get buffered() { return new TimeRanges(N.sbBuffered(SB.get(this).id)); }
+  get mode() { return SB.get(this).mode; }
+  set mode(v) { SB.get(this).mode = String(v); }
+  get timestampOffset() { return SB.get(this).offset; }
+  set timestampOffset(v) { SB.get(this).offset = Number(v) || 0; }
+  get appendWindowStart() { return SB.get(this).winStart; }
+  set appendWindowStart(v) { SB.get(this).winStart = +v; }
+  get appendWindowEnd() { return SB.get(this).winEnd; }
+  set appendWindowEnd(v) { SB.get(this).winEnd = +v; }
+  get audioTracks() { return []; }
+  get videoTracks() { return []; }
+  get textTracks() { return []; }
+  appendBuffer(data) {
+    const s = SB.get(this);
+    if (s.updating) throw new DOMException("Failed to execute 'appendBuffer' on 'SourceBuffer': This SourceBuffer is still processing an 'appendBuffer' or 'remove' operation.", 'InvalidStateError');
+    if (s.removed) throw new DOMException("Failed to execute 'appendBuffer' on 'SourceBuffer': This SourceBuffer has been removed from the parent media source.", 'InvalidStateError');
+    const bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+    s.updating = true;
+    const ms = s.ms;
+    if (MS.get(ms).readyState === 'ended') { MS.get(ms).readyState = 'open'; }
+    later(() => {
+      fireTrusted(this, new Event('updatestart'));
+      const err = N.sbAppend(s.id, bytes, s.offset);
+      s.updating = false;
+      if (err) {
+        N.log('SourceBuffer: ' + err);
+        fireTrusted(this, new Event('error'));
+      } else {
+        fireTrusted(this, new Event('update'));
+      }
+      fireTrusted(this, new Event('updateend'));
+    });
+  }
+  remove(start, end) {
+    const s = SB.get(this);
+    if (s.updating) throw new DOMException("Failed to execute 'remove' on 'SourceBuffer': This SourceBuffer is still processing an 'appendBuffer' or 'remove' operation.", 'InvalidStateError');
+    s.updating = true;
+    later(() => {
+      fireTrusted(this, new Event('updatestart'));
+      N.sbRemove(s.id, +start, +end);
+      s.updating = false;
+      fireTrusted(this, new Event('update'));
+      fireTrusted(this, new Event('updateend'));
+    });
+  }
+  abort() { SB.get(this).updating = false; }
+  changeType(type) {
+    if (!N.mediaSupports(String(type))) throw new DOMException(`Failed to execute 'changeType' on 'SourceBuffer': The type provided ('${type}') is not supported.`, 'NotSupportedError');
+  }
+}
