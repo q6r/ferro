@@ -328,3 +328,65 @@ impl Op {
     }
 }
 
+/// Otimizador de janela: troca sequências comuns por uma instrução só
+/// (menos voltas no laço da VM). Ajusta os destinos de pulo, a tabela de
+/// linhas e os nomes das chamadas.
+fn peephole(ops: Vec<Op>, lines: &mut [(u32, u32)], call_names: &mut [(u32, u32)]) -> Vec<Op> {
+    let n = ops.len();
+    // pontos onde alguém pula para: não dá para fundir atravessando eles
+    let mut is_target = vec![false; n + 1];
+    for op in &ops {
+        if let Some(t) = op.target() {
+            is_target[(t as usize).min(n)] = true;
+        }
+    }
+    // instruções que guardam o pc delas (nomes de chamadas, linhas) ficam como estão
+    let mut pinned = vec![false; n + 1];
+    for &(pc, _) in call_names.iter() {
+        pinned[(pc as usize).min(n)] = true;
+    }
+    let free = |i: usize| i < n && !is_target[i] && !pinned[i];
+    let mut out: Vec<Op> = Vec::with_capacity(n);
+    let mut map: Vec<u32> = vec![0; n + 1];
+    let mut i = 0;
+    while i < n {
+        let at = out.len() as u32;
+        map[i] = at;
+        let next = |k: usize| if free(i + k) { Some(ops[i + k]) } else { None };
+        let (op, used) = match (ops[i], next(1), next(2)) {
+            (Op::Dup, Some(Op::SetReg(r)), Some(Op::Pop)) => (Op::SetReg(r), 3),
+            (Op::GetReg(r), Some(Op::Inc), Some(Op::SetReg(s))) if r == s => (Op::IncReg(r), 3),
+            (Op::GetReg(r), Some(Op::Dec), Some(Op::SetReg(s))) if r == s => (Op::DecReg(r), 3),
+            (Op::GetReg(a), Some(Op::GetReg(b)), _) => (Op::GetReg2(a, b), 2),
+            (Op::GetReg(r), Some(Op::GetProp(k)), _) => (Op::GetRegProp(r, k), 2),
+            (Op::Num(x), Some(Op::Add), _) => (Op::AddNum(x), 2),
+            (Op::Num(x), Some(Op::Sub), _) => (Op::SubNum(x), 2),
+            (Op::Lt, Some(Op::JumpIfFalse(t)), _) => (Op::JumpIfNotLt(t), 2),
+            (Op::Le, Some(Op::JumpIfFalse(t)), _) => (Op::JumpIfNotLe(t), 2),
+            (Op::Gt, Some(Op::JumpIfFalse(t)), _) => (Op::JumpIfNotGt(t), 2),
+            (Op::Ge, Some(Op::JumpIfFalse(t)), _) => (Op::JumpIfNotGe(t), 2),
+            (Op::StrictEq, Some(Op::JumpIfFalse(t)), _) => (Op::JumpIfNotStrictEq(t), 2),
+            (Op::StrictNe, Some(Op::JumpIfFalse(t)), _) => (Op::JumpIfStrictEq(t), 2),
+            (op, _, _) => (op, 1),
+        };
+        for k in 1..used {
+            map[i + k] = at;
+        }
+        out.push(op);
+        i += used;
+    }
+    map[n] = out.len() as u32;
+    for op in &mut out {
+        if let Some(t) = op.target() {
+            op.set_target(map[(t as usize).min(n)]);
+        }
+    }
+    for l in lines.iter_mut() {
+        l.0 = map[(l.0 as usize).min(n)];
+    }
+    for c in call_names.iter_mut() {
+        c.0 = map[(c.0 as usize).min(n)];
+    }
+    out
+}
+
