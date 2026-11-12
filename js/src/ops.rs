@@ -683,3 +683,82 @@ impl Vm {
         self.put(target, PropKey::str(name), v, true)
     }
 
+    /// OrdinarySet: procura setter/somente-leitura na cadeia e grava em `receiver`.
+    pub fn set_with(&mut self, start: &ObjRef, key: PropKey, v: Value, receiver: &Value) -> Result<bool, Value> {
+        // caminho rápido: propriedade própria comum
+        if let Value::Object(r) = receiver
+            && r.ptr_eq(start)
+        {
+            let mut b = r.borrow_mut();
+            if !matches!(b.kind, Kind::Array(_) | Kind::String(_))
+                && let Some(Property {
+                    slot: Slot::Data { value, writable: true },
+                    ..
+                }) = b.props.get_mut(&key)
+            {
+                *value = v;
+                return Ok(true);
+            }
+        }
+        let mut cur = start.clone();
+        loop {
+            let (prop, next) = {
+                let b = cur.borrow();
+                if let Kind::Proxy { .. } = b.kind {
+                    drop(b);
+                    return self.proxy_set(&cur, key, v, receiver);
+                }
+                (b.own(&key), b.proto.clone())
+            };
+            match prop {
+                Some(Property {
+                    slot: Slot::Data { writable, .. },
+                    ..
+                }) => {
+                    if !writable {
+                        return Ok(false);
+                    }
+                    break;
+                }
+                Some(Property {
+                    slot: Slot::Accessor { set, .. },
+                    ..
+                }) => {
+                    return match set {
+                        Some(s) => {
+                            self.call_obj(&s, receiver.clone(), vec![v])?;
+                            Ok(true)
+                        }
+                        None => Ok(false),
+                    };
+                }
+                None => match next {
+                    Some(n) => cur = n,
+                    None => break,
+                },
+            }
+        }
+        let Value::Object(r) = receiver else { return Ok(false) };
+        if crate::builtins::proxy::is_proxy(r) {
+            // receptor Proxy: [[GetOwnProperty]] e [[DefineOwnProperty]] passam pelas armadilhas
+            use crate::builtins::object::Descriptor;
+            let d = match self.get_own_property(r, &key)? {
+                Some(Property {
+                    slot: Slot::Data { writable: false, .. },
+                    ..
+                })
+                | Some(Property {
+                    slot: Slot::Accessor { .. },
+                    ..
+                }) => return Ok(false),
+                Some(_) => Descriptor {
+                    value: Some(v),
+                    ..Default::default()
+                },
+                None => Descriptor::data(v, true),
+            };
+            return self.proxy_define(r, key, d);
+        }
+        self.set_own(r, key, v)
+    }
+
