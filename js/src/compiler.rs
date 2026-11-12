@@ -1278,3 +1278,77 @@ impl Compiler {
         self.f().reg_top = sc.reg_base;
     }
 
+    fn resolve(&self, name: &str) -> Found {
+        let mut hops = 0u32;
+        let nf = self.fns.len();
+        for fi in (0..nf).rev() {
+            let f = &self.fns[fi];
+            for sc in f.scopes.iter().rev() {
+                if let Some(v) = sc.last(name).map(|i| &sc.vars[i]) {
+                    let lexical = matches!(v.decl, Decl::Let | Decl::Const | Decl::Class | Decl::ClassInner)
+                        || (v.decl == Decl::Hidden && !v.ready);
+                    let chk = lexical && (!v.ready || fi != nf - 1 || sc.kind == ScopeKind::Switch);
+                    let res = match v.loc {
+                        Loc::Reg(r) if fi == nf - 1 => Res::Reg(r),
+                        // não deveria acontecer: capturada mas em registrador
+                        Loc::Reg(_) => Res::Global,
+                        Loc::Env(s) => Res::Env(hops, s),
+                        Loc::Global => Res::Global,
+                    };
+                    return Found { res, decl: v.decl, chk };
+                }
+                if sc.has_env {
+                    hops += 1;
+                }
+            }
+        }
+        Found {
+            res: Res::Global,
+            decl: Decl::Var,
+            chk: false,
+        }
+    }
+
+    fn has_binding(&self, name: &str) -> bool {
+        self.fns
+            .iter()
+            .any(|f| f.scopes.iter().any(|sc| sc.index.contains_key(name)))
+    }
+
+    fn load(&mut self, name: &str) {
+        let found = self.resolve(name);
+        match found.res {
+            Res::Reg(r) => {
+                if found.chk {
+                    let n = self.konst(name);
+                    self.emit(Op::GetRegChk(r, n));
+                } else {
+                    self.emit(Op::GetReg(r));
+                }
+            }
+            Res::Env(h, s) => {
+                if found.chk {
+                    let n = self.konst(name);
+                    self.emit(Op::GetEnvChk(h, s, n));
+                } else {
+                    self.emit(Op::GetEnv(h, s));
+                }
+            }
+            Res::Global => {
+                if let Some((ns, export)) = self.imports.get(name).cloned() {
+                    // importação: lê na hora do namespace do outro módulo (ligação viva)
+                    self.load(&ns);
+                    if let Some(e) = export {
+                        let c = self.konst(&e);
+                        self.emit(Op::GetProp(c));
+                    }
+                } else if name == "undefined" && !self.has_binding(name) {
+                    self.emit(Op::Undef);
+                } else {
+                    let n = self.konst(name);
+                    self.emit(Op::GetGlobal(n));
+                }
+            }
+        }
+    }
+
