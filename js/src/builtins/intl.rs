@@ -2007,3 +2007,66 @@ fn locale_region(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(t.split('-').skip(1).find(|p| p.len() == 2 || (p.len() == 3 && p.chars().all(|c| c.is_ascii_digit()))).map(Value::str).unwrap_or_default())
 }
 
+fn locale_script(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = locale_tag(vm, a)?;
+    Ok(t.split('-').skip(1).find(|p| p.len() == 4).map(Value::str).unwrap_or_default())
+}
+
+fn locale_base_name(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let t = locale_tag(vm, a)?;
+    Ok(Value::str(t.split("-u-").next().unwrap_or(&t)))
+}
+
+fn locale_to_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::str(&locale_tag(vm, a)?))
+}
+
+fn locale_maximize(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let _ = locale_tag(vm, a)?;
+    Ok(a.this.clone())
+}
+
+fn display_names_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    if a.new_target.is_none() {
+        return Err(vm.type_error("Constructor Intl.DisplayNames requires 'new'"));
+    }
+    let locale = resolve_locale(vm, &a.arg(0))?;
+    let Some(kind) = opt_str(vm, &a.arg(1), "type", &["language", "region", "script", "currency", "calendar", "dateTimeField"])? else {
+        return Err(vm.type_error("Required option 'type' is missing"));
+    };
+    intl_obj(vm, &a.new_target, &a.callee, IntlObj::DisplayNames { locale, kind })
+}
+
+fn display_names_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let (locale, kind) = with_intl(vm, &a.this, |x| match x {
+        IntlObj::DisplayNames { locale, kind } => Some((locale.clone(), kind.clone())),
+        _ => None,
+    })?;
+    let code = vm.to_rust_string(&a.arg(0))?;
+    let pt = data_for(&locale).lang == "pt";
+    let name = match (kind.as_str(), code.as_str()) {
+        ("language", c) => match c.split('-').next().unwrap_or("") {
+            "en" => if pt { "inglês" } else { "English" },
+            "pt" => if pt { "português" } else { "Portuguese" },
+            "es" => if pt { "espanhol" } else { "Spanish" },
+            "fr" => if pt { "francês" } else { "French" },
+            "de" => if pt { "alemão" } else { "German" },
+            "it" => if pt { "italiano" } else { "Italian" },
+            "ja" => if pt { "japonês" } else { "Japanese" },
+            "zh" => if pt { "chinês" } else { "Chinese" },
+            _ => "",
+        },
+        ("region", "BR") => if pt { "Brasil" } else { "Brazil" },
+        ("region", "US") => if pt { "Estados Unidos" } else { "United States" },
+        ("region", "PT") => "Portugal",
+        ("region", "GB") => if pt { "Reino Unido" } else { "United Kingdom" },
+        ("region", "ES") => if pt { "Espanha" } else { "Spain" },
+        ("region", "FR") => if pt { "França" } else { "France" },
+        ("region", "DE") => if pt { "Alemanha" } else { "Germany" },
+        ("currency", "BRL") => if pt { "Real brasileiro" } else { "Brazilian Real" },
+        ("currency", "USD") => if pt { "Dólar americano" } else { "US Dollar" },
+        ("currency", "EUR") => "Euro",
+        _ => "",
+    };
+    Ok(if name.is_empty() { Value::str(&code) } else { Value::str(name) })
+}
