@@ -116,3 +116,61 @@ fn shl_bits(v: &[u32], s: u32, extra: bool) -> Vec<u32> {
     out
 }
 
+/// Divisão longa (algoritmo D de Knuth, como no Hacker's Delight).
+fn mag_divrem(u: &[u32], v: &[u32]) -> (Vec<u32>, Vec<u32>) {
+    if mag_cmp(u, v) == Ordering::Less {
+        return (Vec::new(), u.to_vec());
+    }
+    if v.len() == 1 {
+        let (q, r) = mag_divrem_small(u, v[0]);
+        return (q, if r == 0 { Vec::new() } else { vec![r] });
+    }
+    let n = v.len();
+    let m = u.len() - n;
+    let s = v[n - 1].leading_zeros();
+    let vn = shl_bits(v, s, false);
+    let mut un = shl_bits(u, s, true);
+    let mut q = vec![0u32; m + 1];
+    let b: u64 = 1 << 32;
+    for j in (0..=m).rev() {
+        let num = ((un[j + n] as u64) << 32) | un[j + n - 1] as u64;
+        let mut qhat = num / vn[n - 1] as u64;
+        let mut rhat = num % vn[n - 1] as u64;
+        while qhat >= b || (qhat as u128) * (vn[n - 2] as u128) > ((rhat as u128) << 32) + un[j + n - 2] as u128 {
+            qhat -= 1;
+            rhat += vn[n - 1] as u64;
+            if rhat >= b {
+                break;
+            }
+        }
+        let mut k: i64 = 0;
+        for i in 0..n {
+            let p: u64 = qhat * vn[i] as u64;
+            let t: i64 = un[i + j] as i64 - k - (p & 0xFFFF_FFFF) as i64;
+            un[i + j] = t as u32;
+            k = (p >> 32) as i64 - (t >> 32);
+        }
+        let t: i64 = un[j + n] as i64 - k;
+        un[j + n] = t as u32;
+        if t < 0 {
+            qhat -= 1;
+            let mut c = 0u64;
+            for i in 0..n {
+                let sum = un[i + j] as u64 + vn[i] as u64 + c;
+                un[i + j] = sum as u32;
+                c = sum >> 32;
+            }
+            un[j + n] = un[j + n].wrapping_add(c as u32);
+        }
+        q[j] = qhat as u32;
+    }
+    trim(&mut q);
+    // resto = un desnormalizado
+    let mut r = vec![0u32; n];
+    for i in 0..n {
+        r[i] = if s == 0 { un[i] } else { (un[i] >> s) | (un[i + 1] << (32 - s)) };
+    }
+    trim(&mut r);
+    (q, r)
+}
+
