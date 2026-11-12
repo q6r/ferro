@@ -721,3 +721,83 @@ accessor(HE, 'isContentEditable', function () {
   return false;
 });
 
+// URL decomposta (a, area): hostname, pathname...
+function urlParts(P) {
+  for (const part of ['protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash']) {
+    accessor(P, part, function () {
+      const p = N.urlParse(this.href);
+      return p ? p[part] : '';
+    }, function (v) {
+      const href = this.href;
+      if (href) this.setAttribute('href', N.urlSet(href, part, String(v)));
+    });
+  }
+  accessor(P, 'origin', function () { const p = N.urlParse(this.href); return p ? p.origin : ''; });
+  hidden(P, 'toString', function () { return this.href; });
+}
+reflectAll(HTMLAnchorElement.prototype, [['href', 'href', 'url'], 'target', 'rel', 'download', 'hreflang', 'type',
+  ['referrerPolicy', 'referrerpolicy'], 'ping', 'name']);
+accessor(HTMLAnchorElement.prototype, 'text', function () { return this.textContent; }, function (v) { this.textContent = v; });
+urlParts(HTMLAnchorElement.prototype);
+reflectAll(HTMLAreaElement.prototype, [['href', 'href', 'url'], 'target', 'rel', 'download', 'alt', 'coords', 'shape']);
+urlParts(HTMLAreaElement.prototype);
+
+const IMG = HTMLImageElement.prototype;
+reflectAll(IMG, [['src', 'src', 'url'], 'alt', 'srcset', 'sizes', ['crossOrigin', 'crossorigin'], 'loading',
+  'decoding', ['useMap', 'usemap'], ['isMap', 'ismap', 'bool'], ['referrerPolicy', 'referrerpolicy'],
+  ['fetchPriority', 'fetchpriority'], 'name', 'align', 'border']);
+reflect(IMG, 'width', 'width', 'int', 0);
+reflect(IMG, 'height', 'height', 'int', 0);
+accessor(IMG, 'naturalWidth', function () { return this.width; });
+accessor(IMG, 'naturalHeight', function () { return this.height; });
+accessor(IMG, 'complete', () => true);
+accessor(IMG, 'currentSrc', function () { return this.src; });
+hidden(IMG, 'decode', function () { return Promise.resolve(); });
+
+// formulários
+const VALUES = new WeakMap();
+function formOf(el) {
+  const id = el.getAttribute('form');
+  if (id) return document.getElementById(id);
+  return el.closest('form');
+}
+const INPUT = HTMLInputElement.prototype;
+reflectAll(INPUT, ['name', 'placeholder', 'min', 'max', 'step', 'pattern', 'autocomplete', 'accept', 'alt',
+  ['src', 'src', 'url'], ['formAction', 'formaction', 'url'], ['disabled', 'disabled', 'bool'],
+  ['readOnly', 'readonly', 'bool'], ['required', 'required', 'bool'], ['multiple', 'multiple', 'bool'],
+  ['defaultChecked', 'checked', 'bool'], ['defaultValue', 'value'], ['maxLength', 'maxlength', 'int', -1],
+  ['minLength', 'minlength', 'int', -1], ['size', 'size', 'int', 20], 'dirName', ['inputMode', 'inputmode']]);
+const INPUT_TYPES = new Set(['hidden', 'text', 'search', 'tel', 'url', 'email', 'password', 'date', 'month', 'week',
+  'time', 'datetime-local', 'number', 'range', 'color', 'checkbox', 'radio', 'file', 'submit', 'image', 'reset', 'button']);
+accessor(INPUT, 'type', function () {
+  const t = (this.getAttribute('type') || '').toLowerCase();
+  return INPUT_TYPES.has(t) ? t : 'text';
+}, function (v) { this.setAttribute('type', String(v)); });
+accessor(INPUT, 'value', function () {
+  const v = VALUES.get(this);
+  if (v !== undefined) return v;
+  const a = this.getAttribute('value');
+  if (a === null) return (this.type === 'checkbox' || this.type === 'radio') ? 'on' : '';
+  return a;
+}, function (v) {
+  v = v === null ? '' : String(v);
+  VALUES.set(this, v);
+  // o desenho do campo usa o atributo
+  if (this.type !== 'checkbox' && this.type !== 'radio' && this.type !== 'file') this.setAttribute('value', v);
+});
+accessor(INPUT, 'checked', function () { return this.hasAttribute('checked'); }, function (v) {
+  if (v) {
+    if (this.type === 'radio' && this.name) {
+      const scope = formOf(this) || document;
+      for (const o of scope.querySelectorAll(`input[type=radio][name="${CSS.escape(this.name)}"]`))
+        if (o !== this) o.removeAttribute('checked');
+    }
+    this.setAttribute('checked', '');
+  } else this.removeAttribute('checked');
+});
+accessor(INPUT, 'valueAsNumber', function () { const n = parseFloat(this.value); return Number.isFinite(n) ? n : NaN; },
+  function (v) { this.value = String(v); });
+accessor(INPUT, 'indeterminate', function () { return false; }, function () {});
+accessor(INPUT, 'files', function () { return this.type === 'file' ? [] : null; });
+accessor(INPUT, 'list', function () { const id = this.getAttribute('list'); return id ? document.getElementById(id) : null; });
+
