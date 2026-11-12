@@ -766,3 +766,70 @@ impl Bitmap {
         }
     }
 
+    /// Desenha `img` (recorte `src` dela) no retângulo `dst` do espaço do
+    /// usuário, transformado por `m`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_image(&mut self, img: &ImageData, src: (f32, f32, f32, f32), dst: (f32, f32, f32, f32), m: Mat, alpha: f32, op: Op, smooth: bool) {
+        let (sx, sy, sw, sh) = src;
+        let (dx, dy, dw, dh) = dst;
+        if sw == 0.0 || sh == 0.0 || dw == 0.0 || dh == 0.0 || img.width == 0 || img.height == 0 {
+            return;
+        }
+        let Some(inv) = m.invert() else { return };
+        let corners = [m.apply(dx, dy), m.apply(dx + dw, dy), m.apply(dx + dw, dy + dh), m.apply(dx, dy + dh)];
+        let poly = vec![(corners.to_vec(), true)];
+        let Some((bx, by, bw, bh)) = self.bounds(&poly, 1.0) else { return };
+        // antisserrilhado da borda: cobertura do quadrilátero
+        let cov = coverage(&poly, false, bx, by, bw, bh);
+        let (iw, ih) = (img.width as usize, img.height as usize);
+        let texel = |x: isize, y: isize| -> Rgba {
+            let x = x.clamp(0, iw as isize - 1) as usize;
+            let y = y.clamp(0, ih as isize - 1) as usize;
+            let p = &img.rgba[(y * iw + x) * 4..(y * iw + x) * 4 + 4];
+            [p[0] as f32 / 255.0, p[1] as f32 / 255.0, p[2] as f32 / 255.0, p[3] as f32 / 255.0]
+        };
+        // limites do recorte da fonte (não amostra fora dele)
+        let (sx0, sy0) = (sx.min(sx + sw).max(0.0), sy.min(sy + sh).max(0.0));
+        let (sx1, sy1) = ((sx.max(sx + sw)).min(iw as f32), (sy.max(sy + sh)).min(ih as f32));
+        for row in 0..bh {
+            for col in 0..bw {
+                let c = cov[row * bw + col].min(1.0);
+                if c <= 0.0 {
+                    continue;
+                }
+                let (x, y) = (bx as usize + col, by as usize + row);
+                let (ux, uy) = inv.apply(x as f32 + 0.5, y as f32 + 0.5);
+                let fx = sx + (ux - dx) / dw * sw;
+                let fy = sy + (uy - dy) / dh * sh;
+                let fx = fx.clamp(sx0, (sx1 - 0.001).max(sx0));
+                let fy = fy.clamp(sy0, (sy1 - 0.001).max(sy0));
+                let mut col_px = if smooth {
+                    let (gx, gy) = (fx - 0.5, fy - 0.5);
+                    let (x0, y0) = (gx.floor(), gy.floor());
+                    let (tx, ty) = (gx - x0, gy - y0);
+                    let (x0, y0) = (x0 as isize, y0 as isize);
+                    let (a, b, cc, d) = (texel(x0, y0), texel(x0 + 1, y0), texel(x0, y0 + 1), texel(x0 + 1, y0 + 1));
+                    // mistura pré-multiplicada (sem halo nas bordas transparentes)
+                    let mut out = [0.0f32; 4];
+                    let wts = [(1.0 - tx) * (1.0 - ty), tx * (1.0 - ty), (1.0 - tx) * ty, tx * ty];
+                    for (p, w) in [a, b, cc, d].iter().zip(wts) {
+                        out[3] += p[3] * w;
+                        for k in 0..3 {
+                            out[k] += p[k] * p[3] * w;
+                        }
+                    }
+                    if out[3] > 0.0 {
+                        for k in 0..3 {
+                            out[k] /= out[3];
+                        }
+                    }
+                    out
+                } else {
+                    texel(fx as isize, fy as isize)
+                };
+                col_px[3] *= alpha;
+                self.blend(x, y, col_px, c, op);
+            }
+        }
+    }
+
