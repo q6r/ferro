@@ -2291,3 +2291,45 @@ fn parse_tracks(v: &str, u: &Units) -> GridTemplate {
     g
 }
 
+/// grid-template-areas: "a a" "b c"
+fn parse_areas(v: &str) -> Option<Vec<Vec<String>>> {
+    let mut rows = Vec::new();
+    let mut rest = v;
+    while let Some(start) = rest.find(['"', '\'']) {
+        let q = rest[start..].chars().next().unwrap();
+        let after = &rest[start + 1..];
+        let end = after.find(q)?;
+        rows.push(after[..end].split_whitespace().map(str::to_string).collect());
+        rest = &after[end + 1..];
+    }
+    if rows.is_empty() { None } else { Some(rows) }
+}
+
+fn parse_grid_line(v: &str) -> GridLine {
+    let v = v.trim();
+    if let Some(n) = v.strip_prefix("span") {
+        return GridLine::Span(n.trim().parse().unwrap_or(1).max(1));
+    }
+    match v.parse::<i32>() {
+        Ok(n) if n != 0 => GridLine::Line(n),
+        _ => GridLine::Auto,
+    }
+}
+
+fn parse_grid_pair(v: &str) -> (GridLine, GridLine) {
+    match v.split_once('/') {
+        Some((a, b)) => (parse_grid_line(a), parse_grid_line(b)),
+        None => (parse_grid_line(v), GridLine::Auto),
+    }
+}
+
+fn parse_direction(v: &str) -> Option<FlexDirection> {
+    Some(match v.trim() {
+        "row" => FlexDirection::Row,
+        "row-reverse" => FlexDirection::RowReverse,
+        "column" => FlexDirection::Column,
+        "column-reverse" => FlexDirection::ColumnReverse,
+        _ => return None,
+    })
+}
+
