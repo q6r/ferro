@@ -69,3 +69,78 @@ impl JsonParser<'_> {
         )
     }
 
+    fn value(&mut self, vm: &mut Vm, depth: u32) -> Result<Value, String> {
+        if depth > 5000 {
+            return Err("JSON nesting too deep".into());
+        }
+        self.ws();
+        let Some(&c) = self.s.get(self.pos) else { return Err(self.err()) };
+        match c {
+            0x7B => {
+                self.pos += 1;
+                let o = vm.new_object();
+                self.ws();
+                if self.s.get(self.pos) == Some(&0x7D) {
+                    self.pos += 1;
+                    return Ok(Value::Object(o));
+                }
+                let mut first = true;
+                loop {
+                    self.ws();
+                    if self.s.get(self.pos) != Some(&0x22) {
+                        return Err(self.err_at(if first {
+                            "Expected property name or '}'"
+                        } else {
+                            "Expected double-quoted property name"
+                        }));
+                    }
+                    first = false;
+                    let k = self.string()?;
+                    self.ws();
+                    if self.s.get(self.pos) != Some(&0x3A) {
+                        return Err(self.err_at("Expected ':' after property name"));
+                    }
+                    self.pos += 1;
+                    let v = self.value(vm, depth + 1)?;
+                    vm.define_data(&o, PropKey::Str(k), v);
+                    self.ws();
+                    match self.s.get(self.pos) {
+                        Some(0x2C) => self.pos += 1,
+                        Some(0x7D) => {
+                            self.pos += 1;
+                            return Ok(Value::Object(o));
+                        }
+                        _ => return Err(self.err_at("Expected ',' or '}' after property value")),
+                    }
+                }
+            }
+            0x5B => {
+                self.pos += 1;
+                let mut items = Vec::new();
+                self.ws();
+                if self.s.get(self.pos) == Some(&0x5D) {
+                    self.pos += 1;
+                    return Ok(vm.array_value(items));
+                }
+                loop {
+                    items.push(self.value(vm, depth + 1)?);
+                    self.ws();
+                    match self.s.get(self.pos) {
+                        Some(0x2C) => self.pos += 1,
+                        Some(0x5D) => {
+                            self.pos += 1;
+                            return Ok(vm.array_value(items));
+                        }
+                        _ => return Err(self.err_at("Expected ',' or ']' after array element")),
+                    }
+                }
+            }
+            0x22 => Ok(Value::String(self.string()?)),
+            0x74 => self.word("true", Value::Bool(true)),
+            0x66 => self.word("false", Value::Bool(false)),
+            0x6E => self.word("null", Value::Null),
+            0x2D | 0x30..=0x39 => self.number(),
+            _ => Err(self.err()),
+        }
+    }
+
