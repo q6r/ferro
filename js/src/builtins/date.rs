@@ -498,3 +498,49 @@ fn from_components(n: &[f64]) -> f64 {
     make_day(y, m, d) * MS_PER_DAY + make_time(h, mi, s, ms)
 }
 
+fn date_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let Some(nt) = a.new_target.clone() else {
+        let t = now_ms();
+        return Ok(Value::str(&full_string(vm, t)));
+    };
+    let t = match a.args.len() {
+        0 => now_ms(),
+        1 => {
+            let v = a.args[0].clone();
+            let existing = match &v {
+                Value::Object(o) => match o.borrow().kind {
+                    Kind::Date(t) => Some(t),
+                    _ => None,
+                },
+                _ => None,
+            };
+            match existing {
+                Some(t) => t,
+                None => {
+                    let p = vm.to_primitive(&v, Hint::Default)?;
+                    match &p {
+                        Value::String(s) => parse_date_vm(vm, &s.to_rust()),
+                        _ => vm.to_number(&p)?,
+                    }
+                }
+            }
+        }
+        _ => {
+            let n = nums(vm, a, 0, 7)?;
+            local_to_utc(vm, from_components(&n))
+        }
+    };
+    let def = vm.realm.date_proto.clone();
+    let proto = vm.proto_from_ctor(Some(&nt), &def)?;
+    Ok(Value::Object(ObjRef::new(Object::new(Some(proto), Kind::Date(time_clip(t))))))
+}
+
+fn now(_vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {
+    Ok(Value::Number(now_ms()))
+}
+
+fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let s = vm.to_rust_string(&a.arg(0))?;
+    Ok(Value::Number(parse_date_vm(vm, &s)))
+}
+
