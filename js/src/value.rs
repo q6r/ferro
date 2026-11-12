@@ -282,3 +282,47 @@ impl PropMap {
         }
     }
 
+    pub fn insert(&mut self, k: PropKey, p: Property) {
+        match self.find(&k) {
+            Some(i) => self.entries[i].1 = p,
+            None => {
+                let i = self.entries.len();
+                match &mut self.index {
+                    Some(ix) => {
+                        ix.insert(k.clone(), i);
+                        self.entries.push((k, p));
+                    }
+                    None => {
+                        self.entries.push((k, p));
+                        if self.entries.len() > LINEAR {
+                            self.rebuild_index();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Posição da chave (para caches que guardam a posição).
+    pub fn position(&self, k: &PropKey) -> Option<usize> {
+        self.find(k)
+    }
+
+    pub fn entry_at(&self, i: usize) -> Option<&(PropKey, Property)> {
+        self.entries.get(i)
+    }
+
+    pub fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    pub fn remove(&mut self, k: &PropKey) -> bool {
+        let Some(i) = self.find(k) else { return false };
+        self.generation = self.generation.wrapping_add(1);
+        self.entries.remove(i);
+        if self.index.is_some() {
+            self.rebuild_index();
+        }
+        true
+    }
+
