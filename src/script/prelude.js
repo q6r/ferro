@@ -842,3 +842,68 @@ reflectAll(TA, ['name', 'placeholder', 'autocomplete', 'wrap', ['disabled', 'dis
 accessor(TA, 'type', () => 'textarea');
 accessor(TA, 'value', function () { const v = VALUES.get(this); return v !== undefined ? v : this.textContent; },
   function (v) { v = v === null ? '' : String(v); VALUES.set(this, v); this.textContent = v; });
+accessor(TA, 'defaultValue', function () { return this.textContent; }, function (v) { this.textContent = v; });
+accessor(TA, 'textLength', function () { return this.value.length; });
+formControl(TA, { select() {}, setSelectionRange(a, b) { SEL.set(this, [a, b]); }, setRangeText() {} });
+accessor(TA, 'selectionStart', function () { return (SEL.get(this) || [this.value.length])[0]; }, function (v) { SEL.set(this, [v, v]); });
+accessor(TA, 'selectionEnd', function () { const s = SEL.get(this); return s ? s[1] : this.value.length; }, function () {});
+
+const OPT = HTMLOptionElement.prototype;
+reflectAll(OPT, [['disabled', 'disabled', 'bool'], ['defaultSelected', 'selected', 'bool']]);
+accessor(OPT, 'value', function () { const v = this.getAttribute('value'); return v === null ? this.text : v; },
+  function (v) { this.setAttribute('value', String(v)); });
+accessor(OPT, 'text', function () { return this.textContent.replace(/\s+/g, ' ').trim(); }, function (v) { this.textContent = v; });
+accessor(OPT, 'label', function () { const v = this.getAttribute('label'); return v === null ? this.text : v; },
+  function (v) { this.setAttribute('label', String(v)); });
+accessor(OPT, 'selected', function () {
+  if (this.hasAttribute('selected')) return true;
+  const sel = this.closest('select');
+  if (!sel || sel.multiple) return false;
+  const opts = [...sel.options];
+  return !opts.some((o) => o.hasAttribute('selected')) && opts[0] === this;
+}, function (v) {
+  const sel = this.closest('select');
+  if (v && sel && !sel.multiple) for (const o of sel.options) o.removeAttribute('selected');
+  if (v) this.setAttribute('selected', ''); else this.removeAttribute('selected');
+});
+accessor(OPT, 'index', function () { const sel = this.closest('select'); return sel ? [...sel.options].indexOf(this) : 0; });
+accessor(OPT, 'form', function () { const sel = this.closest('select'); return sel ? sel.form : null; });
+
+const SELECT = HTMLSelectElement.prototype;
+reflectAll(SELECT, ['name', 'autocomplete', ['disabled', 'disabled', 'bool'], ['multiple', 'multiple', 'bool'],
+  ['required', 'required', 'bool'], ['size', 'size', 'int', 0]]);
+accessor(SELECT, 'type', function () { return this.multiple ? 'select-multiple' : 'select-one'; });
+accessor(SELECT, 'options', function () {
+  const list = [...this.querySelectorAll('option')];
+  Object.setPrototypeOf(list, HTMLCollection.prototype);
+  return list;
+});
+accessor(SELECT, 'length', function () { return this.options.length; });
+accessor(SELECT, 'selectedOptions', function () { return [...this.options].filter((o) => o.selected); });
+accessor(SELECT, 'selectedIndex', function () {
+  return [...this.options].findIndex((o) => o.selected);
+}, function (i) {
+  [...this.options].forEach((o, j) => { if (j === Number(i)) o.selected = true; else o.removeAttribute('selected'); });
+});
+accessor(SELECT, 'value', function () {
+  const o = [...this.options].find((o) => o.selected);
+  return o ? o.value : '';
+}, function (v) {
+  v = String(v);
+  for (const o of this.options) { if (o.value === v) o.selected = true; else o.removeAttribute('selected'); }
+});
+formControl(SELECT, {
+  item(i) { return this.options[i] || null; },
+  namedItem(n) { return [...this.options].find((o) => o.id === n || o.getAttribute('name') === n) || null; },
+  add(opt, before) {
+    const ref = typeof before === 'number' ? this.options[before] : before;
+    if (ref) ref.before(opt); else this.appendChild(opt);
+  },
+  remove(i) {
+    if (arguments.length === 0) { Element.prototype.remove.call(this); return; }
+    const o = this.options[i];
+    if (o) o.remove();
+  },
+  showPicker() {},
+});
+
