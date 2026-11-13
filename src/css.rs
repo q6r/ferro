@@ -1030,6 +1030,8 @@ impl Parser<'_> {
                 }
             } else {
                 match c {
+                    // `\'`, `\(`... (classes do Tailwind): o caractere escapado é texto
+                    '\\' => self.pos += 1,
                     '"' | '\'' => quote = Some(c),
                     '(' | '[' => depth += 1,
                     ')' | ']' => depth -= 1,
@@ -1066,6 +1068,7 @@ impl Parser<'_> {
                 }
             } else {
                 match c {
+                    '\\' => self.pos += 1,
                     '"' | '\'' => quote = Some(c),
                     '{' => depth += 1,
                     '}' => {
@@ -1448,6 +1451,17 @@ pub fn split_top_level(s: &str, sep: char) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn aspas_e_parenteses_escapados_no_seletor() {
+        // classes do Tailwind: `\'` e `\(` no seletor não abrem string nem parêntese
+        let sheet = parse_stylesheet(
+            r#".after\:content-\[\'\'\]:after{--tw-content:"";content:var(--tw-content)} .a\(b{color:red} .depois{width:1px}"#,
+            &MediaContext { width: 800.0, height: 600.0 },
+        );
+        assert_eq!(sheet.rules.len(), 3);
+        assert_eq!(sheet.rules[2].declarations[0].name, "width");
+    }
     use crate::html;
 
     const CTX: MediaContext = MediaContext {

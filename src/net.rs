@@ -291,23 +291,24 @@ impl Net {
     /// Requisição passando pelo cache HTTP.
     fn cached(&self, req: &Request) -> Result<Response, String> {
         use crate::httpcache::{self, Lookup};
-        match httpcache::lookup(&req.url) {
+        let origin = req.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("origin")).map(|(_, v)| v.as_str());
+        match httpcache::lookup(&req.url, origin) {
             Lookup::Fresh(r) => Ok(r),
             Lookup::Stale(cond) => {
                 let mut r2 = req.clone();
                 r2.headers.extend(cond);
                 let res = self.http(&r2)?;
                 if res.status == 304
-                    && let Some(r) = httpcache::revalidated(&req.url, &res.headers)
+                    && let Some(r) = httpcache::revalidated(&req.url, origin, &res.headers)
                 {
                     return Ok(r);
                 }
-                httpcache::store(&req.url, &res);
+                httpcache::store(&req.url, origin, &res);
                 Ok(res)
             }
             Lookup::Miss => {
                 let res = self.http(req)?;
-                httpcache::store(&req.url, &res);
+                httpcache::store(&req.url, origin, &res);
                 Ok(res)
             }
         }

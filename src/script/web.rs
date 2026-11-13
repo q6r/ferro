@@ -684,9 +684,13 @@ fn define_custom(vm: &mut Vm, a: &mut CallArgs) -> R {
     });
     let mut out = Vec::new();
     for n in existing {
-        // o mesmo objeto JS: o construtor troca o protótipo dele
+        // o mesmo objeto JS: o construtor troca o protótipo dele; cada um
+        // termina o upgrade (atributos e connectedCallback) antes do próximo
         let el = super::wrap(vm, n);
         super::dom::upgrade_custom(vm, n, &el)?;
+        if read(vm, |h| h.page.doc.is_connected(n)) {
+            super::dom::call_hook(vm, "connected", vec![el.clone()]);
+        }
         out.push(el);
     }
     Ok(vm.array_value(out))

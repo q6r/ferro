@@ -2663,8 +2663,7 @@ const customElements = {
     // classe nesse getter: sem isso os estilos dela ficam vazios)
     if (ctor && ctor.prototype && typeof ctor.prototype.attributeChangedCallback === 'function') void ctor.observedAttributes;
     DEFINED.set(name, ctor);
-    const upgraded = N.defineCustom(name, ctor);
-    for (const el of upgraded) if (el.isConnected) connected(el);
+    N.defineCustom(name, ctor);
     const w = WAITING.get(name);
     if (w) { WAITING.delete(name); w.resolve(ctor); }
   },

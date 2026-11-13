@@ -100,9 +100,20 @@ fn get_entry(url: &str) -> Option<Entry> {
     Some(e)
 }
 
+/// Chave de uma resposta: o endereço e, se o pedido levou `Origin`, a
+/// origem (a liberação de CORS da resposta é para aquela origem; servidores
+/// respondem diferente com e sem ela, com `Vary: Origin`).
+fn cache_key(url: &Url, origin: Option<&str>) -> String {
+    match origin {
+        Some(o) => format!("{}\u{1}{o}", url.as_str()),
+        None => url.as_str().to_string(),
+    }
+}
+
 /// Procura o endereço no cache.
-pub fn lookup(url: &Url) -> Lookup {
-    let key = url.as_str();
+pub fn lookup(url: &Url, origin: Option<&str>) -> Lookup {
+    let key = cache_key(url, origin);
+    let key = key.as_str();
     let Some(e) = get_entry(key) else { return Lookup::Miss };
     if e.fresh_until > now() {
         return Lookup::Fresh(e.response(url));
@@ -118,8 +129,9 @@ pub fn lookup(url: &Url) -> Lookup {
 }
 
 /// O servidor respondeu 304: a entrada vale de novo. Devolve a resposta guardada.
-pub fn revalidated(url: &Url, headers: &[(String, String)]) -> Option<Response> {
-    let key = url.as_str();
+pub fn revalidated(url: &Url, origin: Option<&str>, headers: &[(String, String)]) -> Option<Response> {
+    let key = cache_key(url, origin);
+    let key = key.as_str();
     let mut e = get_entry(key)?;
     e.fresh_until = freshness(headers, &e.headers, e.header("content-type").unwrap_or("")).unwrap_or(0);
     let r = e.response(url);
@@ -168,7 +180,7 @@ fn freshness(headers: &[(String, String)], fallback: &[(String, String)], conten
 }
 
 /// Guarda a resposta, se as regras deixarem.
-pub fn store(url: &Url, res: &Response) {
+pub fn store(url: &Url, origin: Option<&str>, res: &Response) {
     if res.status != 200 || res.url != *url || res.body.len() > MAX_ENTRY {
         return;
     }
@@ -190,8 +202,9 @@ pub fn store(url: &Url, res: &Response) {
         .cloned()
         .collect();
     let e = Entry { status: res.status, headers, body: Arc::new(res.body.clone()), fresh_until };
-    insert_mem(url.as_str(), e.clone());
-    write_disk(url.as_str(), &e);
+    let key = cache_key(url, origin);
+    insert_mem(&key, e.clone());
+    write_disk(&key, &e);
 }
 
 fn insert_mem(key: &str, e: Entry) {
@@ -285,7 +298,7 @@ mod tests {
             body: b"1+1".to_vec(),
             headers: h(&[("cache-control", "max-age=60"), ("content-type", "text/javascript")]),
         };
-        store(&url, &res);
-        assert!(matches!(lookup(&url), Lookup::Fresh(r) if r.body == b"1+1"));
+        store(&url, None, &res);
+        assert!(matches!(lookup(&url, None), Lookup::Fresh(r) if r.body == b"1+1"));
     }
 }

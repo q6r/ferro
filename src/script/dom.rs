@@ -228,7 +228,7 @@ const HTML_IFACES: &[&str] = &[
 // ---------------------------------------------------- efeitos das mutações
 
 /// Chama um gancho do prelúdio (erros viram "Uncaught ..." no console).
-fn call_hook(vm: &mut Vm, name: &str, args: Vec<Value>) {
+pub(crate) fn call_hook(vm: &mut Vm, name: &str, args: Vec<Value>) {
     let f = read(vm, |h| h.hooks.get(name).cloned());
     if let Some(f) = f
         && let Err(e) = vm.call(&f, Value::Undefined, args)
@@ -2403,7 +2403,15 @@ pub(crate) fn upgrade_custom(vm: &mut Vm, n: NodeId, el: &Value) -> Result<(), V
     write(vm, |h| h.hooks.insert("__upgrading", el.clone()));
     let r = vm.construct(&ctor, Vec::new(), &ctor);
     write(vm, |h| h.hooks.remove("__upgrading"));
-    r.map(|_| ())
+    r?;
+    // os atributos que o elemento já tem: um attributeChangedCallback para
+    // cada (o observedAttributes filtra), antes do connectedCallback. O Lit
+    // tira daí as propriedades (o Reddit lê `bundleName` assim)
+    let attrs: Vec<(String, String)> = read(vm, |h| h.page.doc.element(n).map(|e| e.attrs.clone()).unwrap_or_default());
+    for (name, value) in attrs {
+        call_hook(vm, "attributeChanged", vec![el.clone(), s(&name), Value::Null, s(&value)]);
+    }
+    Ok(())
 }
 
 /// `window.algumId`: elemento com esse id (acesso nomeado da janela).
