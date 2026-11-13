@@ -2167,8 +2167,15 @@ impl Cascade<'_> {
         for d in font_decls {
             self.apply(&mut style, parent, d);
         }
+        // depois a cor: currentcolor (fundo, borda, sombra...) vale a cor
+        // final do elemento, não a que estava valendo quando a regra foi lida
         for (_, d) in &matched {
-            if !d.name.starts_with("--") && d.name != "font-size" && d.name != "font" {
+            if d.name == "color" {
+                self.apply(&mut style, parent, d);
+            }
+        }
+        for (_, d) in &matched {
+            if !d.name.starts_with("--") && d.name != "font-size" && d.name != "font" && d.name != "color" {
                 self.apply(&mut style, parent, d);
             }
         }
