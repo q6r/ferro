@@ -405,3 +405,48 @@ fn select_abre_lista_e_escolhe() {
         assert_eq!(eval(&mut s, "mudou + ',' + s.selectedIndex"), "3,2");
     });
 }
+
+#[test]
+fn web_crypto_subtle() {
+    with_stack(|| {
+        let mut s = session("<script>window.r = [];</script>");
+        // tudo resolve em microtarefas: o eval já volta com a lista pronta
+        eval(
+            &mut s,
+            r#"(async () => {
+                const S = crypto.subtle, txt = (t) => new TextEncoder().encode(t);
+                const hex = (b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join('');
+                r.push(hex(await S.digest('SHA-1', txt('abc'))));
+                const h = await S.importKey('raw', txt('Jefe'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+                const mac = await S.sign('HMAC', h, txt('what do ya want for nothing?'));
+                r.push(hex(mac), await S.verify('HMAC', h, mac, new Uint8Array(1)));
+                const k = await S.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+                const iv = crypto.getRandomValues(new Uint8Array(12));
+                const c = await S.encrypt({ name: 'AES-GCM', iv }, k, new Uint8Array([1, 2, 3]));
+                r.push(c.byteLength, hex(await S.decrypt({ name: 'AES-GCM', iv }, k, c)));
+                const p = await S.generateKey({ name: 'ECDSA', namedCurve: 'P-384' }, false, ['sign', 'verify']);
+                const sig = await S.sign({ name: 'ECDSA', hash: 'SHA-384' }, p.privateKey, c);
+                r.push(sig.byteLength, await S.verify({ name: 'ECDSA', hash: 'SHA-384' }, p.publicKey, sig, c));
+                const kw = await S.importKey('raw', new Uint8Array(16), 'AES-KW', true, ['wrapKey']);
+                r.push(JSON.stringify(await S.exportKey('jwk', kw)), kw instanceof CryptoKey, String(kw));
+                await S.digest('MD5', c).catch((e) => r.push(e.name + ': ' + e.message));
+                await S.exportKey('raw', p.privateKey).catch((e) => r.push(e.name));
+            })()"#,
+        );
+        assert_eq!(
+            eval(&mut s, "r.join(' | ')"),
+            "a9993e364706816aba3e25717850c26c9cd0d89d | \
+             5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843 | false | 19 | 010203 | 96 | true | \
+             {\"alg\":\"A128KW\",\"ext\":true,\"k\":\"AAAAAAAAAAAAAAAAAAAAAA\",\"key_ops\":[\"wrapKey\"],\"kty\":\"oct\"} | \
+             true | [object CryptoKey] | \
+             NotSupportedError: Failed to execute 'digest' on 'SubtleCrypto': Algorithm: Unrecognized name | \
+             InvalidAccessError"
+        );
+        // getRandomValues vem do sistema e recusa arrays de ponto flutuante
+        assert_eq!(eval(&mut s, "crypto.getRandomValues(new Uint8Array(64)).some((x) => x)"), "true");
+        assert_eq!(
+            eval(&mut s, "try { crypto.getRandomValues(new Float64Array(1)) } catch (e) { e.name }"),
+            "TypeMismatchError"
+        );
+    });
+}
