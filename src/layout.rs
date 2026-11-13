@@ -192,9 +192,35 @@ fn build(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox> {
             if REPLACED.contains(&el.tag.as_str()) {
                 if boxed {
                     // caixa posicionada/flutuante em volta do elemento
-                    // substituído; as margens ficam só nela
+                    // substituído. Margem, padding, borda, fundo, sombra,
+                    // transformação e limites de tamanho ficam só na de fora;
+                    // a de dentro ocupa a área de conteúdo dela
                     let mut inner = (*style).clone();
                     inner.margin = [Len::Px(0.0); 4];
+                    let pad = |l: Len| if let Len::Px(v) = l { v } else { 0.0 };
+                    let hx = pad(style.padding[LEFT]) + pad(style.padding[RIGHT]) + style.border(LEFT) + style.border(RIGHT);
+                    let vx = pad(style.padding[TOP]) + pad(style.padding[BOTTOM]) + style.border(TOP) + style.border(BOTTOM);
+                    inner.width = match style.width {
+                        Len::Px(w) => Len::Px(if style.border_box { (w - hx).max(0.0) } else { w }),
+                        Len::Auto => Len::Auto,
+                        _ => Len::Percent(100.0),
+                    };
+                    if let Len::Px(h) = style.height {
+                        inner.height = Len::Px(if style.border_box { (h - vx).max(0.0) } else { h });
+                    }
+                    inner.border_box = false;
+                    inner.padding = [Len::Px(0.0); 4];
+                    inner.border_width = [0.0; 4];
+                    inner.border_style = [false; 4];
+                    inner.background = Color::TRANSPARENT;
+                    inner.bg_image = None;
+                    inner.box_shadow = None;
+                    inner.transform = None;
+                    inner.opacity = 1.0;
+                    inner.min_width = Len::Auto;
+                    inner.max_width = Len::Auto;
+                    inner.min_height = Len::Auto;
+                    inner.max_height = Len::Auto;
                     let atomic = LayoutBox::new(BoxKind::Atomic(node), Rc::new(inner), Vec::new());
                     return vec![LayoutBox::new(BoxKind::Block(node), style, vec![atomic])];
                 }
@@ -484,12 +510,18 @@ struct Pending<'a> {
     inh: Inherited,
     /// Ordem na árvore (para pintar na ordem certa entre os posicionados).
     order: usize,
+    /// Contextos de empilhamento em volta quando ele foi encontrado.
+    ctx: Vec<(i32, usize)>,
 }
 
 /// Conteúdo posicionado ou flutuante, pintado por cima (ou por baixo, z < 0) do fluxo.
 struct Layer {
-    z: i32,
-    order: usize,
+    /// Onde a camada entra na ordem de pintura: o caminho de contextos de
+    /// empilhamento até ela, cada passo (z-index, ordem na árvore). Ordenar
+    /// pelas chaves (lexicograficamente) pinta cada contexto inteiro no seu
+    /// lugar: um z-index 999 dentro de um contexto com 9999 fica dentro dele,
+    /// por cima do fundo do próprio contexto. O fluxo da página é [(0, 0)].
+    key: Box<[(i32, usize)]>,
     items: Vec<DisplayItem>,
     /// Dentro de um `position: fixed` (não rola com a página).
     fixed: bool,
@@ -590,7 +622,8 @@ pub fn layout<'a>(
         abs_bottom: 0.0,
         cb_heights: vec![Some(viewport_h)],
         flex_min_h: None,
-        z_stack: vec![0],
+        ctx_stack: Vec::new(),
+        abs_order: None,
         scrollers: Vec::new(),
         in_fixed: 0,
         fixed_nodes: Default::default(),
@@ -599,7 +632,7 @@ pub fn layout<'a>(
         viewport,
         abs: vec![Vec::new()],
         layers: Vec::new(),
-        next_layer: 0,
+        next_layer: 1,
         floats: Vec::new(),
         bfc_starts: vec![0],
         intrinsic_cache: HashMap::new(),
@@ -621,14 +654,15 @@ pub fn layout<'a>(
     let mut layers = std::mem::take(&mut cx.layers);
     // trechos marcados (relativos/sticky) viram camadas próprias
     let mut extra = Vec::new();
-    let mut flow = split_layers(std::mem::take(&mut cx.items), 0, false, &mut extra);
+    let flow = split_layers(std::mem::take(&mut cx.items), false, &mut extra);
     for l in layers.iter_mut() {
-        l.items = split_layers(std::mem::take(&mut l.items), l.z, l.fixed, &mut extra);
+        l.items = split_layers(std::mem::take(&mut l.items), l.fixed, &mut extra);
     }
     layers.extend(extra);
-    layers.sort_by_key(|l| (l.z, l.order));
+    layers.push(Layer { key: Box::new([(0, 0)]), items: flow, fixed: false });
+    layers.sort_by(|a, b| a.key.cmp(&b.key));
     let mut items = Vec::new();
-    let take = |l: &mut Layer, items: &mut Vec<DisplayItem>| {
+    for l in layers.iter_mut() {
         if l.fixed && !l.items.is_empty() {
             items.push(DisplayItem::FixedStart);
             items.append(&mut l.items);
@@ -636,13 +670,6 @@ pub fn layout<'a>(
         } else {
             items.append(&mut l.items);
         }
-    };
-    for l in layers.iter_mut().filter(|l| l.z < 0) {
-        take(l, &mut items);
-    }
-    items.append(&mut flow);
-    for l in layers.iter_mut().filter(|l| l.z >= 0) {
-        take(l, &mut items);
     }
     let hits = extract_hits(&mut items);
     Page {
@@ -694,35 +721,34 @@ fn extract_hits(items: &mut Vec<DisplayItem>) -> Vec<(NodeId, Rect, bool)> {
 
 /// Tira dos itens os trechos entre LayerStart/LayerEnd (aninhados ou não),
 /// devolvendo o resto; cada trecho vira uma camada em `out`.
-fn split_layers(items: Vec<DisplayItem>, base_z: i32, fixed: bool, out: &mut Vec<Layer>) -> Vec<DisplayItem> {
+fn split_layers(items: Vec<DisplayItem>, fixed: bool, out: &mut Vec<Layer>) -> Vec<DisplayItem> {
     if !items.iter().any(|it| matches!(it, DisplayItem::LayerStart { .. })) {
         return items
             .into_iter()
             .filter(|it| !matches!(it, DisplayItem::LayerEnd))
             .collect();
     }
-    // pilha de trechos abertos: (z, ordem, itens); a base é o fluxo
-    let mut stack: Vec<(i32, usize, Vec<DisplayItem>)> = vec![(base_z, 0, Vec::new())];
+    // pilha de trechos abertos: (chave, itens); a base é o resto
+    let mut stack: Vec<(Option<Box<[(i32, usize)]>>, Vec<DisplayItem>)> = vec![(None, Vec::new())];
     for it in items {
         match it {
-            DisplayItem::LayerStart { z, order } => {
-                let parent_z = stack.last().map_or(base_z, |t| t.0);
-                stack.push((z.unwrap_or(parent_z), order, Vec::new()));
-            }
+            DisplayItem::LayerStart { key } => stack.push((Some(key), Vec::new())),
             DisplayItem::LayerEnd => {
-                if stack.len() > 1 {
-                    let (z, order, items) = stack.pop().unwrap();
-                    out.push(Layer { z, order, items, fixed });
+                if stack.len() > 1
+                    && let Some((Some(key), items)) = stack.pop()
+                {
+                    out.push(Layer { key, items, fixed });
                 }
             }
-            other => stack.last_mut().unwrap().2.push(other),
+            other => stack.last_mut().unwrap().1.push(other),
         }
     }
     while stack.len() > 1 {
-        let (z, order, items) = stack.pop().unwrap();
-        out.push(Layer { z, order, items, fixed });
+        if let Some((Some(key), items)) = stack.pop() {
+            out.push(Layer { key, items, fixed });
+        }
     }
-    stack.pop().map(|t| t.2).unwrap_or_default()
+    stack.pop().map(|t| t.1).unwrap_or_default()
 }
 
 struct Ctx<'a> {
@@ -741,8 +767,10 @@ struct Ctx<'a> {
     /// linha única de um flex em linha e o tamanho principal de um flex em
     /// coluna respeitam o mínimo antes de alinhar (consumido no começo).
     flex_min_h: Option<f32>,
-    /// z-index dos contextos de empilhamento abertos.
-    z_stack: Vec<i32>,
+    /// Contextos de empilhamento abertos, de fora para dentro: (z-index, ordem).
+    ctx_stack: Vec<(i32, usize)>,
+    /// Ordem do absoluto que está sendo montado (vale para o contexto dele).
+    abs_order: Option<usize>,
     scrollers: Vec<Scroller>,
     /// Profundidade dentro de elementos `position: fixed`.
     in_fixed: u32,
@@ -1220,6 +1248,22 @@ impl<'a> Ctx<'a> {
         self.stretch_to(d, None, h);
     }
 
+    /// Chave de pintura de uma camada nova (ver `Layer`). Com z-index, o
+    /// elemento é um contexto: o conteúdo próprio dele vai em (0, 0) dentro do
+    /// contexto, antes dos filhos com z >= 0; sem z-index, entra no contexto
+    /// em volta na ordem da árvore.
+    fn layer_key(&self, z: Option<i32>, order: usize) -> Box<[(i32, usize)]> {
+        let mut k = self.ctx_stack.clone();
+        match z {
+            Some(z) => {
+                k.push((z, order));
+                k.push((0, 0));
+            }
+            None => k.push((0, order)),
+        }
+        k.into_boxed_slice()
+    }
+
     fn add_pending(&mut self, b: &'a LayoutBox, x: f32, y: f32, inh: &Inherited) {
         let order = self.next_layer;
         self.next_layer += 1;
@@ -1229,6 +1273,7 @@ impl<'a> Ctx<'a> {
             y,
             inh: inh.clone(),
             order,
+            ctx: self.ctx_stack.clone(),
         };
         if b.style.position == Position::Fixed {
             self.abs[0].push(p);
@@ -1468,7 +1513,7 @@ impl<'a> Ctx<'a> {
         let mark = self.mark();
         let res = self.layout_block(b, &bm, x, top + bm.margin[TOP], inh, Opts::bfc());
         let items = self.items.split_off(mark.items);
-        self.layers.push(Layer { z: 0, order, items, fixed: self.in_fixed > 0 });
+        self.layers.push(Layer { key: self.layer_key(None, order), items, fixed: self.in_fixed > 0 });
         let f = FloatBox {
             rect: Rect {
                 x,
@@ -1597,13 +1642,18 @@ impl<'a> Ctx<'a> {
         // contexto de empilhamento: posicionado com z-index (os descendentes
         // posicionados sem z-index pintam dentro dele)
         let stacking = !anon && s.is_positioned() && s.z_index.is_some();
-        if stacking {
-            self.z_stack.push(s.z_index.unwrap_or(0));
-        }
-        if layered {
+        // ordem na árvore: a do absoluto (dada quando foi encontrado) ou nova
+        let abs_order = self.abs_order.take();
+        let layer_order = if layered {
             let order = self.next_layer;
             self.next_layer += 1;
-            self.items.push(DisplayItem::LayerStart { z: s.z_index, order });
+            self.items.push(DisplayItem::LayerStart { key: self.layer_key(s.z_index, order) });
+            Some(order)
+        } else {
+            abs_order
+        };
+        if stacking {
+            self.ctx_stack.push((s.z_index.unwrap_or(0), layer_order.unwrap_or(0)));
         }
         let mark = needs_mark.then(|| self.mark());
         // transformação (rotate/scale...): marca reservada aqui, preenchida no fim
@@ -1956,7 +2006,7 @@ impl<'a> Ctx<'a> {
             }
         }
         if stacking {
-            self.z_stack.pop();
+            self.ctx_stack.pop();
         }
         if layered {
             self.items.push(DisplayItem::LayerEnd);
@@ -2130,7 +2180,12 @@ impl<'a> Ctx<'a> {
         if is_fixed {
             self.in_fixed += 1;
         }
+        let saved_ctx = std::mem::replace(&mut self.ctx_stack, p.ctx.clone());
+        let key = self.layer_key(s.z_index, order);
+        self.abs_order = Some(order);
         let r = self.layout_block(b, &bm, x, y0, &p.inh, opts);
+        self.abs_order = None;
+        self.ctx_stack = saved_ctx;
         if is_fixed {
             self.in_fixed -= 1;
         }
@@ -2165,8 +2220,7 @@ impl<'a> Ctx<'a> {
         }
         let items = self.items.split_off(mark.items);
         self.layers.push(Layer {
-            z: s.z_index.unwrap_or_else(|| self.z_stack.last().copied().unwrap_or(0)),
-            order,
+            key,
             items,
             fixed: is_fixed || self.in_fixed > 0,
         });
@@ -3659,7 +3713,26 @@ impl<'a> Ctx<'a> {
                 }
             },
             "svg" => {
-                let (w, h) = (w.unwrap_or(fs), h.unwrap_or(fs));
+                // sem tamanho, como no Chrome: com viewBox, a largura do
+                // contêiner e a proporção (medindo o contêiner, conta 0); sem
+                // viewBox, 300×150; com um lado só, o outro vem da proporção
+                let ratio = el.attr("viewbox").or_else(|| el.attr("viewBox")).and_then(|v| {
+                    let n: Vec<f32> =
+                        v.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.parse().ok()).collect();
+                    (n.len() == 4 && n[2] > 0.0 && n[3] > 0.0).then(|| n[2] / n[3])
+                });
+                let (w, h) = match (w, h, ratio) {
+                    (Some(w), Some(h), _) => (w, h),
+                    (Some(w), None, Some(r)) => (w, w / r),
+                    (None, Some(h), Some(r)) => (h * r, h),
+                    (Some(w), None, None) => (w, 150.0),
+                    (None, Some(h), None) => (300.0, h),
+                    (None, None, Some(r)) => {
+                        let w = if avail < 1.0e6 { avail.max(0.0) } else { 0.0 };
+                        (w, w / r)
+                    }
+                    (None, None, None) => (300.0, 150.0),
+                };
                 let paint = match inline_svg(self.doc, n, w, h, s.color) {
                     Some(img) => AtomicPaint::Image(img),
                     None => AtomicPaint::Invisible,
@@ -3690,7 +3763,7 @@ impl<'a> Ctx<'a> {
                         let label = match el.attr("value").filter(|v| !v.is_empty()) {
                             Some(v) if ty == "password" => Some(("•".repeat(v.chars().count()), s.color)),
                             Some(v) => Some((v.to_string(), s.color)),
-                            None => el.attr("placeholder").map(|p| (p.to_string(), gray)),
+                            None => el.attr("placeholder").map(|p| (p.to_string(), s.placeholder_color.unwrap_or(gray))),
                         };
                         let size: f32 = el.attr("size").and_then(|v| v.parse().ok()).unwrap_or(20.0);
                         let (bw, bh) = (outer_w(w, size * fs * 0.55), outer_h(h, line));
@@ -3718,7 +3791,7 @@ impl<'a> Ctx<'a> {
                 let rows: f32 = el.attr("rows").and_then(|v| v.parse().ok()).unwrap_or(2.0);
                 let text = self.doc.text_content(n);
                 let label = if text.trim().is_empty() {
-                    el.attr("placeholder").map(|p| (p.to_string(), gray))
+                    el.attr("placeholder").map(|p| (p.to_string(), s.placeholder_color.unwrap_or(gray)))
                 } else {
                     Some((text.trim().to_string(), s.color))
                 };

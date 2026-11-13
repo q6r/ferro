@@ -481,6 +481,13 @@ fn render_png_inner(a: &Args) -> Result<(), String> {
         page.height,
         ms(t)
     ));
+    // depuração: FERRO_ITENS="x0,y0,x1,y1" lista os itens de pintura que cruzam a região
+    if let Ok(area) = std::env::var("FERRO_ITENS") {
+        let n: Vec<f32> = area.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        if n.len() == 4 {
+            dump_items(&page.items, ferro::layout::Rect { x: n[0], y: n[1], w: n[2] - n[0], h: n[3] - n[1] });
+        }
+    }
     let frames = session.video_frames();
     let paused = session.paused_videos();
     let hb = session.host.borrow();
@@ -527,4 +534,33 @@ fn render_png_inner(a: &Args) -> Result<(), String> {
         log(format!("pronto: {} ({}×{}) em {:.0} ms", out.display(), a.width, h, ms(start)));
     }
     Ok(())
+}
+
+/// Itens de pintura que cruzam `area`, na ordem em que são pintados (com os
+/// recortes e as marcas de camada), para achar o que cobre o quê.
+fn dump_items(items: &[ferro::paint::DisplayItem], area: ferro::layout::Rect) {
+    use ferro::paint::DisplayItem as D;
+    let hit = |r: &ferro::layout::Rect| r.x < area.x + area.w && r.x + r.w > area.x && r.y < area.y + area.h && r.y + r.h > area.y;
+    for (i, it) in items.iter().enumerate() {
+        let line = match it {
+            D::Rect { rect, color } if hit(rect) => format!("Rect {rect:?} {color:?}"),
+            D::RoundRect { rect, color, .. } if hit(rect) => format!("RoundRect {rect:?} {color:?}"),
+            D::RoundBorder { rect, color, widths, .. } if hit(rect) => format!("RoundBorder {rect:?} {widths:?} {color:?}"),
+            D::Image { rect, .. } if hit(rect) => format!("Image {rect:?}"),
+            D::BgImage { rect, .. } if hit(rect) => format!("BgImage {rect:?}"),
+            D::Gradient { rect, .. } if hit(rect) => format!("Gradient {rect:?}"),
+            D::Shadow { rect, .. } if hit(rect) => format!("Shadow {rect:?}"),
+            D::Text { x, baseline, text, color, .. } if *x < area.x + area.w && *baseline > area.y && *baseline - 30.0 < area.y + area.h => {
+                format!("Text ({x:.0}, {baseline:.0}) {text:?} {color:?}")
+            }
+            D::PushClip(r) => format!("PushClip {r:?}"),
+            D::PopClip => "PopClip".into(),
+            D::FixedStart => "FixedStart".into(),
+            D::FixedEnd => "FixedEnd".into(),
+            D::TransformStart { m, .. } => format!("TransformStart {m:?}"),
+            D::TransformEnd => "TransformEnd".into(),
+            _ => continue,
+        };
+        println!("{i:6} {line}");
+    }
 }

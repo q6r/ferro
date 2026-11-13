@@ -103,6 +103,8 @@ pub struct Realm {
     pub function_has_instance: ObjRef,
     /// RegExp.prototype.exec original (atalho quando não foi trocado).
     pub regexp_exec: ObjRef,
+    /// %eval%: só chamar ele pelo nome `eval` faz eval direto.
+    pub eval_fn: ObjRef,
     pub regexp_string_iter_proto: ObjRef,
     pub sym_iterator: Sym,
     pub sym_async_iterator: Sym,
@@ -157,6 +159,7 @@ impl Realm {
         let regexp_exec = regexp::exec_native(&function_proto);
         let array_ctor = native_fn(&function_proto, "Array", 1, array::array_ctor, true);
         let array_species = mk_native("get [Symbol.species]", 0, array::species);
+        let eval_fn = mk_native("eval", 1, global::eval);
         let realm = Realm {
             global: plain(p),
             array_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Array(Vec::new()))),
@@ -207,6 +210,7 @@ impl Realm {
             array_values,
             function_has_instance,
             regexp_exec,
+            eval_fn,
             regexp_string_iter_proto: plain(ip),
             sym_iterator: sym("Symbol.iterator"),
             sym_async_iterator: sym("Symbol.asyncIterator"),

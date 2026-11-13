@@ -27,6 +27,8 @@ pub struct FontFaceRule {
 pub enum PseudoElement {
     Before,
     After,
+    /// ::placeholder (o texto do placeholder de <input>/<textarea>).
+    Placeholder,
 }
 
 /// Conteúdo de `url(...)`, sem aspas.
@@ -317,6 +319,9 @@ fn parse_selector(src: &str) -> Option<Selector> {
                 match name.as_str() {
                     "before" if arg.is_none() => pseudo_element = Some(PseudoElement::Before),
                     "after" if arg.is_none() => pseudo_element = Some(PseudoElement::After),
+                    "placeholder" | "-webkit-input-placeholder" | "-moz-placeholder" if element && arg.is_none() => {
+                        pseudo_element = Some(PseudoElement::Placeholder)
+                    }
                     _ if element || matches!(name.as_str(), "first-line" | "first-letter") => {
                         current.pseudos.push(Pseudo::Never)
                     }
