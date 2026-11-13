@@ -3529,6 +3529,9 @@ const customElements = {
     if (!/^[a-z][a-z0-9._]*-[a-z0-9._-]*$/.test(name))
       throw new DOMException(`Failed to execute 'define' on 'CustomElementRegistry': "${name}" is not a valid custom element name`, 'SyntaxError');
     if (opts && opts.extends) return; // elementos embutidos personalizados: não suportados
+    // como no navegador, define() lê observedAttributes (o Lit prepara a
+    // classe nesse getter: sem isso os estilos dela ficam vazios)
+    if (ctor && ctor.prototype && typeof ctor.prototype.attributeChangedCallback === 'function') void ctor.observedAttributes;
     DEFINED.set(name, ctor);
     const upgraded = N.defineCustom(name, ctor);
     for (const el of upgraded) if (el.isConnected) connected(el);
