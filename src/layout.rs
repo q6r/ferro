@@ -3687,7 +3687,26 @@ impl<'a> Ctx<'a> {
                 }
             },
             "svg" => {
-                let (w, h) = (w.unwrap_or(fs), h.unwrap_or(fs));
+                // sem tamanho, como no Chrome: com viewBox, a largura do
+                // contêiner e a proporção (medindo o contêiner, conta 0); sem
+                // viewBox, 300×150; com um lado só, o outro vem da proporção
+                let ratio = el.attr("viewbox").or_else(|| el.attr("viewBox")).and_then(|v| {
+                    let n: Vec<f32> =
+                        v.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.parse().ok()).collect();
+                    (n.len() == 4 && n[2] > 0.0 && n[3] > 0.0).then(|| n[2] / n[3])
+                });
+                let (w, h) = match (w, h, ratio) {
+                    (Some(w), Some(h), _) => (w, h),
+                    (Some(w), None, Some(r)) => (w, w / r),
+                    (None, Some(h), Some(r)) => (h * r, h),
+                    (Some(w), None, None) => (w, 150.0),
+                    (None, Some(h), None) => (300.0, h),
+                    (None, None, Some(r)) => {
+                        let w = if avail < 1.0e6 { avail.max(0.0) } else { 0.0 };
+                        (w, w / r)
+                    }
+                    (None, None, None) => (300.0, 150.0),
+                };
                 let paint = match inline_svg(self.doc, n, w, h, s.color) {
                     Some(img) => AtomicPaint::Image(img),
                     None => AtomicPaint::Invisible,
