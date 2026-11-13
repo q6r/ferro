@@ -46,6 +46,9 @@ pub enum DisplayItem {
         image: Arc<ImageData>,
         /// Raios dos cantos (border-radius; zero = reto).
         radius: Radii,
+        /// Pedaço da imagem (em pixels dela) que vai em `rect`; None = ela toda
+        /// (object-fit: cover/none recortam).
+        src: Option<Rect>,
     },
     /// Borda com cantos arredondados; `widths` = topo, direita, baixo, esquerda.
     RoundBorder {
@@ -390,8 +393,8 @@ impl Canvas {
                     }
                     self.text_clip(fonts, x * t.scale + t.dx, b, text, *font, s, *color, clip);
                 }
-                DisplayItem::Image { rect, image, radius } => {
-                    self.image_tinted(image, t.rect(*rect), clip, None, radius.scale(t.scale))
+                DisplayItem::Image { rect, image, radius, src } => {
+                    self.image_part(image, t.rect(*rect), clip, None, radius.scale(t.scale), *src)
                 }
                 DisplayItem::RoundBorder {
                     rect,
@@ -1056,7 +1059,16 @@ impl Canvas {
     /// Com `tint`, usa só o alfa da imagem e pinta com essa cor. Com `radius`,
     /// recorta os cantos arredondados (borda suave).
     fn image_tinted(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>, radius: Radii) {
+        self.image_part(img, r, clip, tint, radius, None)
+    }
+
+    /// Desenha o pedaço `src` da imagem (ela toda, se None) esticado em `r`.
+    fn image_part(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>, radius: Radii, src: Option<Rect>) {
         if img.width == 0 || img.height == 0 || r.w < 0.5 || r.h < 0.5 {
+            return;
+        }
+        let src = src.unwrap_or(Rect { x: 0.0, y: 0.0, w: img.width as f32, h: img.height as f32 });
+        if src.w <= 0.0 || src.h <= 0.0 {
             return;
         }
         let c = clip.intersect(Clip {
@@ -1069,8 +1081,8 @@ impl Canvas {
             return;
         }
         let (iw, ih) = (img.width as usize, img.height as usize);
-        let sx = iw as f32 / r.w;
-        let sy = ih as f32 / r.h;
+        let sx = src.w / r.w;
+        let sy = src.h / r.h;
         let px = |x: usize, y: usize| {
             let i = (y * iw + x) * 4;
             [img.rgba[i] as f32, img.rgba[i + 1] as f32, img.rgba[i + 2] as f32, img.rgba[i + 3] as f32]
@@ -1094,8 +1106,8 @@ impl Canvas {
                 let mut acc = [0.0f32; 4];
                 for j in 0..ny {
                     for i in 0..nx {
-                        let fx = (x as f32 + (i as f32 + 0.5) / nx as f32 - r.x) * sx - 0.5;
-                        let fy = (y as f32 + (j as f32 + 0.5) / ny as f32 - r.y) * sy - 0.5;
+                        let fx = src.x + (x as f32 + (i as f32 + 0.5) / nx as f32 - r.x) * sx - 0.5;
+                        let fy = src.y + (y as f32 + (j as f32 + 0.5) / ny as f32 - r.y) * sy - 0.5;
                         let fx = fx.clamp(0.0, (iw - 1) as f32);
                         let fy = fy.clamp(0.0, (ih - 1) as f32);
                         let (x0, y0) = (fx.floor() as usize, fy.floor() as usize);

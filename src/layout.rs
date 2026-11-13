@@ -17,7 +17,7 @@ use crate::fonts::{FontId, Fonts};
 use crate::paint::{DisplayItem, ImageData, Radii};
 use crate::style::{
     Align, BOTTOM, BgImage, BgSize, Clear, Color, ComputedStyle, ContentPart, Display, FlexBasis, Float, GridLine,
-    Justify, LEFT, Len, ListStyle, Position, RIGHT, SizeKw, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
+    Justify, LEFT, Len, ListStyle, ObjectFit, Position, RIGHT, SizeKw, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
     WhiteSpace,
 };
 
@@ -1139,6 +1139,41 @@ fn grid_fill_rows(natural: &[f32], tracks: &[TrackSize], target: f32, rgap: f32)
         }
     }
     Some(hs)
+}
+
+/// object-fit/object-position de uma imagem na caixa de conteúdo `r`: onde
+/// ela vai, que pedaço dela aparece (cover e none recortam) e os cantos (os
+/// arredondados só quando a imagem ocupa a caixa toda).
+fn object_fit(s: &ComputedStyle, r: Rect, img: &ImageData, radius: Radii) -> (Rect, Option<Rect>, Radii) {
+    let (iw, ih) = (img.width as f32, img.height as f32);
+    if s.object_fit == ObjectFit::Fill || iw <= 0.0 || ih <= 0.0 || r.w <= 0.0 || r.h <= 0.0 {
+        return (r, None, radius);
+    }
+    let contain = (r.w / iw).min(r.h / ih);
+    let k = match s.object_fit {
+        ObjectFit::Contain => contain,
+        ObjectFit::Cover => (r.w / iw).max(r.h / ih),
+        ObjectFit::ScaleDown => contain.min(1.0),
+        _ => 1.0,
+    };
+    let (w, h) = (iw * k, ih * k);
+    let off = |l: Len, free: f32| match l {
+        Len::Px(v) => v,
+        l => l.resolve(free).unwrap_or(free / 2.0),
+    };
+    let dest = Rect { x: r.x + off(s.object_pos.0, r.w - w), y: r.y + off(s.object_pos.1, r.h - h), w, h };
+    // a parte que fica dentro da caixa, e o pedaço da imagem que cai nela
+    let x0 = dest.x.max(r.x);
+    let y0 = dest.y.max(r.y);
+    let x1 = (dest.x + dest.w).min(r.x + r.w);
+    let y1 = (dest.y + dest.h).min(r.y + r.h);
+    if x1 <= x0 || y1 <= y0 {
+        return (Rect { x: r.x, y: r.y, w: 0.0, h: 0.0 }, None, Radii::ZERO);
+    }
+    let vis = Rect { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    let src = Rect { x: (x0 - dest.x) / k, y: (y0 - dest.y) / k, w: vis.w / k, h: vis.h / k };
+    let full = (vis.w - r.w).abs() < 0.5 && (vis.h - r.h).abs() < 0.5;
+    (vis, Some(src), if full { radius } else { Radii::ZERO })
 }
 
 /// Um item flex durante o cálculo de tamanhos (eixo principal horizontal).
@@ -4082,7 +4117,8 @@ impl<'a> Ctx<'a> {
                             h: (r.h - b[0] - b[2] - p[0] - p[2]).max(0.0),
                         };
                         if let AtomicPaint::Image(image) = paint {
-                            self.items.push(DisplayItem::Image { rect: r, image: image.clone(), radius: inner_radius });
+                            let (rect, src, radius) = object_fit(s, r, image, inner_radius);
+                            self.items.push(DisplayItem::Image { rect, image: image.clone(), radius, src });
                             return;
                         }
                     }
@@ -4097,10 +4133,12 @@ impl<'a> Ctx<'a> {
                             DisplayItem::Rect { rect: r, color: s.background }
                         });
                     }
+                    let (rect, src, radius) = object_fit(s, r, image, radius);
                     self.items.push(DisplayItem::Image {
-                        rect: r,
+                        rect,
                         image: image.clone(),
                         radius,
+                        src,
                     });
                     return;
                 }
@@ -5112,5 +5150,38 @@ impl<'a> LineBuilder<'a> {
     fn finish(mut self) -> Vec<Line> {
         self.break_line(false);
         self.lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn object_fit_cover_contain_none() {
+        let img = ImageData { width: 120, height: 60, rgba: vec![0; 120 * 60 * 4] };
+        let r = Rect { x: 10.0, y: 20.0, w: 80.0, h: 80.0 };
+        let round = Radii::all(40.0);
+        let mut s = ComputedStyle::initial();
+        // cover: a caixa toda, com o meio da imagem (60 dos 120 de largura)
+        s.object_fit = ObjectFit::Cover;
+        let (rect, src, radius) = object_fit(&s, r, &img, round);
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (10.0, 20.0, 80.0, 80.0));
+        let src = src.unwrap();
+        assert_eq!((src.x, src.y, src.w, src.h), (30.0, 0.0, 60.0, 60.0));
+        assert!(!radius.is_zero());
+        // contain: 80×40 no meio, a imagem toda
+        s.object_fit = ObjectFit::Contain;
+        let (rect, src, _) = object_fit(&s, r, &img, round);
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (10.0, 40.0, 80.0, 40.0));
+        let src = src.unwrap();
+        assert_eq!((src.x, src.y, src.w, src.h), (0.0, 0.0, 120.0, 60.0));
+        // none no canto: tamanho natural recortado pela caixa
+        s.object_fit = ObjectFit::None;
+        s.object_pos = (Len::Percent(0.0), Len::Percent(0.0));
+        let (rect, src, _) = object_fit(&s, r, &img, Radii::ZERO);
+        assert_eq!((rect.w, rect.h), (80.0, 60.0));
+        let src = src.unwrap();
+        assert_eq!((src.x, src.w, src.h), (0.0, 80.0, 60.0));
     }
 }

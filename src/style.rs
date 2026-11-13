@@ -350,6 +350,16 @@ pub enum Justify {
     SpaceEvenly,
 }
 
+/// object-fit de img/vídeo.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ObjectFit {
+    Fill,
+    Contain,
+    Cover,
+    None,
+    ScaleDown,
+}
+
 /// align-items / align-self
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Align {
@@ -469,6 +479,8 @@ pub struct ComputedStyle {
     pub bg_image: Option<BgImage>,
     pub bg_size: BgSize,
     pub bg_pos: (Len, Len),
+    pub object_fit: ObjectFit,
+    pub object_pos: (Len, Len),
     pub bg_repeat: (bool, bool),
     /// `content` de ::before/::after (None = none/normal).
     pub content: Option<Rc<Vec<ContentPart>>>,
@@ -645,6 +657,8 @@ impl ComputedStyle {
             bg_image: None,
             bg_size: BgSize::Auto,
             bg_pos: (Len::Percent(0.0), Len::Percent(0.0)),
+            object_fit: ObjectFit::Fill,
+            object_pos: (Len::Percent(50.0), Len::Percent(50.0)),
             bg_repeat: (true, true),
             content: None,
             font_names: Rc::new(Vec::new()),
@@ -2684,6 +2698,16 @@ impl Cascade<'_> {
                 }
             }
             "background-position" => s.bg_pos = parse_bg_position(v, &u),
+            "object-fit" => {
+                s.object_fit = match v.trim() {
+                    "contain" => ObjectFit::Contain,
+                    "cover" => ObjectFit::Cover,
+                    "none" => ObjectFit::None,
+                    "scale-down" => ObjectFit::ScaleDown,
+                    _ => ObjectFit::Fill,
+                }
+            }
+            "object-position" => s.object_pos = parse_bg_position(v, &u),
             "background-position-x" => s.bg_pos.0 = parse_bg_position(v, &u).0,
             "background-position-y" => s.bg_pos.1 = parse_bg_position(&format!("left {v}"), &u).1,
             "background-repeat" => {
