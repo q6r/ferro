@@ -52,6 +52,9 @@ const RESERVED: &[&str] = &[
     "this", "throw", "try", "typeof", "var", "void", "while", "with", "null", "true", "false", "enum",
 ];
 
+/// Reservadas só no modo estrito (não podem nomear variáveis).
+const STRICT_RESERVED: &[&str] = &["implements", "interface", "let", "package", "private", "protected", "public", "static", "yield"];
+
 fn bin_prec(t: &Tok, no_in: bool) -> Option<(u8, BinOrLog)> {
     let p = match t {
         Tok::Punct(p) => *p,
@@ -116,7 +119,14 @@ fn assign_op(p: &str) -> Option<AssignOp> {
 }
 
 pub fn parse_program(src: &str) -> PResult<Program> {
+    parse_program_strict(src, false)
+}
+
+/// Como `parse_program`, já em modo estrito se `strict` (eval direto
+/// chamado de código estrito).
+pub fn parse_program_strict(src: &str, strict: bool) -> PResult<Program> {
     let mut p = Parser::new(src)?;
+    p.strict = strict;
     let body = p.parse_body_until_eof()?;
     Ok(Program { body, strict: p.strict, imports: Default::default() })
 }
@@ -466,12 +476,63 @@ impl Parser {
                 if (&**n == "await" && self.ctx.in_async) || (&**n == "yield" && self.ctx.in_generator) {
                     return self.unexpected();
                 }
+                if self.strict && STRICT_RESERVED.contains(&&**n) {
+                    return self.err(format!("Unexpected strict mode reserved word '{n}'"));
+                }
                 let n = n.clone();
+                self.strict_target(&n)?;
                 self.advance()?;
                 Ok(n)
             }
             _ => self.unexpected(),
         }
+    }
+
+    /// No modo estrito, `eval` e `arguments` não podem ser declarados nem
+    /// receber atribuição.
+    fn strict_target(&self, n: &str) -> PResult<()> {
+        if self.strict && (n == "eval" || n == "arguments") {
+            return self.err("Unexpected eval or arguments in strict mode");
+        }
+        Ok(())
+    }
+
+    /// Erros dos parâmetros que dependem do corpo: "use strict" no corpo só com
+    /// parâmetros simples, e nomes repetidos só em função comum não estrita
+    /// com parâmetros simples (`unique`: arrow e métodos nunca aceitam).
+    fn check_params(&self, params: &[Pattern], rest: Option<&Pattern>, use_strict: bool, unique: bool) -> PResult<()> {
+        let simple = rest.is_none() && params.iter().all(|p| matches!(p, Pattern::Ident(_)));
+        if use_strict && !simple {
+            return self.err("Illegal 'use strict' directive in function with non-simple parameter list");
+        }
+        if unique || self.strict || !simple {
+            let mut names: Vec<Name> = Vec::new();
+            for p in params.iter().chain(rest) {
+                crate::compiler::bound_names(p, &mut names);
+            }
+            for (i, n) in names.iter().enumerate() {
+                if names[..i].contains(n) {
+                    return self.err("Duplicate parameter name not allowed in this context");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// "use strict" no próprio corpo vale também para o nome e os parâmetros,
+    /// lidos antes dele.
+    fn strict_params(&self, name: Option<&Name>, params: &[Pattern], rest: Option<&Pattern>) -> PResult<()> {
+        let mut names: Vec<Name> = name.into_iter().cloned().collect();
+        for p in params.iter().chain(rest) {
+            crate::compiler::bound_names(p, &mut names);
+        }
+        for n in &names {
+            if STRICT_RESERVED.contains(&&**n) {
+                return self.err(format!("Unexpected strict mode reserved word '{n}'"));
+            }
+            self.strict_target(n)?;
+        }
+        Ok(())
     }
 
     // --------------------------------------------------------- instruções
@@ -485,8 +546,8 @@ impl Parser {
         Ok(body)
     }
 
-    /// "use strict" no começo do programa/função.
-    fn directives(&mut self) -> PResult<()> {
+    /// "use strict" no começo do programa/função (devolve se achou).
+    fn directives(&mut self) -> PResult<bool> {
         if let Tok::Str(s) = &self.tok.tok {
             let text = String::from_utf16_lossy(s);
             let raw = self.lx.source_slice(self.tok.start + 1, self.tok.end - 1);
@@ -494,10 +555,11 @@ impl Parser {
                 let next = self.peek()?;
                 if matches!(next.tok, Tok::Punct(";") | Tok::Punct("}") | Tok::Eof) || next.nl_before {
                     self.strict = true;
+                    return Ok(true);
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn parse_block(&mut self) -> PResult<Vec<Stmt>> {
@@ -908,7 +970,10 @@ impl Parser {
     /// em padrão de atribuição: `[a, b] = ...`, `({x} = o)`.
     fn expr_to_pattern(&self, e: Expr) -> PResult<Pattern> {
         Ok(match e {
-            Expr::Ident(n, _) => Pattern::Ident(n),
+            Expr::Ident(n, _) => {
+                self.strict_target(&n)?;
+                Pattern::Ident(n)
+            }
             Expr::Member { .. } | Expr::Index { .. } | Expr::PrivateMember(..) | Expr::SuperMember(_) | Expr::SuperIndex(_) => {
                 Pattern::Target(Box::new(e))
             }
@@ -983,6 +1048,7 @@ impl Parser {
                 match left {
                     Expr::Ident(..) | Expr::Member { .. } | Expr::Index { .. } | Expr::PrivateMember(..) | Expr::SuperMember(_) | Expr::SuperIndex(_) => {
                         if let Expr::Ident(n, _) = left {
+                            self.strict_target(&n)?;
                             Pattern::Ident(n)
                         } else {
                             Pattern::Target(Box::new(left))
@@ -1095,7 +1161,7 @@ impl Parser {
         let body = if self.is("{") {
             let saved_strict = self.strict;
             self.advance()?;
-            self.directives()?;
+            let use_strict = self.directives()?;
             let mut stmts = Vec::new();
             while !self.eat("}")? {
                 if self.tok.tok == Tok::Eof {
@@ -1104,9 +1170,14 @@ impl Parser {
                 stmts.push(self.parse_statement()?);
             }
             strict = self.strict;
+            self.check_params(&params, rest.as_ref(), use_strict, true)?;
+            if strict && !saved_strict {
+                self.strict_params(None, &params, rest.as_ref())?;
+            }
             self.strict = saved_strict;
             FnBody::Block(stmts)
         } else {
+            self.check_params(&params, rest.as_ref(), false, true)?;
             FnBody::Expr(Box::new(self.parse_assign(no_in)?))
         };
         self.ctx = saved_ctx;
@@ -1182,6 +1253,9 @@ impl Parser {
         if let Some(op) = op {
             self.advance()?;
             let arg = self.parse_unary()?;
+            if op == UnOp::Delete && self.strict && matches!(arg, Expr::Ident(..)) {
+                return self.err("Delete of an unqualified identifier in strict mode.");
+            }
             return Ok(Expr::Unary(op, Box::new(arg)));
         }
         if self.is_kw("await") && (self.ctx.in_async || !self.ctx.in_function) && self.ctx.in_async {
@@ -1193,6 +1267,9 @@ impl Parser {
             let inc = self.is("++");
             self.advance()?;
             let target = self.parse_unary()?;
+            if let Expr::Ident(n, _) = &target {
+                self.strict_target(n)?;
+            }
             return Ok(Expr::Update {
                 inc,
                 prefix: true,
@@ -1201,6 +1278,9 @@ impl Parser {
         }
         let e = self.parse_lhs()?;
         if (self.is("++") || self.is("--")) && !self.tok.nl_before {
+            if let Expr::Ident(n, _) = &e {
+                self.strict_target(n)?;
+            }
             let inc = self.is("++");
             self.advance()?;
             return Ok(Expr::Update {
@@ -1685,7 +1765,7 @@ impl Parser {
         }
         self.expect(")")?;
         self.expect("{")?;
-        self.directives()?;
+        let use_strict = self.directives()?;
         let mut body = Vec::new();
         while !self.eat("}")? {
             if self.tok.tok == Tok::Eof {
@@ -1694,6 +1774,11 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
         let strict = self.strict;
+        self.check_params(&params, rest.as_ref(), use_strict, kind != FnKind::Normal)?;
+        if strict && !saved_strict {
+            let own = if kind == FnKind::Normal { name.as_ref() } else { None };
+            self.strict_params(own, &params, rest.as_ref())?;
+        }
         self.ctx = saved_ctx;
         self.strict = saved_strict;
         let source = self.lx.source_slice(start, self.prev_end);
@@ -1715,12 +1800,13 @@ impl Parser {
         let start = self.tok.start;
         let line = self.line();
         self.expect_kw("class")?;
+        // a classe inteira (inclusive o nome) é código estrito
+        let saved_strict = self.strict;
+        self.strict = true;
         let name = match &self.tok.tok {
             Tok::Ident(n) if &**n != "extends" => Some(self.binding_ident()?),
             _ => None,
         };
-        let saved_strict = self.strict;
-        self.strict = true;
         let superclass = if self.eat_kw("extends")? { Some(self.parse_lhs()?) } else { None };
         let saved_ctx = self.ctx;
         self.ctx.in_class = true;

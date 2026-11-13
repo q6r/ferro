@@ -359,6 +359,32 @@ fn geradores_promessas_async() {
     );
 }
 
+/// eval direto (escopo de quem chama) e indireto (global), modo estrito,
+/// padrão do webpack em modo dev, escopo dos parâmetros e valor de conclusão.
+#[test]
+fn eval_direto_e_indireto() {
+    check(
+        r#"
+        var x = 'global';
+        function f(a) { var x = 'local'; let y = 2; eval('var z = a + y'); return [eval('x'), z, (0, eval)('x')]; }
+        console.log(f(1).join(' '), typeof z);
+        function estrito() { 'use strict'; eval('var s = 1'); return typeof s; }
+        console.log(estrito(), eval('"use strict"; var t = 1; t'), typeof t);
+        var mods = { a: function (module, exports, req) { eval("module.exports = req('b') + 1;"); },
+                     b: function (module) { eval("module.exports = 41;"); } };
+        function req(id) { var m = { exports: {} }; mods[id](m, m.exports, req); return m.exports; }
+        console.log(req('a'));
+        var o = { v: 7, m() { return eval('this.v') + eval('() => arguments.length')(); } };
+        console.log(o.m(1, 2));
+        try { (function () { let c; eval('var c'); })(); } catch (e) { console.log(e.name); }
+        var w = 'fora';
+        function p(q = () => w) { var w = 'corpo'; return q(); }
+        console.log(p(), eval('1; if (true) {}'), eval('2; try { 3 } finally { 4 }'));
+        "#,
+        "local 3 global undefined\nundefined 1 undefined\n42\n9\nSyntaxError\nfora undefined 3",
+    );
+}
+
 /// Módulos: dois módulos ligados à mão (como o navegador faz), com ciclo,
 /// ligação viva, default, namespace, reexportação e await no topo.
 #[test]
