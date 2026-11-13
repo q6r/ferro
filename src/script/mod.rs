@@ -9,8 +9,9 @@
 //! - `dom.rs`: Node, Element, Document... em Rust, direto sobre a arena do DOM;
 //! - `web.rs`: o resto da plataforma em Rust (rede, URL, armazenamento...);
 //! - `crypto.rs`: a matemática do Web Crypto (`crypto.subtle`);
-//! - `prelude.js`: o que é mais natural em JS (eventos, `style`, `classList`,
-//!   `dataset`, atributos refletidos, fetch/XHR sobre as funções nativas).
+//! - `comum.js` + `prelude.js`: o que é mais natural em JS (eventos, `style`,
+//!   `classList`, `dataset`, atributos refletidos, fetch/XHR sobre as funções
+//!   nativas). `comum.js` é a parte que não depende do DOM.
 
 mod canvas;
 mod crypto;
@@ -19,6 +20,13 @@ mod frames;
 mod media;
 mod module;
 mod web;
+
+/// Prelúdio das páginas: a parte comum e a da página.
+const PRELUDE: &str = concat!("(function (N) {
+'use strict';
+", include_str!("comum.js"), include_str!("prelude.js"), "
+})(__native);
+");
 
 pub use web::{export_local_storage, import_local_storage};
 
@@ -479,8 +487,7 @@ impl Session {
         js.vm.host = Some(host.clone() as Rc<dyn std::any::Any>);
         dom::install(&mut js.vm);
         web::install(&mut js.vm);
-        let prelude = include_str!("prelude.js");
-        if let Err(e) = js.eval(prelude, "ferro:prelude") {
+        if let Err(e) = js.eval(PRELUDE, "ferro:prelude") {
             eprintln!("[ferro] erro no prelúdio JS: {}", js.error_text(&e));
         }
         // ganchos que o prelúdio deixou para o Rust
