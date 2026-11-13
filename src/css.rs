@@ -147,6 +147,8 @@ pub enum Pseudo {
     PlaceholderShown,
     /// :fullscreen (o elemento em tela cheia).
     Fullscreen,
+    /// :popover-open (popover aberto com showPopover).
+    PopoverOpen,
     /// Pseudo-classe que não sabemos avaliar: nunca casa.
     Never,
 }
@@ -165,6 +167,8 @@ pub struct DynState {
     pub focus_within: Vec<NodeId>,
     /// Elemento em tela cheia.
     pub fullscreen: Option<NodeId>,
+    /// Popovers abertos.
+    pub popover_open: Vec<NodeId>,
 }
 
 thread_local! {
@@ -174,6 +178,11 @@ thread_local! {
 /// Diz aos seletores onde estão o mouse e o foco agora.
 pub fn set_dynamic_state(s: DynState) {
     DYN.with(|d| *d.borrow_mut() = s);
+}
+
+/// Cópia do estado dinâmico atual (para saber o que mudou entre dois cálculos).
+pub fn dynamic_state() -> DynState {
+    DYN.with(|d| d.borrow().clone())
 }
 
 fn dyn_state<R>(f: impl FnOnce(&DynState) -> R) -> R {
@@ -362,6 +371,7 @@ fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
         ("focus-within", None) => Pseudo::FocusWithin,
         ("placeholder-shown", None) => Pseudo::PlaceholderShown,
         ("fullscreen" | "-webkit-full-screen" | "modal", None) => Pseudo::Fullscreen,
+        ("popover-open", None) => Pseudo::PopoverOpen,
         // :visited, :has(), :first-line...
         _ => Pseudo::Never,
     }
@@ -614,6 +624,7 @@ fn match_compound(doc: &Document, node: NodeId, c: &Compound) -> bool {
             Pseudo::FocusVisible => dyn_state(|d| d.focus == Some(node) && d.focus_visible),
             Pseudo::FocusWithin => dyn_state(|d| d.focus_within.contains(&node)),
             Pseudo::Fullscreen => dyn_state(|d| d.fullscreen == Some(node)),
+            Pseudo::PopoverOpen => dyn_state(|d| d.popover_open.contains(&node)),
             Pseudo::PlaceholderShown => {
                 el.attr("placeholder").is_some()
                     && match el.tag.as_str() {

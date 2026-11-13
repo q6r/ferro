@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use crate::dom::{Document, NodeData, NodeId};
 use crate::fonts::{FontId, Fonts};
-use crate::paint::{DisplayItem, ImageData};
+use crate::paint::{DisplayItem, ImageData, Radii};
 use crate::style::{
     Align, BOTTOM, BgImage, BgSize, Clear, Color, ComputedStyle, ContentPart, Display, FlexBasis, Float, GridLine,
-    Justify, LEFT, Len, ListStyle, Position, RIGHT, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
+    Justify, LEFT, Len, ListStyle, Position, RIGHT, SizeKw, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
     WhiteSpace,
 };
 
@@ -899,10 +899,9 @@ fn set_rect(it: &mut DisplayItem, top: Option<f32>, h: f32) {
 }
 
 /// Raio dos cantos, resolvido contra a caixa.
-fn radius_of(s: &ComputedStyle, r: Rect) -> f32 {
-    let m = r.w.min(r.h);
-    let m = m.max(0.0);
-    s.border_radius.resolve(m).unwrap_or(0.0).clamp(0.0, m / 2.0)
+fn radius_of(s: &ComputedStyle, r: Rect) -> Radii {
+    let m = r.w.min(r.h).max(0.0);
+    Radii(s.border_radius.map(|l| l.resolve(m).unwrap_or(0.0).max(0.0))).fit(r.w, r.h)
 }
 
 fn colspan(doc: &Document, b: &LayoutBox) -> usize {
@@ -1260,7 +1259,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn bg_item(&self, s: &ComputedStyle, r: Rect, radius: f32) -> Option<DisplayItem> {
+    fn bg_item(&self, s: &ComputedStyle, r: Rect, radius: Radii) -> Option<DisplayItem> {
         if let Some(mask) = &s.mask_image {
             let img = self.images.urls.get(&**mask)?;
             let tile = self.tile_rect(img, r, s.mask_size, s.mask_pos);
@@ -1352,7 +1351,7 @@ impl<'a> Ctx<'a> {
         let [bt, br, bb, bl] = b;
         let radius = radius_of(s, r);
         if !s.background.is_transparent() && s.mask_image.is_none() {
-            self.items.push(if radius > 0.0 {
+            self.items.push(if !radius.is_zero() {
                 DisplayItem::RoundRect {
                     rect: r,
                     radius,
@@ -1371,11 +1370,11 @@ impl<'a> Ctx<'a> {
             self.items.push(item);
         }
         if bt + bb + bl + br > 0.0 {
-            if radius > 0.0 {
+            if !radius.is_zero() {
                 self.items.push(DisplayItem::RoundBorder {
                     rect: r,
                     radius,
-                    width: bt.max(bb).max(bl).max(br),
+                    widths: [bt, br, bb, bl],
                     color: s.border_color(TOP),
                 });
             } else {
@@ -1549,7 +1548,11 @@ impl<'a> Ctx<'a> {
         let extra = bm.extra_h();
         let (mn, mx) = self.intrinsic(b);
         let fill = bm.content_w;
-        let w = (mx - extra).min(fill).max((mn - extra).max(0.0));
+        let w = match s.width_kw {
+            Some(SizeKw::MaxContent) => (mx - extra).max(0.0),
+            Some(SizeKw::MinContent) => (mn - extra).max(0.0),
+            _ => (mx - extra).min(fill).max((mn - extra).max(0.0)),
+        };
         bm.content_w = w;
         let ml = s.margin[LEFT].resolve(cb_w);
         let mr = s.margin[RIGHT].resolve(cb_w);
@@ -1635,7 +1638,7 @@ impl<'a> Ctx<'a> {
             let n = list.len().min(4);
             deco.shadow = Some((self.items.len(), n));
             for _ in 0..n {
-                self.items.push(DisplayItem::Shadow { rect: Rect::default(), radius: 0.0, blur: 0.0, color: Color::TRANSPARENT });
+                self.items.push(DisplayItem::Shadow { rect: Rect::default(), radius: Radii::ZERO, blur: 0.0, color: Color::TRANSPARENT });
             }
         }
         if paint_bg {
@@ -1659,7 +1662,7 @@ impl<'a> Ctx<'a> {
             });
         }
         let has_border = s.visible && bm.border.iter().any(|&w| w > 0.0);
-        deco.round_border = has_border && s.border_radius != Len::Px(0.0);
+        deco.round_border = has_border && s.border_radius.iter().any(|l| *l != Len::Px(0.0));
         if has_border {
             deco.border = Some(self.items.len());
             for _ in 0..if deco.round_border { 1 } else { 4 } {
@@ -1692,7 +1695,7 @@ impl<'a> Ctx<'a> {
         self.cb_heights.push(definite_h);
 
         let w = bm.content_w;
-        let (mut content_h, first_baseline) = match s.display {
+        let (mut content_h, mut first_baseline) = match s.display {
             _ if anon => {
                 if has_inflow_blocks(b) {
                     self.layout_block_children(b, content_x, content_y, w, &inh)
@@ -1739,6 +1742,17 @@ impl<'a> Ctx<'a> {
         if let Some(min) = fixed(s.min_height) {
             h = h.max(min);
         }
+        // <button> mais alto que o conteúdo: o conteúdo fica no meio (como no Chrome)
+        if h > content_h + 0.5
+            && !anon
+            && !s.display.is_flex()
+            && !s.display.is_grid()
+            && b.node().and_then(|n| self.doc.element(n)).is_some_and(|e| e.tag == "button")
+        {
+            let dy = (h - content_h) / 2.0;
+            self.shift_between(&content_mark, None, 0.0, dy);
+            first_baseline = first_baseline.map(|b| b + dy);
+        }
         let border_box = Rect {
             x: bx,
             y,
@@ -1759,7 +1773,8 @@ impl<'a> Ctx<'a> {
                             w: (border_box.w + 2.0 * sh.spread).max(0.0),
                             h: (border_box.h + 2.0 * sh.spread).max(0.0),
                         },
-                        radius: (radius + sh.spread).max(0.0),
+                        // o raio cresce com o espalhamento; canto reto continua reto
+                        radius: Radii(radius.0.map(|r| if r > 0.0 { (r + sh.spread).max(0.0) } else { 0.0 })),
                         blur: sh.blur,
                         color: sh.color,
                     };
@@ -1767,7 +1782,7 @@ impl<'a> Ctx<'a> {
             }
         }
         if let Some(i) = deco.bg {
-            self.items[i] = if radius > 0.0 {
+            self.items[i] = if !radius.is_zero() {
                 DisplayItem::RoundRect {
                     rect: border_box,
                     radius,
@@ -1791,7 +1806,7 @@ impl<'a> Ctx<'a> {
             self.items[i] = DisplayItem::RoundBorder {
                 rect: border_box,
                 radius,
-                width: bm.border.iter().copied().fold(0.0, f32::max),
+                widths: bm.border,
                 color: s.border_color(TOP),
             };
         } else if let Some(i) = deco.border {
@@ -1976,11 +1991,26 @@ impl<'a> Ctx<'a> {
                 self.add_pending(child, x, cursor, inh);
                 continue;
             }
-            let bm = match child.kind {
+            let mut bm = match child.kind {
                 BoxKind::Anonymous => BoxModel::anonymous(w),
-                _ if child.style.display == Display::Table => self.shrink_bm(child, w, true),
+                _ if child.style.display == Display::Table || child.style.width_kw.is_some() => {
+                    self.shrink_bm(child, w, true)
+                }
                 _ => self.box_model(&child.style, w),
             };
+            // text-align: -webkit-center (<center>): o bloco mais estreito que
+            // o pai vai para o meio, se as margens não forem auto
+            if b.style.text_align == TextAlign::WebkitCenter
+                && !matches!(child.kind, BoxKind::Anonymous)
+                && child.style.margin[LEFT] != Len::Auto
+                && child.style.margin[RIGHT] != Len::Auto
+            {
+                let free = w - bm.content_w - bm.extra_h() - bm.margin[LEFT] - bm.margin[RIGHT];
+                if free > 0.5 {
+                    bm.margin[LEFT] += free / 2.0;
+                    bm.margin[RIGHT] += free / 2.0;
+                }
+            }
             let mut top = cursor + collapse_margins(prev_mb, bm.margin[TOP]);
             if child.style.clear != Clear::None {
                 top = top.max(self.clear_y(child.style.clear));
@@ -2031,14 +2061,20 @@ impl<'a> Ctx<'a> {
         let (mt, mr, mb, ml) = (m(s.margin[TOP]), m(s.margin[RIGHT]), m(s.margin[BOTTOM]), m(s.margin[LEFT]));
         let content = |w: f32| if s.border_box { (w - hx).max(0.0) } else { w };
 
+        // largura esticada entre left e right (só com width auto de verdade)
+        let stretch_w = s.width.resolve(cb.w).is_none() && s.width_kw.is_none() && left.is_some() && right.is_some();
         let mut width = match (s.width.resolve(cb.w), left, right) {
             (Some(w), ..) => content(w),
-            (None, Some(l), Some(r)) => (cb.w - l - r - ml - mr - hx).max(0.0),
+            (None, Some(l), Some(r)) if stretch_w => (cb.w - l - r - ml - mr - hx).max(0.0),
             _ => {
                 // encolhe para caber no conteúdo
                 let avail = (cb.w - left.unwrap_or(0.0) - right.unwrap_or(0.0) - ml - mr - hx).max(0.0);
                 let (mn, mx) = self.intrinsic(b);
-                (mx - hx).min(avail).max(mn - hx).max(0.0)
+                match s.width_kw {
+                    Some(SizeKw::MaxContent) => (mx - hx).max(0.0),
+                    Some(SizeKw::MinContent) => (mn - hx).max(0.0),
+                    _ => (mx - hx).min(avail).max(mn - hx).max(0.0),
+                }
             }
         };
         if let Some(maxw) = s.max_width.resolve(cb.w) {
@@ -2048,14 +2084,29 @@ impl<'a> Ctx<'a> {
             width = width.max(content(minw));
         }
         let bw = width + hx;
+        // left e right fixos com largura que não estica: as margens auto
+        // ficam com a sobra (as duas auto: centraliza)
+        let (auto_l, auto_r) = (s.margin[LEFT] == Len::Auto, s.margin[RIGHT] == Len::Auto);
+        let (ml, mr) = match (left, right) {
+            (Some(l), Some(r)) if !stretch_w && (auto_l || auto_r) => {
+                let free = cb.w - l - r - bw;
+                match (auto_l, auto_r) {
+                    (true, true) => ((free / 2.0).max(0.0), (free / 2.0).max(0.0)),
+                    (true, false) => ((free - mr).max(0.0), mr),
+                    _ => (ml, (free - ml).max(0.0)),
+                }
+            }
+            _ => (ml, mr),
+        };
         let x = match (left, right) {
             (Some(l), _) => cb.x + l,
             (None, Some(r)) => cb.x + cb.w - r - bw - ml - mr,
             _ => p.x,
         };
+        let stretch_h = s.height.resolve(cb.h).is_none() && s.height_kw.is_none() && top.is_some() && bottom.is_some();
         let forced_h = match (s.height.resolve(cb.h), top, bottom) {
             (Some(h), ..) => Some(if s.border_box { (h - vx).max(0.0) } else { h }),
-            (None, Some(t), Some(bo)) => Some((cb.h - t - bo - mt - mb - vx).max(0.0)),
+            (None, Some(t), Some(bo)) if stretch_h => Some((cb.h - t - bo - mt - mb - vx).max(0.0)),
             _ => None,
         };
         let y0 = match top {
@@ -2084,12 +2135,29 @@ impl<'a> Ctx<'a> {
             self.in_fixed -= 1;
         }
         let mut top_final = y0;
+        let (auto_t, auto_b) = (s.margin[TOP] == Len::Auto, s.margin[BOTTOM] == Len::Auto);
         if top.is_none()
             && let Some(bo) = bottom
         {
             let target = cb.y + cb.h - bo - mb - r.height;
             self.shift_between(&mark, None, 0.0, target - y0);
             top_final = target;
+        } else if let (Some(t), Some(bo)) = (top, bottom)
+            && !stretch_h
+            && (auto_t || auto_b)
+        {
+            // top e bottom fixos com altura que não estica: margens auto
+            // dividem a sobra (inset: 0; margin: auto centraliza)
+            let free = cb.h - t - bo - r.height;
+            let target = match (auto_t, auto_b) {
+                (true, true) => cb.y + t + (free / 2.0).max(0.0),
+                (true, false) => cb.y + t + (free - mb).max(0.0),
+                _ => y0,
+            };
+            if target != y0 {
+                self.shift_between(&mark, None, 0.0, target - y0);
+                top_final = target;
+            }
         }
         // absolutos também estendem a página (os fixos não: ficam na janela)
         if s.position != Position::Fixed {
@@ -2474,6 +2542,9 @@ impl<'a> Ctx<'a> {
 
             // layout de cada item na sua posição
             let mut placed: Vec<(Mark, BlockResult, f32)> = Vec::with_capacity(n);
+            // linha única com altura definida: o item esticado já sai com a
+            // altura da linha (um filho com height: 100% acompanha)
+            let line_h = if single_line { definite_h } else { None };
             for it in line.iter() {
                 let outer = it.outer();
                 let rel = if reverse { w - pos - outer } else { pos };
@@ -2483,8 +2554,23 @@ impl<'a> Ctx<'a> {
                     padding: it.padding,
                     content_w: it.size,
                 };
+                let mut opts = Opts::bfc();
+                if let Some(lh) = line_h {
+                    let st = &it.b.style;
+                    if st.align_self.unwrap_or(s.align_items) == Align::Stretch
+                        && st.height == Len::Auto
+                        && st.height_kw.is_none()
+                        && st.aspect_ratio.is_none()
+                        && st.margin[TOP] != Len::Auto
+                        && st.margin[BOTTOM] != Len::Auto
+                        && !matches!(it.b.kind, BoxKind::Anonymous)
+                    {
+                        let vx = it.border[TOP] + it.border[BOTTOM] + it.padding[TOP] + it.padding[BOTTOM];
+                        opts.forced_h = Some((lh - it.margin[TOP] - it.margin[BOTTOM] - vx).max(0.0));
+                    }
+                }
                 let m = self.mark();
-                let r = self.layout_block(it.b, &bm, x + rel, cur_y + it.margin[TOP], inh, Opts::bfc());
+                let r = self.layout_block(it.b, &bm, x + rel, cur_y + it.margin[TOP], inh, opts);
                 let outer_h = r.height + it.margin[TOP] + it.margin[BOTTOM];
                 placed.push((m, r, outer_h));
                 pos += outer + gap + between;
@@ -2723,6 +2809,43 @@ impl<'a> Ctx<'a> {
                 }
             }
         };
+        // linhas com nome: as do template e as implícitas das áreas (x-start/x-end)
+        let mut col_names: Vec<(usize, Rc<str>)> = s.grid_columns.names.clone();
+        let mut row_names: Vec<(usize, Rc<str>)> = s.grid_rows.names.clone();
+        if let Some(areas) = &areas {
+            let mut seen: Vec<&str> = Vec::new();
+            for row in areas.iter() {
+                for cell in row {
+                    if cell == "." || seen.contains(&cell.as_str()) {
+                        continue;
+                    }
+                    seen.push(cell);
+                    let (mut r0, mut c0, mut r1, mut c1) = (usize::MAX, usize::MAX, 0, 0);
+                    for (r, rr) in areas.iter().enumerate() {
+                        for (ci, x) in rr.iter().enumerate() {
+                            if x == cell {
+                                (r0, c0, r1, c1) = (r0.min(r), c0.min(ci), r1.max(r), c1.max(ci));
+                            }
+                        }
+                    }
+                    col_names.push((c0, Rc::from(format!("{cell}-start"))));
+                    col_names.push((c1 + 1, Rc::from(format!("{cell}-end"))));
+                    row_names.push((r0, Rc::from(format!("{cell}-start"))));
+                    row_names.push((r1 + 1, Rc::from(format!("{cell}-end"))));
+                }
+            }
+        }
+        // Name → Line: no início procura `x-start`, no fim `x-end`, depois `x`
+        let named = |l: &GridLine, end: bool, is_col: bool| -> GridLine {
+            let GridLine::Name(n) = l else { return l.clone() };
+            let names = if is_col { &col_names } else { &row_names };
+            let suffixed = format!("{n}{}", if end { "-end" } else { "-start" });
+            let find = |want: &str| names.iter().filter(|(_, x)| &**x == want).map(|(i, _)| *i).min();
+            match find(&suffixed).or_else(|| find(n)) {
+                Some(i) => GridLine::Line(i as i32 + 1),
+                None => GridLine::Auto,
+            }
+        };
         for &c in &kids {
             let cs = &c.style;
             // área nomeada
@@ -2750,8 +2873,10 @@ impl<'a> Ctx<'a> {
                     continue;
                 }
             }
-            let (col, cspan) = resolve(cs.grid_col.0, cs.grid_col.1, ncols);
-            let (row, rspan) = resolve(cs.grid_row.0, cs.grid_row.1, usize::MAX / 4);
+            let (c0, c1) = (named(&cs.grid_col.0, false, true), named(&cs.grid_col.1, true, true));
+            let (r0, r1) = (named(&cs.grid_row.0, false, false), named(&cs.grid_row.1, true, false));
+            let (col, cspan) = resolve(c0, c1, ncols);
+            let (row, rspan) = resolve(r0, r1, usize::MAX / 4);
             let cspan = cspan.min(ncols);
             let (row, col) = match (row, col) {
                 (Some(r), Some(c)) => (r, c.min(ncols - cspan)),
@@ -3128,7 +3253,7 @@ impl<'a> Ctx<'a> {
             let offset = line.inset
                 + match b.style.text_align {
                     TextAlign::Left => 0.0,
-                    TextAlign::Center => free / 2.0,
+                    TextAlign::Center | TextAlign::WebkitCenter => free / 2.0,
                     TextAlign::Right => free,
                 };
             let baseline = cy + line.above;
@@ -3247,7 +3372,7 @@ impl<'a> Ctx<'a> {
                     // fundo atrás (PNG transparente) e cantos arredondados (avatares)
                     let radius = radius_of(s, r);
                     if s.visible && !s.background.is_transparent() {
-                        self.items.push(if radius > 0.0 {
+                        self.items.push(if !radius.is_zero() {
                             DisplayItem::RoundRect { rect: r, radius, color: s.background }
                         } else {
                             DisplayItem::Rect { rect: r, color: s.background }
@@ -3307,8 +3432,8 @@ impl<'a> Ctx<'a> {
         if focused && matches!(paint, AtomicPaint::Control | AtomicPaint::TextArea) && b.iter().sum::<f32>() > 0.0 {
             let blue = Color::rgb(0x1a, 0x73, 0xe8);
             let radius = radius_of(s, r);
-            if radius > 0.0 {
-                self.items.push(DisplayItem::RoundBorder { rect: r, radius, width: 2.0, color: blue });
+            if !radius.is_zero() {
+                self.items.push(DisplayItem::RoundBorder { rect: r, radius, widths: [2.0; 4], color: blue });
             } else {
                 for rect in [
                     Rect { x: r.x, y: r.y, w: r.w, h: 2.0 },

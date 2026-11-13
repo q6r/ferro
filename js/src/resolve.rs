@@ -30,7 +30,12 @@ struct Scope {
     key: usize,
     func: u32,
     names: FxHashSet<Name>,
+    /// Escopo de um `with`: todo nome livre lá dentro consulta o objeto.
+    is_with: bool,
 }
+
+/// Nome da variável escondida que guarda o objeto de um `with`.
+pub const WITH_OBJ: &str = "%with";
 
 pub struct Resolver {
     scopes: Vec<Scope>,
@@ -61,6 +66,7 @@ impl Resolver {
             key,
             func: self.func,
             names: names.into_iter().collect(),
+            is_with: false,
         });
     }
 
@@ -69,13 +75,25 @@ impl Resolver {
     }
 
     fn refer(&mut self, n: &Name) {
+        let mut found = None;
         for sc in self.scopes.iter().rev() {
             if sc.names.contains(n) {
                 if sc.func < self.func {
-                    self.out.insert((sc.key, n.clone()));
+                    found = Some((sc.key, n.clone()));
                 }
-                return;
+                break;
             }
+            // passou por um `with`: a função interna também lê o objeto dele
+            if sc.is_with && sc.func < self.func {
+                self.out.insert((sc.key, WITH_OBJ.into()));
+            }
+        }
+        if let Some(k) = found {
+            self.out.insert(k);
+            return;
+        }
+        if self.scopes.iter().any(|sc| sc.names.contains(n)) {
+            return;
         }
         if let Some((ns, _)) = self.imports.get(n).cloned() {
             self.refer(&ns);
@@ -264,6 +282,15 @@ impl Resolver {
                 self.pop();
             }
             Stmt::Labeled(_, b) => self.stmt(b),
+            Stmt::With(obj, body) => {
+                self.expr(obj);
+                self.push(key_of(&**body), vec![WITH_OBJ.into()]);
+                if let Some(sc) = self.scopes.last_mut() {
+                    sc.is_with = true;
+                }
+                self.stmt(body);
+                self.pop();
+            }
             Stmt::Break(..) | Stmt::Continue(..) | Stmt::Empty | Stmt::Debugger => {}
         }
     }

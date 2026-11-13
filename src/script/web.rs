@@ -45,11 +45,10 @@ pub(crate) fn bytes_of(v: &Value) -> Option<Vec<u8>> {
     let Value::Object(o) = v else { return None };
     let b = o.borrow();
     match &b.kind {
-        Kind::ArrayBuffer(bytes) => Some(bytes.borrow().clone()),
+        Kind::ArrayBuffer(buf) => Some(buf.bytes.borrow().clone()),
         Kind::TypedArray(t) | Kind::DataView(t) => {
             let data = t.data.borrow();
-            let len = if matches!(b.kind, Kind::DataView(_)) { t.length } else { t.length * t.kind.size() };
-            let end = (t.offset + len).min(data.len());
+            let end = (t.offset + t.byte_len()).min(data.len());
             Some(data[t.offset.min(end)..end].to_vec())
         }
         _ => None,
@@ -775,7 +774,13 @@ fn css_props(st: &crate::style::ComputedStyle, rect: Option<crate::layout::Rect>
             LineHeight::Px(p) => format!("{}px", trim_num(p)),
         },
     );
-    push("text-align", kebab(&format!("{:?}", st.text_align)));
+    push(
+        "text-align",
+        match st.text_align {
+            crate::style::TextAlign::WebkitCenter => "-webkit-center".to_string(),
+            a => kebab(&format!("{a:?}")),
+        },
+    );
     push("white-space", kebab(&format!("{:?}", st.white_space)));
     push("opacity", trim_num(st.opacity));
     push("z-index", st.z_index.map_or("auto".into(), |z| z.to_string()));
@@ -859,9 +864,29 @@ fn parent_post(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `__native.userAgent()`: o User-Agent que vai nas requisições.
+fn user_agent(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::str(crate::net::user_agent()))
+}
+
 /// `__native.frameParentOrigin()`: origem da página-mãe, ou null na página da aba.
 fn frame_parent_origin(vm: &mut Vm, _a: &mut CallArgs) -> R {
     Ok(read(vm, |h| h.parent_origin.clone()).map_or(Value::Null, |o| Value::str(&o)))
+}
+
+/// `__native.popoverSet(el, aberto)`: abre/fecha o popover (`:popover-open`).
+fn popover_set(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::Undefined) };
+    let open = ferro_js::vm::truthy(&a.arg(1));
+    write(vm, |h| {
+        h.popovers.retain(|&p| p != n);
+        if open {
+            h.popovers.push(n);
+        }
+        h.dirty = true;
+        crate::css::set_dynamic_state(super::dynamic_state(h));
+    });
+    Ok(Value::Undefined)
 }
 
 /// `__native.requestFullscreen(el)`: o elemento passa a cobrir a janela.
@@ -1005,6 +1030,8 @@ pub(crate) fn install(vm: &mut Vm) {
         ("frameUrl", 1, frame_url),
         ("parentPost", 2, parent_post),
         ("frameParentOrigin", 0, frame_parent_origin),
+        ("userAgent", 0, user_agent),
+        ("popoverSet", 2, popover_set),
         ("exitFullscreen", 0, exit_fullscreen),
         ("fullscreenElement", 0, fullscreen_element),
     ] {

@@ -50,6 +50,8 @@ pub enum Stmt {
     },
     Switch(Expr, Vec<Case>),
     Labeled(Name, Box<Stmt>),
+    /// `with (obj) corpo` (só fora do modo estrito)
+    With(Expr, Box<Stmt>),
     Empty,
     Debugger,
 }

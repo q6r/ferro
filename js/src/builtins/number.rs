@@ -300,6 +300,7 @@ math1!(m_exp, f64::exp);
 math1!(m_expm1, f64::exp_m1);
 math1!(m_floor, f64::floor);
 math1!(m_fround, |x: f64| x as f32 as f64);
+math1!(m_f16round, |x: f64| crate::conv::f16_to_f64(crate::conv::f64_to_f16(x)));
 math1!(m_log, f64::ln);
 math1!(m_log1p, f64::ln_1p);
 math1!(m_log10, f64::log10);
@@ -541,29 +542,4 @@ fn m_sum_precise(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     } else {
         exact_sum(&finite) + 0.0
     }))
-}
-
-/// Math.f16round: arredonda para o float16 mais próximo (empate para o par).
-fn m_f16round(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let x = super::arg_num(vm, a, 0)?;
-    Ok(Value::Number(round_f16(x)))
-}
-
-pub fn round_f16(x: f64) -> f64 {
-    if !x.is_finite() || x == 0.0 {
-        return x;
-    }
-    let ax = x.abs();
-    // 65520 já arredonda para infinito
-    if ax >= 65520.0 {
-        return if x > 0.0 { f64::INFINITY } else { f64::NEG_INFINITY };
-    }
-    // passo (ULP) do float16 nessa faixa: subnormais usam 2^-24
-    let e = ((((ax.to_bits() >> 52) & 0x7ff) as i32) - 1023).max(-14);
-    let ulp = 2f64.powi(e - 10);
-    let q = ax / ulp;
-    let f = q.floor();
-    let r = if q - f > 0.5 || (q - f == 0.5 && f % 2.0 != 0.0) { f + 1.0 } else { f };
-    let out = r * ulp;
-    if x < 0.0 { -out } else { out }
 }

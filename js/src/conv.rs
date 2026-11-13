@@ -475,3 +475,38 @@ mod tests {
         assert_eq!(to_uint32(-1.0), 4294967295);
     }
 }
+
+/// Número → bits de um float16 (IEEE 754 binary16), arredondando para o
+/// mais próximo com empate para o par, direto do f64 (sem passar por f32).
+pub fn f64_to_f16(x: f64) -> u16 {
+    let sign = if x.is_sign_negative() { 0x8000u16 } else { 0 };
+    if x.is_nan() {
+        return 0x7e00;
+    }
+    let a = x.abs();
+    // 65520 fica no meio entre 65504 (maior finito) e 65536: empate vai para Infinity
+    if a >= 65520.0 {
+        return sign | 0x7c00;
+    }
+    if a < 6.103515625e-05 {
+        // subnormal (ou zero): m × 2^-24; arredondar a 1024 vira o menor normal
+        return sign | (a * 16777216.0).round_ties_even() as u16;
+    }
+    let e = ((a.to_bits() >> 52) & 0x7ff) as i32 - 1023;
+    // mantissa com 10 bits: [1024, 2048]; 2048 sobe o expoente sozinho
+    let m = (a * f64::powi(2.0, 10 - e)).round_ties_even() as u32;
+    sign | ((((e + 15) as u32) << 10) + (m - 1024)) as u16
+}
+
+/// Bits de um float16 → número.
+pub fn f16_to_f64(h: u16) -> f64 {
+    let sign = if h & 0x8000 != 0 { -1.0 } else { 1.0 };
+    let e = ((h >> 10) & 0x1f) as i32;
+    let m = (h & 0x3ff) as f64;
+    match e {
+        0 => sign * m * f64::powi(2.0, -24),
+        31 if m == 0.0 => sign * f64::INFINITY,
+        31 => f64::NAN,
+        _ => sign * (1024.0 + m) * f64::powi(2.0, e - 25),
+    }
+}

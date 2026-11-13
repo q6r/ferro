@@ -299,6 +299,10 @@ impl Vm {
         if is_proxy(o) {
             return self.proxy_prevent_extensions(o);
         }
+        // typed array que acompanha um buffer redimensionável continua extensível
+        if !crate::builtins::typed::is_fixed_length(o) {
+            return Ok(false);
+        }
         o.borrow_mut().extensible = false;
         Ok(true)
     }

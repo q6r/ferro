@@ -525,6 +525,46 @@ impl Parser {
         })
     }
 
+    /// Corpo de if/laço/with: uma instrução, não uma declaração. `annex_b`:
+    /// `if (x) function f() {}` vale fora do modo estrito.
+    fn parse_body_statement(&mut self, annex_b: bool, labelled_fn_ok: bool) -> PResult<Stmt> {
+        // aqui `let` nunca começa declaração (só `let [` é proibido): é identificador
+        if self.is_kw("let") && !self.strict && !matches!(self.peek()?.tok, Tok::Punct("[")) {
+            let line = self.line();
+            let e = self.parse_expression(false)?;
+            self.semicolon()?;
+            return Ok(Stmt::Expr(e, line));
+        }
+        let body = self.parse_statement()?;
+        if let Some(msg) = Self::decl_as_body(&body, annex_b, self.strict) {
+            return self.err(msg);
+        }
+        if !labelled_fn_ok && Self::is_labelled_function(&body) {
+            return self.err("In non-strict mode code, functions can only be declared at top level, inside a block, or as the body of an if statement.");
+        }
+        Ok(body)
+    }
+
+    fn is_labelled_function(s: &Stmt) -> bool {
+        match s {
+            Stmt::Labeled(_, b) => matches!(**b, Stmt::Function(_)) || Self::is_labelled_function(b),
+            _ => false,
+        }
+    }
+
+    /// Mensagem de erro se a instrução for uma declaração fora de lugar.
+    fn decl_as_body(s: &Stmt, fn_ok: bool, strict: bool) -> Option<&'static str> {
+        match s {
+            Stmt::Var(VarKind::Let | VarKind::Const, ..) | Stmt::Class(_) => {
+                Some("Lexical declaration cannot appear in a single-statement context")
+            }
+            Stmt::Function(f) if !fn_ok || strict || f.is_async || f.is_generator => {
+                Some("In strict mode code, functions can only be declared at top level or inside a block.")
+            }
+            _ => None,
+        }
+    }
+
     fn parse_statement(&mut self) -> PResult<Stmt> {
         let line = self.line();
         match self.tok.tok.clone() {
@@ -562,8 +602,8 @@ impl Parser {
                     self.expect("(")?;
                     let test = self.parse_expression(false)?;
                     self.expect(")")?;
-                    let cons = self.parse_statement()?;
-                    let alt = if self.eat_kw("else")? { Some(Box::new(self.parse_statement()?)) } else { None };
+                    let cons = self.parse_body_statement(true, false)?;
+                    let alt = if self.eat_kw("else")? { Some(Box::new(self.parse_body_statement(true, false)?)) } else { None };
                     Ok(Stmt::If(test, Box::new(cons), alt))
                 }
                 "for" => self.parse_for(),
@@ -572,12 +612,12 @@ impl Parser {
                     self.expect("(")?;
                     let test = self.parse_expression(false)?;
                     self.expect(")")?;
-                    let body = self.parse_statement()?;
+                    let body = self.parse_body_statement(false, false)?;
                     Ok(Stmt::While(test, Box::new(body)))
                 }
                 "do" => {
                     self.advance()?;
-                    let body = self.parse_statement()?;
+                    let body = self.parse_body_statement(false, false)?;
                     self.expect_kw("while")?;
                     self.expect("(")?;
                     let test = self.parse_expression(false)?;
@@ -628,13 +668,23 @@ impl Parser {
                     self.err("módulos (import/export) ainda não são suportados")
                 }
                 "export" => self.err("módulos (import/export) ainda não são suportados"),
-                "with" => self.err("'with' não é suportado"),
+                "with" => {
+                    if self.strict {
+                        return self.err("Strict mode code may not include a with statement");
+                    }
+                    self.advance()?;
+                    self.expect("(")?;
+                    let obj = self.parse_expression(false)?;
+                    self.expect(")")?;
+                    let body = self.parse_body_statement(false, false)?;
+                    Ok(Stmt::With(obj, Box::new(body)))
+                }
                 _ => {
                     // rótulo?
                     if !RESERVED.contains(&&*kw) && matches!(self.peek()?.tok, Tok::Punct(":")) {
                         self.advance()?;
                         self.advance()?;
-                        let body = self.parse_statement()?;
+                        let body = self.parse_body_statement(true, true)?;
                         return Ok(Stmt::Labeled(kw, Box::new(body)));
                     }
                     let e = self.parse_expression(false)?;
@@ -689,7 +739,7 @@ impl Parser {
                     self.advance()?;
                     let right = if of { self.parse_assign(false)? } else { self.parse_expression(false)? };
                     self.expect(")")?;
-                    let body = Box::new(self.parse_statement()?);
+                    let body = Box::new(self.parse_body_statement(false, false)?);
                     let left = ForHead::Var(kind, target);
                     return Ok(if of {
                         Stmt::ForOf { left, right, body, is_await }
@@ -710,7 +760,7 @@ impl Parser {
                     self.advance()?;
                     let right = if of { self.parse_assign(false)? } else { self.parse_expression(false)? };
                     self.expect(")")?;
-                    let body = Box::new(self.parse_statement()?);
+                    let body = Box::new(self.parse_body_statement(false, false)?);
                     let left = ForHead::Pattern(self.expr_to_pattern(e)?);
                     return Ok(if of {
                         Stmt::ForOf { left, right, body, is_await }
@@ -727,7 +777,7 @@ impl Parser {
         self.expect(";")?;
         let update = if self.is(")") { None } else { Some(self.parse_expression(false)?) };
         self.expect(")")?;
-        let body = Box::new(self.parse_statement()?);
+        let body = Box::new(self.parse_body_statement(false, false)?);
         Ok(Stmt::For { init, test, update, body })
     }
 
@@ -1205,6 +1255,10 @@ impl Parser {
                 Expr::ImportMeta
             } else {
                 let args = self.parse_args()?;
+                // import(especificador, opções?): no máximo 2, sem `...`
+                if args.len() > 2 || args.iter().any(|a| !matches!(a, ArrayElem::Expr(_))) {
+                    return self.err("import() aceita no máximo 2 argumentos, sem '...'");
+                }
                 match args.into_iter().next() {
                     Some(ArrayElem::Expr(e)) => Expr::ImportCall(Box::new(e)),
                     _ => return self.err("import() precisa de um especificador"),
@@ -1665,10 +1719,10 @@ impl Parser {
             Tok::Ident(n) if &**n != "extends" => Some(self.binding_ident()?),
             _ => None,
         };
-        let superclass = if self.eat_kw("extends")? { Some(self.parse_lhs()?) } else { None };
         let saved_strict = self.strict;
-        let saved_ctx = self.ctx;
         self.strict = true;
+        let superclass = if self.eat_kw("extends")? { Some(self.parse_lhs()?) } else { None };
+        let saved_ctx = self.ctx;
         self.ctx.in_class = true;
         self.expect("{")?;
         let mut constructor = None;

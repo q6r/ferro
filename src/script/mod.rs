@@ -262,6 +262,8 @@ pub struct Host {
     pub(crate) hover: Option<NodeId>,
     /// Elemento em tela cheia (requestFullscreen).
     pub(crate) fullscreen: Option<NodeId>,
+    /// Popovers abertos (`showPopover`), na ordem em que abriram.
+    pub(crate) popovers: Vec<NodeId>,
     /// A tela cheia mudou e a interface ainda não sabe.
     pub(crate) fullscreen_changed: bool,
     /// As folhas de estilo têm `:hover`/`:active`? (None = ainda não olhou.)
@@ -447,6 +449,7 @@ impl Session {
             keyboard_focus: false,
             hover: None,
             fullscreen: None,
+            popovers: Vec::new(),
             fullscreen_changed: false,
             dyn_rules: None,
             hooks: HashMap::new(),
@@ -726,20 +729,25 @@ impl Session {
     fn exec_script(&mut self, n: NodeId, text: &str, name: &str) {
         exec_script(&mut self.js.vm, n, text, name);
         self.js.vm.run_microtasks();
-        // depuração: FERRO_VIGIA="expressão" avisa quando o valor muda
-        if let Ok(code) = std::env::var("FERRO_VIGIA") {
-            let v = match self.js.vm.eval_script(&code, "vigia") {
-                Ok(v) => self.js.inspect(&v),
-                Err(e) => self.js.error_text(&e),
-            };
-            thread_local!(static LAST: RefCell<String> = const { RefCell::new(String::new()) });
-            LAST.with(|l| {
-                if *l.borrow() != v {
-                    eprintln!("[vigia] depois de {name}: {v}");
-                    *l.borrow_mut() = v;
-                }
-            });
-        }
+        self.watch(name);
+    }
+
+    /// Depuração: FERRO_VIGIA="expressão" avisa quando o valor muda (depois de
+    /// cada script e de cada volta do laço de eventos).
+    fn watch(&mut self, when: &str) {
+        let Ok(code) = std::env::var("FERRO_VIGIA") else { return };
+        let v = match self.js.vm.eval_script(&code, "vigia") {
+            Ok(v) => self.js.inspect(&v),
+            Err(e) => self.js.error_text(&e),
+        };
+        thread_local!(static LAST: RefCell<String> = const { RefCell::new(String::new()) });
+        LAST.with(|l| {
+            if *l.borrow() != v {
+                let ms = self.js.vm.now_ms();
+                eprintln!("[vigia] {ms:.0} ms, depois de {when}: {v}");
+                *l.borrow_mut() = v;
+            }
+        });
     }
 
     /// Estilo + layout do documento atual. Guarda os retângulos (para cliques
@@ -901,6 +909,7 @@ impl Session {
                 start.elapsed().as_secs_f64() * 1000.0
             );
         }
+        self.watch("uma volta do laço");
     }
 
     fn on_done(&mut self, done: Done) {
@@ -1116,6 +1125,8 @@ impl Session {
                 r.contains(x, py) && *n < doc.nodes.len() && doc.is_connected(*n)
             })
             .map(|(n, _, _)| *n)
+            // fora de tudo: o <html>, que cobre a janela inteira (como nos navegadores)
+            .or_else(|| doc.node(Document::ROOT).children.iter().copied().find(|&c| doc.element(c).is_some()))
     }
 
     /// O mouse andou sobre a página (coordenadas do documento) ou saiu dela
@@ -1606,6 +1617,13 @@ fn dynamic_state(hb: &Host) -> crate::css::DynState {
         focus_visible: focus.is_some() && (hb.keyboard_focus || text_field),
         focus_within: focus.map(|f| flat_chain(doc, f)).unwrap_or_default(),
         fullscreen: hb.fullscreen.filter(live),
+        // tirado da árvore ou sem o atributo, o popover deixa de valer
+        popover_open: hb
+            .popovers
+            .iter()
+            .copied()
+            .filter(|n| live(n) && doc.element(*n).is_some_and(|e| e.attr("popover").is_some()))
+            .collect(),
     }
 }
 
@@ -1653,7 +1671,13 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
     crate::layout::set_video_sizes(
         hb.media.players.iter().filter(|(_, p)| p.width > 0).map(|(&n, p)| (n, (p.width as f32, p.height as f32))).collect(),
     );
-    let (mut page, styles) = engine::render_styled(&hb.page, &hb.images, &fonts, hb.width, hb.height);
+    // estilo incremental: só o que as mudanças do DOM desde a última vez afetam
+    let changes = std::mem::take(&mut hb.page.doc.changes);
+    let (mut page, styles) = {
+        let hb = &*hb;
+        let prev = hb.layout.as_ref().map(|l| &l.styles);
+        engine::render_styled(&hb.page, &hb.images, &fonts, hb.width, hb.height, prev, &changes)
+    };
     if hb.no_resources {
         page.missing_urls.clear();
         page.missing_fonts.clear();

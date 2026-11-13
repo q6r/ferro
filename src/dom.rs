@@ -72,7 +72,27 @@ pub struct Document {
     pub shadow_roots: std::collections::HashMap<NodeId, NodeId>,
     /// Raiz da sombra → hospedeiro.
     pub shadow_hosts: std::collections::HashMap<NodeId, NodeId>,
+    /// Mudanças desde o último cálculo de estilo (para recalcular só o que mudou).
+    pub changes: Vec<Change>,
 }
+
+/// Uma mudança no DOM que pode afetar o estilo.
+#[derive(Debug, Clone)]
+pub enum Change {
+    /// Atributo mudou: (elemento, nome, valor antigo).
+    Attr(NodeId, String, Option<String>),
+    /// O nó entrou na árvore (ele e os descendentes precisam de estilo).
+    Inserted(NodeId),
+    /// A lista de filhos do nó mudou.
+    Children(NodeId),
+    /// O texto de um nó de texto mudou.
+    Text(NodeId),
+    /// Mudança grande demais para acompanhar: recalcula tudo.
+    All,
+}
+
+/// Acima disso o registro vira um `Change::All`.
+const MAX_CHANGES: usize = 20_000;
 
 impl Default for Document {
     fn default() -> Self {
@@ -92,7 +112,20 @@ impl Document {
             }],
             shadow_roots: Default::default(),
             shadow_hosts: Default::default(),
+            changes: Vec::new(),
         }
+    }
+
+    fn note(&mut self, c: Change) {
+        if matches!(self.changes.last(), Some(Change::All)) {
+            return;
+        }
+        if self.changes.len() >= MAX_CHANGES || matches!(c, Change::All) {
+            self.changes.clear();
+            self.changes.push(Change::All);
+            return;
+        }
+        self.changes.push(c);
     }
 
     pub fn create(&mut self, data: NodeData) -> NodeId {
@@ -107,6 +140,8 @@ impl Document {
     pub fn append(&mut self, parent: NodeId, child: NodeId) {
         self.nodes[child].parent = Some(parent);
         self.nodes[parent].children.push(child);
+        self.note(Change::Inserted(child));
+        self.note(Change::Children(parent));
     }
 
     pub fn node(&self, id: NodeId) -> &Node {
@@ -203,6 +238,8 @@ impl Document {
         let root = self.create_fragment();
         self.shadow_roots.insert(host, root);
         self.shadow_hosts.insert(root, host);
+        // a árvore achatada do hospedeiro mudou
+        self.note(Change::Inserted(host));
         root
     }
 
@@ -276,6 +313,7 @@ impl Document {
     pub fn detach(&mut self, id: NodeId) {
         if let Some(p) = self.nodes[id].parent.take() {
             self.nodes[p].children.retain(|&c| c != id);
+            self.note(Change::Children(p));
         }
     }
 
@@ -309,6 +347,8 @@ impl Document {
             .unwrap_or(self.nodes[parent].children.len());
         self.nodes[parent].children.insert(idx, child);
         self.nodes[child].parent = Some(parent);
+        self.note(Change::Inserted(child));
+        self.note(Change::Children(parent));
     }
 
     pub fn is_fragment(&self, id: NodeId) -> bool {
@@ -327,19 +367,30 @@ impl Document {
     }
 
     pub fn set_attr(&mut self, id: NodeId, name: &str, value: &str) {
+        let mut old = None;
         if let NodeData::Element(e) = &mut self.nodes[id].data {
             match e.attrs.iter_mut().find(|(k, _)| k == name) {
-                Some((_, v)) => *v = value.to_string(),
+                Some((_, v)) => {
+                    if v == value {
+                        return;
+                    }
+                    old = Some(std::mem::replace(v, value.to_string()));
+                }
                 None => e.attrs.push((name.to_string(), value.to_string())),
             }
+        } else {
+            return;
         }
+        self.note(Change::Attr(id, name.to_string(), old));
     }
 
     pub fn remove_attr(&mut self, id: NodeId, name: &str) -> bool {
-        if let NodeData::Element(e) = &mut self.nodes[id].data {
-            let before = e.attrs.len();
-            e.attrs.retain(|(k, _)| k != name);
-            return e.attrs.len() != before;
+        if let NodeData::Element(e) = &mut self.nodes[id].data
+            && let Some(i) = e.attrs.iter().position(|(k, _)| k == name)
+        {
+            let (_, old) = e.attrs.remove(i);
+            self.note(Change::Attr(id, name.to_string(), Some(old)));
+            return true;
         }
         false
     }
@@ -348,8 +399,9 @@ impl Document {
     pub fn set_data(&mut self, id: NodeId, text: &str) {
         match &mut self.nodes[id].data {
             NodeData::Text(t) | NodeData::Comment(t) => *t = text.to_string(),
-            _ => {}
+            _ => return,
         }
+        self.note(Change::Text(id));
     }
 
     /// `textContent = ...`: troca todos os filhos por um texto.
@@ -367,6 +419,9 @@ impl Document {
 
     pub fn remove_children(&mut self, id: NodeId) {
         let kids = std::mem::take(&mut self.nodes[id].children);
+        if !kids.is_empty() {
+            self.note(Change::Children(id));
+        }
         for k in kids {
             self.nodes[k].parent = None;
         }

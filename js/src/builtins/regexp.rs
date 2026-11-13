@@ -41,6 +41,105 @@ pub fn install(r: &Realm) {
     let ip = &r.regexp_string_iter_proto;
     r.method(ip, "next", 0, string_iter_next);
     r.tag(ip, "RegExp String Iterator");
+
+    // Anexo B: RegExp.$1..$9, input/$_, lastMatch/$&, lastParen/$+,
+    // leftContext/$`, rightContext/$' (do último casamento)
+    let caps: [NativeFn; 9] = [cap1, cap2, cap3, cap4, cap5, cap6, cap7, cap8, cap9];
+    for (i, f) in caps.into_iter().enumerate() {
+        legacy_accessor(r, &c, &format!("${}", i + 1), f, None);
+    }
+    for (names, get, set) in [
+        (["input", "$_"], legacy_input as NativeFn, Some(legacy_set_input as NativeFn)),
+        (["lastMatch", "$&"], legacy_last_match, None),
+        (["lastParen", "$+"], legacy_last_paren, None),
+        (["leftContext", "$`"], legacy_left, None),
+        (["rightContext", "$'"], legacy_right, None),
+    ] {
+        for n in names {
+            legacy_accessor(r, &c, n, get, set);
+        }
+    }
+}
+
+fn legacy_accessor(r: &Realm, c: &ObjRef, name: &str, get: NativeFn, set: Option<NativeFn>) {
+    let g = r.native(&format!("get {name}"), 0, get);
+    super::set_native_data(&g, Value::Object(c.clone()));
+    let s = set.map(|f| {
+        let s = r.native(&format!("set {name}"), 1, f);
+        super::set_native_data(&s, Value::Object(c.clone()));
+        s
+    });
+    c.borrow_mut().props.insert(
+        PropKey::str(name),
+        Property {
+            slot: Slot::Accessor { get: Some(g), set: s },
+            enumerable: false,
+            configurable: true,
+        },
+    );
+}
+
+/// Os acessores só valem com o próprio RegExp como `this`.
+fn legacy_check(vm: &mut Vm, a: &CallArgs) -> Result<(), Value> {
+    match (&a.this, super::native_data(&a.callee)) {
+        (Value::Object(t), Value::Object(c)) if t.ptr_eq(&c) => Ok(()),
+        _ => Err(vm.type_error("RegExp legacy static accessor called on incompatible receiver")),
+    }
+}
+
+fn legacy_group(vm: &mut Vm, a: &CallArgs, g: usize) -> Result<Value, Value> {
+    legacy_check(vm, a)?;
+    let (s, caps) = &vm.regexp_statics;
+    let (x, y) = (caps.get(2 * g).copied().unwrap_or(NONE), caps.get(2 * g + 1).copied().unwrap_or(NONE));
+    Ok(Value::String(if x == NONE || y == NONE { JsStr::empty() } else { s.slice(x, y) }))
+}
+
+macro_rules! cap_fns {
+    ($($name:ident = $g:expr),*) => {
+        $(fn $name(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+            legacy_group(vm, a, $g)
+        })*
+    };
+}
+cap_fns!(cap1 = 1, cap2 = 2, cap3 = 3, cap4 = 4, cap5 = 5, cap6 = 6, cap7 = 7, cap8 = 8, cap9 = 9);
+
+fn legacy_input(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    legacy_check(vm, a)?;
+    Ok(Value::String(vm.regexp_statics.0.clone()))
+}
+
+fn legacy_set_input(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    legacy_check(vm, a)?;
+    let s = vm.to_string(&a.arg(0))?;
+    vm.regexp_statics.0 = s;
+    Ok(Value::Undefined)
+}
+
+fn legacy_last_match(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    legacy_group(vm, a, 0)
+}
+
+fn legacy_last_paren(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let n = vm.regexp_statics.1.len() / 2;
+    if n <= 1 {
+        legacy_check(vm, a)?;
+        return Ok(Value::String(JsStr::empty()));
+    }
+    legacy_group(vm, a, n - 1)
+}
+
+fn legacy_left(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    legacy_check(vm, a)?;
+    let (s, caps) = &vm.regexp_statics;
+    let start = caps.first().copied().unwrap_or(0).min(s.len());
+    Ok(Value::String(s.slice(0, start)))
+}
+
+fn legacy_right(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    legacy_check(vm, a)?;
+    let (s, caps) = &vm.regexp_statics;
+    let end = caps.get(1).copied().unwrap_or(0).min(s.len());
+    Ok(Value::String(s.slice(end, s.len())))
 }
 
 pub fn exec_native(function_proto: &ObjRef) -> ObjRef {
@@ -343,6 +442,7 @@ fn builtin_match(vm: &mut Vm, r: &Value, prog: &Program, s: &JsStr) -> Result<Op
             if global || sticky {
                 set_last_index(vm, r, caps[1])?;
             }
+            vm.regexp_statics = (s.clone(), caps.clone());
             Ok(Some(Hit { caps }))
         }
     }

@@ -77,7 +77,8 @@ pub fn install(r: &Realm) {
     let ip = &r.array_iter_proto;
     ip.borrow_mut().props.insert(PropKey::str("next"), Property::hidden(Value::Object(r.array_iter_next.clone())));
     r.tag(ip, "Array Iterator");
-    // Array.prototype[@@unscopables]: nomes que `with` não enxerga
+    // Array.prototype[Symbol.unscopables]: nomes que o `with` não enxerga
+    // (depois de @@iterator, na mesma ordem do V8)
     let unscopables = ObjRef::new(Object::new(None, Kind::Ordinary));
     for name in [
         "at", "copyWithin", "entries", "fill", "find", "findIndex", "findLast", "findLastIndex", "flat", "flatMap", "includes", "keys",
@@ -689,7 +690,17 @@ pub fn array_iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let Value::Object(t) = &target else {
         return Ok(iter_result(vm, Value::Undefined, true));
     };
-    let len = if index == usize::MAX { 0 } else { vm.length_of(t)? };
+    let len = if index == usize::MAX {
+        0
+    } else if let Some(st) = super::typed::ta_state(t) {
+        // typed array: fora dos limites (ou desanexado) é erro
+        match st {
+            Some(n) => n,
+            None => return Err(vm.type_error("Cannot perform %ArrayIteratorPrototype%.next on a detached ArrayBuffer")),
+        }
+    } else {
+        vm.length_of(t)?
+    };
     if index >= len {
         if let Kind::ArrayIter { index, .. } = &mut it.borrow_mut().kind {
             *index = usize::MAX;

@@ -488,7 +488,7 @@ impl Vm {
     pub fn length_of(&mut self, o: &ObjRef) -> Result<usize, Value> {
         match &o.borrow().kind {
             Kind::Array(v) => return Ok(v.len()),
-            Kind::TypedArray(t) => return Ok(t.length),
+            Kind::TypedArray(t) => return Ok(t.len()),
             _ => {}
         }
         let l = self.get_obj(o, &PropKey::str("length"))?;
@@ -544,7 +544,10 @@ impl Vm {
                     drop(b);
                     return self.proxy_get(&cur, key, receiver);
                 }
-                (b.own(key), b.proto.clone())
+                let p = b.own(key);
+                // typed array: chave numérica não sobe para o protótipo
+                let next = if p.is_none() && b.ta_numeric(key).is_some() { None } else { b.proto.clone() };
+                (p, next)
             };
             match prop {
                 Some(p) => {
@@ -575,7 +578,11 @@ impl Vm {
                     }
                     return Ok(Some(self.proxy_get(&cur, key, &Value::Object(start.clone()))?));
                 }
-                (b.own(key), b.proto.clone())
+                let p = b.own(key);
+                if p.is_none() && b.ta_numeric(key).is_some() {
+                    return Ok(None);
+                }
+                (p, b.proto.clone())
             };
             match prop {
                 Some(p) => {
@@ -624,7 +631,11 @@ impl Vm {
     pub fn set_index(&mut self, obj: &Value, key: &Value, v: Value, strict: bool) -> Result<(), Value> {
         if let (Value::Object(o), Value::Number(n)) = (obj, key) {
             let i = *n as usize;
-            if i as f64 == *n && matches!(o.borrow().kind, Kind::TypedArray(_)) {
+            let ta = match &o.borrow().kind {
+                Kind::TypedArray(t) => Some(t.immutable),
+                _ => None,
+            };
+            if i as f64 == *n && ta == Some(false) {
                 return self.typed_set(o, i, &v);
             }
             if i as f64 == *n {
@@ -702,14 +713,30 @@ impl Vm {
         }
         let mut cur = start.clone();
         loop {
-            let (prop, next) = {
+            let (prop, next, numeric) = {
                 let b = cur.borrow();
                 if let Kind::Proxy { .. } = b.kind {
                     drop(b);
                     return self.proxy_set(&cur, key, v, receiver);
                 }
-                (b.own(&key), b.proto.clone())
+                (b.own(&key), b.proto.clone(), b.ta_numeric(&key))
             };
+            // [[Set]] de typed array com chave numérica
+            if let Some(n) = numeric {
+                if cur.borrow().ta_immutable() {
+                    return Ok(false);
+                }
+                if let Value::Object(r) = receiver
+                    && r.ptr_eq(&cur)
+                {
+                    self.typed_set_num(&cur, n, &v)?;
+                    return Ok(true);
+                }
+                if prop.is_none() {
+                    return Ok(true);
+                }
+                break;
+            }
             match prop {
                 Some(Property {
                     slot: Slot::Data { writable, .. },
@@ -764,10 +791,13 @@ impl Vm {
 
     /// Grava uma propriedade própria de dados (criando se preciso).
     pub fn set_own(&mut self, obj: &ObjRef, key: PropKey, v: Value) -> Result<bool, Value> {
-        if matches!(obj.borrow().kind, Kind::TypedArray(_))
-            && let Some(i) = key.as_index()
-        {
-            self.typed_set(obj, i as usize, &v)?;
+        let numeric = obj.borrow().ta_numeric(&key);
+        if let Some(n) = numeric {
+            // typed array: só índices válidos (e de buffer mutável) podem ser definidos
+            if !self.ta_valid_index(obj, n) || obj.borrow().ta_immutable() {
+                return Ok(false);
+            }
+            self.typed_set_num(obj, n, &v)?;
             return Ok(true);
         }
         {
@@ -852,10 +882,11 @@ impl Vm {
 
     /// CreateDataProperty.
     pub fn define_data(&mut self, obj: &ObjRef, key: PropKey, v: Value) {
-        if matches!(obj.borrow().kind, Kind::TypedArray(_))
-            && let Some(i) = key.as_index()
-        {
-            let _ = self.typed_set(obj, i as usize, &v);
+        let numeric = obj.borrow().ta_numeric(&key);
+        if let Some(n) = numeric {
+            if self.ta_valid_index(obj, n) && !obj.borrow().ta_immutable() {
+                let _ = self.typed_set_num(obj, n, &v);
+            }
             return;
         }
         let mut b = obj.borrow_mut();
@@ -891,7 +922,11 @@ impl Vm {
                     drop(b);
                     return self.proxy_has(&cur, key);
                 }
-                (b.own(key).is_some(), b.proto.clone())
+                let has = b.own(key).is_some();
+                if !has && b.ta_numeric(key).is_some() {
+                    return Ok(false);
+                }
+                (has, b.proto.clone())
             };
             if has {
                 return Ok(true);
@@ -910,9 +945,9 @@ impl Vm {
     /// [[Delete]]: false se a propriedade não pode ser apagada.
     pub fn delete_prop(&mut self, obj: &ObjRef, key: &PropKey) -> bool {
         if let Kind::TypedArray(t) = &obj.borrow().kind
-            && let Some(i) = key.as_index()
+            && let Some(n) = key.numeric_index()
         {
-            return (i as usize) >= t.length;
+            return !integer_index(n).is_some_and(|i| i < t.len());
         }
         let mut b = obj.borrow_mut();
         let frozen = b.frozen;
@@ -1253,6 +1288,28 @@ impl Vm {
         let Kind::ArrayIter { target, index, kind } = &mut b.kind else { return None };
         let Value::Object(t) = target else { return None };
         let tb = t.0.try_borrow().ok()?;
+        if let Kind::TypedArray(ta) = &tb.kind {
+            // typed array dentro dos limites (senão o caminho geral lança o erro)
+            let len = ta.len_in(ta.data.borrow().len())?;
+            if crate::builtins::typed::is_detached(&ta.buffer) {
+                return None;
+            }
+            if *index >= len {
+                *index = usize::MAX;
+                return Some(None);
+            }
+            let i = *index;
+            *index += 1;
+            let val = ta.get(i).unwrap_or_default();
+            return Some(Some(match kind {
+                IterKind::Values => val,
+                IterKind::Keys => Value::Number(i as f64),
+                IterKind::Entries => {
+                    let pair = vec![Value::Number(i as f64), val];
+                    Value::Object(ObjRef::new(Object::new(Some(self.realm.array_proto.clone()), Kind::Array(pair))))
+                }
+            }));
+        }
         let Kind::Array(v) = &tb.kind else { return None };
         if *index >= v.len() {
             *index = usize::MAX;
@@ -1335,6 +1392,10 @@ impl Vm {
         matches!(
             self.realm.array_proto.borrow().props.get(&key),
             Some(Property { slot: Slot::Data { value: Value::Object(f), .. }, .. }) if f.ptr_eq(&self.realm.array_values)
+        ) && matches!(
+            // %ArrayIteratorPrototype%.next também precisa ser o original
+            self.realm.array_iter_proto.borrow().props.get(&PropKey::str("next")),
+            Some(Property { slot: Slot::Data { value: Value::Object(f), .. }, .. }) if f.ptr_eq(&self.realm.array_iter_next)
         )
     }
 
@@ -1384,7 +1445,21 @@ impl Vm {
         }
     }
 
-    /// Grava no elemento `i` de um typed array (convertendo o valor).
+    /// IsValidIntegerIndex.
+    pub fn ta_valid_index(&self, o: &ObjRef, n: f64) -> bool {
+        match &o.borrow().kind {
+            Kind::TypedArray(t) => integer_index(n).is_some_and(|i| i < t.len()),
+            _ => false,
+        }
+    }
+
+    /// TypedArraySetElement com índice numérico qualquer (inválido: só converte).
+    pub fn typed_set_num(&mut self, o: &ObjRef, n: f64, v: &Value) -> Result<(), Value> {
+        self.typed_set(o, integer_index(n).unwrap_or(usize::MAX), v)
+    }
+
+    /// TypedArraySetElement: converte o valor e grava no elemento `i` se ele
+    /// ainda existir depois da conversão.
     pub fn typed_set(&mut self, o: &ObjRef, i: usize, v: &Value) -> Result<(), Value> {
         let is_big = match &o.borrow().kind {
             Kind::TypedArray(t) => t.kind.is_bigint(),

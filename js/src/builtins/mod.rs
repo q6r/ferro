@@ -3,6 +3,7 @@
 pub mod array;
 pub mod array_async;
 pub mod async_generator;
+pub mod base64;
 pub mod bigint;
 pub mod collections;
 pub mod console;
@@ -82,6 +83,10 @@ pub struct Realm {
     pub typed_array_proto: ObjRef,
     /// Um protótipo por tipo de elemento, na ordem de `TaKind::ALL`.
     pub typed_protos: Vec<ObjRef>,
+    /// Os construtores (Int8Array...), na mesma ordem; preenchido em `typed::install`.
+    pub typed_ctors: std::cell::RefCell<Vec<ObjRef>>,
+    /// %ArrayBuffer% (preenchido em `typed::install`).
+    pub array_buffer_ctor: std::cell::RefCell<Option<ObjRef>>,
     pub data_view_proto: ObjRef,
     pub async_function_proto: ObjRef,
     pub generator_function_proto: ObjRef,
@@ -188,6 +193,8 @@ impl Realm {
             bigint_proto: plain(p),
             array_buffer_proto: plain(p),
             typed_protos: TaKind::ALL.iter().map(|_| plain(Some(&typed_array_proto))).collect(),
+            typed_ctors: Default::default(),
+            array_buffer_ctor: Default::default(),
             typed_array_proto,
             data_view_proto: plain(p),
             async_function_proto: plain(Some(&function_proto)),

@@ -155,6 +155,7 @@ eventClass('PromiseRejectionEvent', Event, { promise: null, reason: undefined })
 eventClass('SecurityPolicyViolationEvent', Event, { blockedURI: '', violatedDirective: '' });
 eventClass('ClipboardEvent', Event, { clipboardData: null });
 eventClass('BeforeUnloadEvent', Event, {});
+eventClass('ToggleEvent', Event, { oldState: '', newState: '', source: null });
 
 const ETP = EventTarget.prototype;
 function flagsOf(o) {
@@ -294,7 +295,7 @@ function fireTrusted(t, ev) {
 
 // propriedades onclick, onload... (o valor fica guardado à parte)
 const HANDLER_NAMES = ('abort auxclick beforeinput blur cancel canplay canplaythrough change click close contextmenu ' +
-  'copy cut dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange ended error focus ' +
+  'beforetoggle copy cut dblclick drag dragend dragenter dragleave dragover dragstart drop durationchange ended error focus ' +
   'focusin focusout input invalid keydown keypress keyup load loadeddata loadedmetadata loadstart mousedown ' +
   'mouseenter mouseleave mousemove mouseout mouseover mouseup paste pause play playing pointercancel pointerdown ' +
   'pointerenter pointerleave pointermove pointerout pointerover pointerup progress ratechange reset resize ' +
@@ -700,7 +701,7 @@ function reflectAll(P, list) {
 const HE = HTMLElement.prototype;
 const FOCUSABLE = new Set(['a', 'button', 'input', 'select', 'textarea', 'iframe', 'summary']);
 reflectAll(HE, ['title', 'lang', 'dir', 'accessKey', 'nonce', 'slot', ['hidden', 'hidden', 'bool'],
-  ['autofocus', 'autofocus', 'bool'], ['inert', 'inert', 'bool'], 'enterKeyHint', 'inputMode', 'popover',
+  ['autofocus', 'autofocus', 'bool'], ['inert', 'inert', 'bool'], 'enterKeyHint', 'inputMode',
   ['tabIndex', 'tabindex', 'int', function () { return FOCUSABLE.has(this.localName) || this.isContentEditable ? 0 : -1; }]]);
 reflectAll(SVGElement.prototype, [['tabIndex', 'tabindex', 'int', -1]]);
 accessor(HE, 'draggable', function () { return this.getAttribute('draggable') === 'true' || this.localName === 'img'; },
@@ -915,8 +916,7 @@ formControl(SELECT, {
 
 const BUTTON = HTMLButtonElement.prototype;
 reflectAll(BUTTON, ['name', 'value', ['disabled', 'disabled', 'bool'], ['formAction', 'formaction', 'url'],
-  ['formMethod', 'formmethod'], ['formNoValidate', 'formnovalidate', 'bool'], ['formTarget', 'formtarget'],
-  'popoverTargetElement']);
+  ['formMethod', 'formmethod'], ['formNoValidate', 'formnovalidate', 'bool'], ['formTarget', 'formtarget']]);
 accessor(BUTTON, 'type', function () {
   const t = (this.getAttribute('type') || '').toLowerCase();
   return t === 'button' || t === 'reset' ? t : 'submit';
@@ -1076,6 +1076,186 @@ reflectAll(HTMLTableCellElement.prototype, [['colSpan', 'colspan', 'int', 1], ['
 reflectAll(HTMLProgressElement.prototype, [['max', 'max', 'int', 1], ['value', 'value', 'int', 0]]);
 reflectAll(HTMLMeterElement.prototype, ['value', 'min', 'max', 'low', 'high', 'optimum']);
 reflectAll(HTMLDialogElement.prototype, [['open', 'open', 'bool'], 'returnValue']);
+// ------------------------------------------------------------ popover
+// showPopover/hidePopover/togglePopover, :popover-open (o Rust desenha os
+// abertos por cima de tudo), fechar clicando fora ou com Esc (popover=auto)
+// e botões com popovertarget.
+const POPOVERS = [];                   // abertos, na ordem em que abriram
+const POPOVER_INVOKER = new WeakMap(); // popover → botão que o abriu
+const TOGGLE_TASK = new WeakMap();     // evento toggle pendente (agrupa abre e fecha)
+function popoverKind(el) {
+  const v = el.getAttribute('popover');
+  if (v === null) return null;
+  const t = v.toLowerCase();
+  return t === '' || t === 'auto' ? 'auto' : t === 'hint' ? 'hint' : 'manual';
+}
+accessor(HE, 'popover', function () { return popoverKind(this); },
+  function (v) { if (v === null) this.removeAttribute('popover'); else this.setAttribute('popover', String(v)); });
+function popoverIsOpen(el) {
+  const i = POPOVERS.indexOf(el);
+  if (i < 0) return false;
+  if (el.isConnected && popoverKind(el) !== null) return true;
+  // saiu da árvore ou perdeu o atributo: fechado, sem eventos
+  POPOVERS.splice(i, 1);
+  N.popoverSet(el, false);
+  return false;
+}
+// "check popover validity": false = não faz nada; erro = lança
+function popoverValid(el, wantOpen, method, throws) {
+  if (popoverKind(el) === null) {
+    if (!throws) return false;
+    throw new DOMException(`Failed to execute '${method}' on 'HTMLElement': Not supported on elements that do not have a valid value for the 'popover' attribute.`, 'NotSupportedError');
+  }
+  if (popoverIsOpen(el) !== wantOpen) return false;
+  if (!el.isConnected) {
+    if (!throws) return false;
+    throw new DOMException(`Failed to execute '${method}' on 'HTMLElement': Invalid on disconnected popover elements.`, 'InvalidStateError');
+  }
+  return true;
+}
+function queueToggle(el, oldState, newState) {
+  const prev = TOGGLE_TASK.get(el);
+  if (prev) { clearTimeout(prev.id); oldState = prev.oldState; }
+  const id = setTimeout(() => {
+    TOGGLE_TASK.delete(el);
+    fireTrusted(el, new G.ToggleEvent('toggle', { oldState, newState }));
+  }, 0);
+  TOGGLE_TASK.set(el, { id, oldState });
+}
+function openAutos() { return POPOVERS.filter((p) => popoverKind(p) === 'auto' && popoverIsOpen(p)); }
+// popover aberto que contém o nó (subindo pela árvore e pelos botões que abriram popovers)
+function popoverAround(node, autos) {
+  let best = null, bestI = -1;
+  for (let c = node; c; c = c.parentNode || (c.nodeType === 11 && c.host) || null) {
+    const i = autos.indexOf(c);
+    if (i > bestI) { best = c; bestI = i; }
+    if (c.nodeType === 1 && (c.localName === 'button' || c.localName === 'input') && c.hasAttribute('popovertarget')) {
+      const t = c.popoverTargetElement;
+      const j = t ? autos.indexOf(t) : -1;
+      if (j > bestI) { best = t; bestI = j; }
+    }
+  }
+  return best;
+}
+// fecha os popovers auto de cima até `stop` (null = todos)
+function hideAutosUntil(stop, fireEvents) {
+  for (let guard = 0; guard < 100; guard++) {
+    const autos = openAutos();
+    if (stop && !autos.includes(stop)) stop = null;
+    const top = autos[autos.length - 1];
+    if (!top || top === stop) return;
+    hidePopoverEl(top, fireEvents, false);
+  }
+}
+function showPopoverEl(el, throws, invoker) {
+  if (!popoverValid(el, false, 'showPopover', throws)) return;
+  const kind = popoverKind(el);
+  const ev = new G.ToggleEvent('beforetoggle', { cancelable: true, oldState: 'closed', newState: 'open' });
+  if (!fireTrusted(el, ev)) return;
+  if (!popoverValid(el, false, 'showPopover', throws)) return;
+  if (kind === 'auto' || kind === 'hint') {
+    // abrir um auto fecha os outros, menos os que o contêm
+    const autos = openAutos();
+    const up = el.parentNode || (el.getRootNode().host || null);
+    let anc = popoverAround(up, autos);
+    if (invoker) {
+      const viaInvoker = popoverAround(invoker, autos);
+      if (viaInvoker && (!anc || autos.indexOf(viaInvoker) > autos.indexOf(anc))) anc = viaInvoker;
+    }
+    hideAutosUntil(anc, true);
+    if (!popoverValid(el, false, 'showPopover', throws)) return;
+  }
+  POPOVERS.push(el);
+  if (invoker) POPOVER_INVOKER.set(el, invoker); else POPOVER_INVOKER.delete(el);
+  N.popoverSet(el, true);
+  const auto = el.querySelector && el.querySelector('[autofocus]');
+  if (auto && auto.focus) auto.focus();
+  queueToggle(el, 'closed', 'open');
+}
+function hidePopoverEl(el, fireEvents, throws) {
+  if (!popoverValid(el, true, 'hidePopover', throws)) return;
+  if (popoverKind(el) === 'auto') {
+    // primeiro os que foram abertos por cima deste
+    const autos = openAutos();
+    const i = autos.indexOf(el);
+    for (let j = autos.length - 1; j > i; j--) hidePopoverEl(autos[j], fireEvents, false);
+  }
+  if (fireEvents) {
+    fireTrusted(el, new G.ToggleEvent('beforetoggle', { oldState: 'open', newState: 'closed' }));
+    if (!popoverValid(el, true, 'hidePopover', throws)) return;
+  }
+  const i = POPOVERS.indexOf(el);
+  if (i >= 0) POPOVERS.splice(i, 1);
+  POPOVER_INVOKER.delete(el);
+  N.popoverSet(el, false);
+  if (fireEvents) queueToggle(el, 'open', 'closed');
+}
+methods(HE, {
+  showPopover(options) {
+    const src = options && typeof options === 'object' ? options.source : undefined;
+    showPopoverEl(this, true, src instanceof Element ? src : null);
+  },
+  hidePopover() { hidePopoverEl(this, true, true); },
+  togglePopover(options) {
+    let force;
+    if (typeof options === 'boolean') force = options;
+    else if (options && typeof options === 'object' && 'force' in options) force = !!options.force;
+    const src = options && typeof options === 'object' && options.source instanceof Element ? options.source : null;
+    const open = popoverIsOpen(this);
+    if (open && force !== true) hidePopoverEl(this, true, true);
+    else if (!open && force !== false) showPopoverEl(this, true, src);
+    else popoverValid(this, open, 'togglePopover', true);
+    return popoverIsOpen(this);
+  },
+});
+// botões que abrem/fecham popovers
+const POPOVER_TARGET = new WeakMap();
+for (const P of [HTMLButtonElement.prototype, HTMLInputElement.prototype]) {
+  accessor(P, 'popoverTargetElement', function () {
+    const set = POPOVER_TARGET.get(this);
+    if (set && set.isConnected && set.getRootNode() === this.getRootNode()) return set;
+    const id = this.getAttribute('popovertarget');
+    if (!id) return null;
+    const root = this.getRootNode();
+    return (root.getElementById ? root.getElementById(id) : root.querySelector && root.querySelector('#' + CSS.escape(id))) || null;
+  }, function (v) {
+    if (v === null || v === undefined) { POPOVER_TARGET.delete(this); this.removeAttribute('popovertarget'); return; }
+    if (!(v instanceof Element)) throw new TypeError("Failed to set the 'popoverTargetElement' property on 'HTMLElement': Failed to convert value to 'Element'.");
+    POPOVER_TARGET.set(this, v);
+    this.setAttribute('popovertarget', '');
+  });
+  accessor(P, 'popoverTargetAction', function () {
+    const a = (this.getAttribute('popovertargetaction') || '').toLowerCase();
+    return a === 'show' || a === 'hide' ? a : 'toggle';
+  }, function (v) { this.setAttribute('popovertargetaction', String(v)); });
+}
+// ação do clique num botão com popovertarget
+function popoverInvoke(btn) {
+  if (btn.disabled) return false;
+  if (btn.localName === 'input' && !/^(button|submit|reset|image)$/.test(btn.type)) return false;
+  // botão de envio dentro de formulário: vale o envio
+  if (btn.form && (btn.localName === 'input' ? /^(submit|image)$/.test(btn.type) : btn.type === 'submit')) return false;
+  const pop = btn.popoverTargetElement;
+  if (!pop || popoverKind(pop) === null) return false;
+  const action = btn.popoverTargetAction;
+  const open = popoverIsOpen(pop);
+  if (open && action !== 'show') hidePopoverEl(pop, true, false);
+  else if (!open && action !== 'hide') showPopoverEl(pop, false, btn);
+  return true;
+}
+// clique fora de um popover auto aberto: fecha os que não contêm o alvo
+function popoverLightDismiss(target) {
+  const autos = openAutos();
+  if (!autos.length) return;
+  hideAutosUntil(popoverAround(target, autos), true);
+}
+// Esc: fecha o popover auto de cima
+function popoverEscape() {
+  const autos = openAutos();
+  if (!autos.length) return false;
+  hidePopoverEl(autos[autos.length - 1], true, false);
+  return true;
+}
 methods(HTMLDialogElement.prototype, {
   show() { this.setAttribute('open', ''); },
   showModal() { this.setAttribute('open', ''); },
@@ -2401,8 +2581,8 @@ hidden(G, 'history', Object.create(History.prototype));
 
 // ---------------------------------------------------- navigator, screen
 const NAV = {
-  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1',
-  appVersion: '5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1',
+  userAgent: N.userAgent(),
+  appVersion: N.userAgent().replace(/^Mozilla\//, ''),
   appName: 'Netscape', appCodeName: 'Mozilla', product: 'Gecko', productSub: '20030107', vendor: '', vendorSub: '',
   platform: 'Win32', language: 'pt-BR', languages: Object.freeze(['pt-BR', 'pt', 'en-US', 'en']),
   cookieEnabled: true, onLine: true, hardwareConcurrency: 8, deviceMemory: 8, maxTouchPoints: 0,
@@ -3510,6 +3690,10 @@ const hooks = {
     const init = { key, code: codeOf(key), bubbles: true, cancelable: true, composed: true, view: G,
       keyCode: kc, which: kc, charCode: 0, ctrlKey: ctrl, shiftKey: shift, altKey: alt, metaKey: meta };
     const ok = fireTrusted(target, new KeyboardEvent('keydown', init));
+    if (ok && key === 'Escape' && popoverEscape()) {
+      fireTrusted(target, new KeyboardEvent('keyup', init));
+      return;
+    }
     if (ok) {
       const printable = text && !ctrl && !meta && !/[\x00-\x1f\x7f]/.test(text);
       if (printable) {
@@ -3548,6 +3732,7 @@ const hooks = {
     const init = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, screenX: x, screenY: y,
       button: 0, view: G, detail: 1 };
     const down = { ...init, buttons: 1 };
+    popoverLightDismiss(target);
     fireTrusted(target, new G.PointerEvent('pointerdown', down));
     const ok = fireTrusted(target, new MouseEvent('mousedown', down));
     if (ok) {
@@ -3559,6 +3744,9 @@ const hooks = {
     fireTrusted(target, new MouseEvent('mouseup', init));
     const allowed = fireTrusted(target, new G.PointerEvent('click', init));
     if (allowed) {
+      // botão com popovertarget: abre/fecha o popover
+      const inv = target.closest && target.closest('button[popovertarget], input[popovertarget]');
+      if (inv && popoverInvoke(inv)) return false;
       // botão de envio dentro de formulário: submit
       const btn = target.closest && target.closest('button, input[type=submit], input[type=image]');
       if (btn && !btn.disabled && (btn.localName === 'input' || btn.type === 'submit')) {

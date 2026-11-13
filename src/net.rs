@@ -10,6 +10,12 @@ use url::Url;
 
 pub const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1";
 
+/// O User-Agent em uso (`FERRO_UA` troca, para testes).
+pub fn user_agent() -> &'static str {
+    static UA: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    UA.get_or_init(|| std::env::var("FERRO_UA").unwrap_or_else(|_| USER_AGENT.to_string()))
+}
+
 pub struct Response {
     /// URL final, depois dos redirecionamentos.
     pub url: Url,
@@ -84,7 +90,7 @@ impl Net {
             // redirecionamentos feitos aqui, para tratar os cookies de cada salto
             .max_redirects(0)
             .allow_non_standard_methods(true)
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent())
             .build();
         Net { agent: config.into(), page_scheme: None }
     }

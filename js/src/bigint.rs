@@ -223,6 +223,9 @@ impl BigInt {
 
     /// Conversão para Number com arredondamento correto.
     pub fn to_f64(&self) -> f64 {
+        if self.mag.is_empty() {
+            return 0.0;
+        }
         let bits = self.mag.len() * 32 - self.mag.last().map_or(32, |x| x.leading_zeros() as usize);
         let v = if bits <= 64 {
             let mut x = 0u64;

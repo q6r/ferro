@@ -2201,36 +2201,59 @@ fn document_writeln(vm: &mut Vm, a: &mut CallArgs) -> R {
     document_write(vm, a)
 }
 
+/// Elementos no ponto (coordenadas da janela), do de cima para o de baixo,
+/// pela mesma lista de áreas de mouse dos cliques: respeita a ordem de
+/// pintura, `pointer-events: none` e `visibility: hidden`.
+fn hits_at(vm: &mut Vm, x: f32, y: f32) -> Option<Vec<NodeId>> {
+    let h = host(vm);
+    super::ensure_layout(&h);
+    let hb = h.borrow();
+    if !(x >= 0.0 && y >= 0.0 && x <= hb.width && y <= hb.height) {
+        return None;
+    }
+    let doc = &hb.page.doc;
+    let scroll = hb.scroll_y;
+    let mut out: Vec<NodeId> = Vec::new();
+    if let Some(info) = hb.layout.as_ref() {
+        for (n, r, fixed) in info.hits.iter().rev() {
+            // os fixos estão em coordenadas da janela; os outros, do documento
+            let py = if *fixed { y } else { y + scroll };
+            if r.contains(x, py) && *n < doc.nodes.len() && doc.is_connected(*n) && !out.contains(n) {
+                out.push(*n);
+            }
+        }
+    }
+    // os ancestrais do de cima também estão no ponto (até o <html>)
+    if let Some(&top) = out.first() {
+        let mut c = doc.flat_parent(top);
+        while let Some(p) = c {
+            if doc.element(p).is_some() && !out.contains(&p) {
+                out.push(p);
+            }
+            c = doc.flat_parent(p);
+        }
+    }
+    if out.is_empty()
+        && let Some(html) = doc.node(Document::ROOT).children.iter().copied().find(|&c| doc.element(c).is_some())
+    {
+        out.push(html);
+    }
+    Some(out)
+}
+
 fn element_from_point(vm: &mut Vm, a: &mut CallArgs) -> R {
     let x = vm.to_number(&a.arg(0))? as f32;
     let y = vm.to_number(&a.arg(1))? as f32;
-    let h = host(vm);
-    super::ensure_layout(&h);
-    let scroll = h.borrow().scroll_y;
-    let found = {
-        let hb = h.borrow();
-        let doc = &hb.page.doc;
-        hb.layout.as_ref().and_then(|info| {
-            let depth = |mut n: NodeId| {
-                let mut d = 0;
-                while let Some(p) = doc.node(n).parent {
-                    d += 1;
-                    n = p;
-                }
-                d
-            };
-            info.boxes
-                .iter()
-                .filter(|(n, r)| {
-                    let yy = y + scroll;
-                    x >= r.x && x < r.x + r.w && yy >= r.y && yy < r.y + r.h && doc.is_connected(*n)
-                })
-                .max_by_key(|(n, _)| depth(*n))
-                .map(|(n, _)| *n)
-        })
-    };
-    let found = found.or_else(|| find_tag(vm, "html"));
+    let found = hits_at(vm, x, y).and_then(|v| v.first().copied());
     Ok(wrap_opt(vm, found))
+}
+
+fn elements_from_point(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let x = vm.to_number(&a.arg(0))? as f32;
+    let y = vm.to_number(&a.arg(1))? as f32;
+    let found = hits_at(vm, x, y).unwrap_or_default();
+    let items: Vec<Value> = found.into_iter().map(|n| wrap(vm, n)).collect();
+    Ok(vm.array_value(items))
 }
 
 fn has_focus(_vm: &mut Vm, _a: &mut CallArgs) -> R {
@@ -2628,6 +2651,7 @@ pub(crate) fn install(vm: &mut Vm) {
     p.method(&doc_p, "close", 0, noop);
     p.method(&doc_p, "getElementsByName", 1, get_elements_by_name);
     p.method(&doc_p, "elementFromPoint", 2, element_from_point);
+    p.method(&doc_p, "elementsFromPoint", 2, elements_from_point);
     p.method(&doc_p, "hasFocus", 0, has_focus);
 
     // NodeList e HTMLCollection: arrays com protótipo próprio (o prelúdio
