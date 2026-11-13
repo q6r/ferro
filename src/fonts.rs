@@ -23,9 +23,14 @@ struct WebFont {
     family: String,
     weight: (u16, u16),
     italic: bool,
-    font: Arc<Font>,
+    /// A fonte já lida; as instaladas no sistema só são lidas no primeiro uso.
+    font: OnceLock<Option<Arc<Font>>>,
+    /// Fonte instalada: o arquivo e o índice na coleção.
+    file: Option<(PathBuf, u32)>,
     /// Fonte variável com eixo de peso (wght): os bytes e o intervalo do eixo.
     var: Option<VarInfo>,
+    /// Instalada no sistema (não veio de um @font-face).
+    local: bool,
 }
 
 struct VarInfo {
@@ -33,6 +38,19 @@ struct VarInfo {
     min: f32,
     def: f32,
     max: f32,
+}
+
+impl WebFont {
+    fn font(&self) -> Option<Arc<Font>> {
+        self.font
+            .get_or_init(|| {
+                let (path, index) = self.file.as_ref()?;
+                let data = std::fs::read(path).ok()?;
+                let settings = FontSettings { collection_index: *index, ..FontSettings::default() };
+                Font::from_bytes(data, settings).ok().map(Arc::new)
+            })
+            .clone()
+    }
 }
 
 /// Ids das instâncias de fontes variáveis: base + índice da fonte web × 1024 + peso.
@@ -94,10 +112,212 @@ pub fn register_web_font(url: &str, family: &str, weight: (u16, u16), italic: bo
         family: family.to_string(),
         weight,
         italic,
-        font: Arc::new(font),
+        font: OnceLock::from(Some(Arc::new(font))),
+        file: None,
         var,
+        local: false,
     });
     true
+}
+
+// ------------------------------------------------------- fontes instaladas
+
+/// Uma face instalada no sistema: arquivo, índice na coleção (.ttc), peso e itálico.
+struct LocalFace {
+    path: PathBuf,
+    index: u32,
+    weight: u16,
+    italic: bool,
+    /// Tem eixos de variação (tabela fvar): lida na hora, para achar o wght.
+    var: bool,
+}
+
+/// Pastas de fontes do sistema e do usuário.
+fn font_dirs() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if cfg!(windows) {
+        let win = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+        v.push(PathBuf::from(win).join("Fonts"));
+        if let Ok(l) = std::env::var("LOCALAPPDATA") {
+            v.push(PathBuf::from(l).join("Microsoft").join("Windows").join("Fonts"));
+        }
+    } else if cfg!(target_os = "macos") {
+        v.extend(["/System/Library/Fonts", "/Library/Fonts"].map(PathBuf::from));
+        if let Ok(h) = std::env::var("HOME") {
+            v.push(PathBuf::from(h).join("Library/Fonts"));
+        }
+    } else {
+        v.extend(["/usr/share/fonts", "/usr/local/share/fonts"].map(PathBuf::from));
+        if let Ok(h) = std::env::var("HOME") {
+            v.push(PathBuf::from(&h).join(".fonts"));
+            v.push(PathBuf::from(h).join(".local/share/fonts"));
+        }
+    }
+    v
+}
+
+/// Índice das fontes instaladas por nome de família (em minúsculas). Lê só o
+/// cabeçalho e as tabelas `name` e `OS/2` de cada arquivo, uma vez por processo.
+fn local_index() -> &'static HashMap<String, Vec<LocalFace>> {
+    static I: OnceLock<HashMap<String, Vec<LocalFace>>> = OnceLock::new();
+    I.get_or_init(|| {
+        let mut out: HashMap<String, Vec<LocalFace>> = HashMap::new();
+        let mut stack = font_dirs();
+        let mut seen = 0;
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if seen < 64 {
+                        seen += 1;
+                        stack.push(p);
+                    }
+                    continue;
+                }
+                let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+                if matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "otc") {
+                    scan_font_file(&p, &mut out);
+                }
+            }
+        }
+        out
+    })
+}
+
+fn scan_font_file(path: &std::path::Path, out: &mut HashMap<String, Vec<LocalFace>>) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return };
+    let mut read_at = |off: u64, len: usize| -> Option<Vec<u8>> {
+        f.seek(SeekFrom::Start(off)).ok()?;
+        let mut b = vec![0u8; len];
+        f.read_exact(&mut b).ok()?;
+        Some(b)
+    };
+    let be16 = |b: &[u8], i: usize| u16::from_be_bytes([b[i], b[i + 1]]);
+    let be32 = |b: &[u8], i: usize| u32::from_be_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    let Some(head) = read_at(0, 12) else { return };
+    let offsets: Vec<u32> = if &head[0..4] == b"ttcf" {
+        let n = be32(&head, 8).min(64) as usize;
+        let Some(t) = read_at(12, 4 * n) else { return };
+        (0..n).map(|i| be32(&t, 4 * i)).collect()
+    } else {
+        vec![0]
+    };
+    for (index, &off) in offsets.iter().enumerate() {
+        let Some(h) = read_at(off as u64, 12) else { continue };
+        if !(h[0..4] == [0, 1, 0, 0] || &h[0..4] == b"OTTO" || &h[0..4] == b"true") {
+            continue;
+        }
+        let n = be16(&h, 4) as usize;
+        let Some(dir) = read_at(off as u64 + 12, 16 * n) else { continue };
+        let table = |tag: &[u8; 4]| {
+            (0..n).find(|&i| &dir[16 * i..16 * i + 4] == tag).map(|i| (be32(&dir, 16 * i + 8) as u64, be32(&dir, 16 * i + 12) as usize))
+        };
+        let Some((no, nl)) = table(b"name") else { continue };
+        let var = table(b"fvar").is_some();
+        let Some(name) = read_at(no, nl.min(1 << 20)) else { continue };
+        let (weight, italic) = match table(b"OS/2").and_then(|(o, l)| read_at(o, l.min(96))) {
+            Some(os2) if os2.len() >= 64 => {
+                let w = be16(&os2, 4);
+                // pesos antigos de 1 a 9
+                let w = if (1..10).contains(&w) { w * 100 } else { w.clamp(1, 1000) };
+                (w, be16(&os2, 62) & 0x201 != 0)
+            }
+            _ => (400, false),
+        };
+        for fam in name_families(&name) {
+            let list = out.entry(fam).or_default();
+            if !list.iter().any(|x| x.path == path && x.index == index as u32) {
+                list.push(LocalFace { path: path.to_path_buf(), index: index as u32, weight, italic, var });
+            }
+        }
+    }
+}
+
+/// Nomes de família da tabela `name` (id 1 e o tipográfico, id 16), em
+/// minúsculas, em todas as línguas.
+fn name_families(t: &[u8]) -> Vec<String> {
+    let be16 = |i: usize| t.get(i..i + 2).map(|b| u16::from_be_bytes([b[0], b[1]]));
+    let (Some(count), Some(base)) = (be16(2), be16(4)) else { return Vec::new() };
+    let mut out: Vec<String> = Vec::new();
+    for r in 0..count as usize {
+        let at = 6 + 12 * r;
+        let (Some(plat), Some(enc), Some(id), Some(len), Some(off)) = (be16(at), be16(at + 2), be16(at + 6), be16(at + 8), be16(at + 10))
+        else {
+            break;
+        };
+        if id != 1 && id != 16 {
+            continue;
+        }
+        let start = base as usize + off as usize;
+        let Some(raw) = t.get(start..start + len as usize) else { continue };
+        let s = match (plat, enc) {
+            (0, _) | (3, 1) | (3, 10) => {
+                let u: Vec<u16> = raw.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                String::from_utf16_lossy(&u)
+            }
+            (1, 0) => raw.iter().map(|&b| b as char).collect(),
+            _ => continue,
+        };
+        let s = s.trim().to_lowercase();
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// Famílias que o motor resolve com as faces de sempre (genéricas e as
+/// fontes que já são a base delas).
+fn builtin_family(name: &str) -> Option<FontFamily> {
+    Some(match name {
+        "sans-serif" | "arial" | "ui-sans-serif" | "helvetica" | "cursive" | "fantasy" => FontFamily::Sans,
+        "serif" | "times new roman" | "times" | "ui-serif" => FontFamily::Serif,
+        "monospace" | "consolas" | "ui-monospace" => FontFamily::Mono,
+        "system-ui" | "segoe ui" => FontFamily::System,
+        _ => return None,
+    })
+}
+
+/// Carrega (uma vez) as faces instaladas de uma família no catálogo das
+/// fontes web, onde o resto do motor já sabe procurar.
+fn load_local(name: &str) -> bool {
+    static TRIED: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    let tried = TRIED.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(&ok) = tried.lock().unwrap().get(name) {
+        return ok;
+    }
+    let mut ok = false;
+    if let Some(faces) = local_index().get(name) {
+        for lf in faces {
+            // variável: lê agora (o intervalo de pesos vem do eixo wght)
+            let (font, var) = if lf.var && lf.index == 0 {
+                let Ok(data) = std::fs::read(&lf.path) else { continue };
+                let var = wght_axis(&data).map(|(min, def, max)| VarInfo { data: Arc::new(data.clone()), min, def, max });
+                let Ok(font) = Font::from_bytes(data, FontSettings::default()) else { continue };
+                (OnceLock::from(Some(Arc::new(font))), var)
+            } else {
+                (OnceLock::new(), None)
+            };
+            let weight = match &var {
+                Some(v) => (v.min as u16, v.max as u16),
+                None => (lf.weight, lf.weight),
+            };
+            web_fonts().write().unwrap().push(WebFont {
+                family: name.to_string(),
+                weight,
+                italic: lf.italic,
+                font,
+                file: Some((lf.path.clone(), lf.index)),
+                var,
+                local: true,
+            });
+            ok = true;
+        }
+    }
+    tried.lock().unwrap().insert(name.to_string(), ok);
+    ok
 }
 
 /// Melhor fonte web da família para o peso e o estilo pedidos.
@@ -112,7 +332,8 @@ fn find_web(name: &str, weight: u16, italic: bool) -> Option<FontId> {
             } else {
                 weight.saturating_sub(f.weight.1)
             };
-            (f.italic != italic) as u32 * 1000 + dist as u32
+            // um @font-face com o nome esconde a fonte instalada de mesmo nome
+            (f.local, (f.italic != italic) as u32 * 1000 + dist as u32)
         })
         .map(|(i, f)| match &f.var {
             // variável: uma instância no peso pedido (fora o padrão da fonte)
@@ -136,7 +357,9 @@ fn web_sibling(id: FontId, ch: char) -> Option<FontId> {
     let me = list.get(id - WEB_FONT_BASE)?;
     list.iter()
         .enumerate()
-        .filter(|(_, f)| f.family == me.family && f.italic == me.italic && f.font.lookup_glyph_index(ch) != 0)
+        .filter(|(_, f)| {
+            f.family == me.family && f.italic == me.italic && f.font().is_some_and(|ft| ft.lookup_glyph_index(ch) != 0)
+        })
         .min_by_key(|(_, f)| f.weight.0.abs_diff(me.weight.0))
         .map(|(i, _)| WEB_FONT_BASE + i)
 }
@@ -315,6 +538,10 @@ impl Fonts {
         if fonts.face(0).is_none() && fonts.face(4).is_none() {
             return Err("nenhuma fonte do sistema encontrada (Arial/Times/DejaVu/Liberation)".into());
         }
+        // o índice das fontes instaladas fica pronto enquanto a página carrega
+        std::thread::spawn(|| {
+            local_index();
+        });
         Ok(fonts)
     }
 
@@ -322,7 +549,7 @@ impl Fonts {
         let id = var_split(id).0;
         if id >= WEB_FONT_BASE {
             let list = web_fonts().read().unwrap();
-            return list.get(id - WEB_FONT_BASE).map(|w| FontRef::Web(w.font.clone()));
+            return list.get(id - WEB_FONT_BASE).and_then(|w| w.font()).map(FontRef::Web);
         }
         self.faces
             .get(id)?
@@ -342,8 +569,17 @@ impl Fonts {
     /// Fonte de um estilo: primeiro as fontes web pelo nome da família,
     /// depois a família genérica do sistema.
     pub fn for_style(&self, s: &ComputedStyle) -> FontId {
+        // na ordem da lista: fonte web, genérica, ou instalada no sistema
         for name in s.font_names.iter() {
             if let Some(id) = find_web(name, s.font_weight, s.italic) {
+                return id;
+            }
+            if let Some(fam) = builtin_family(name) {
+                return self.pick(fam, s.font_weight, s.italic);
+            }
+            if load_local(name)
+                && let Some(id) = find_web(name, s.font_weight, s.italic)
+            {
                 return id;
             }
         }
@@ -427,11 +663,16 @@ impl Fonts {
 
     pub fn line_metrics(&self, id: FontId, size: f32) -> LineMetrics {
         match self.face(id).and_then(|f| f.horizontal_line_metrics(size)) {
-            Some(m) => LineMetrics {
-                ascent: m.ascent,
-                descent: -m.descent,
-                normal: m.new_line_size,
-            },
+            // como o Chrome (Skia): ascendente, descendente e espaço entre
+            // linhas arredondados, cada um, para pixels inteiros
+            Some(m) => {
+                let (a, d, g) = (m.ascent.round(), (-m.descent).round(), m.line_gap.round());
+                LineMetrics {
+                    ascent: a,
+                    descent: d,
+                    normal: a + d + g,
+                }
+            }
             None => LineMetrics {
                 ascent: size * 0.9,
                 descent: size * 0.25,
