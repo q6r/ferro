@@ -10,11 +10,11 @@ use crate::fonts::Fonts;
 use crate::net::Net;
 
 /// Roda `f` numa thread com pilha grande (o interpretador é recursivo).
-fn with_stack(f: impl FnOnce() + Send + 'static) {
+pub(super) fn with_stack(f: impl FnOnce() + Send + 'static) {
     std::thread::Builder::new().stack_size(STACK_SIZE).spawn(f).unwrap().join().unwrap();
 }
 
-fn session(html: &str) -> Session {
+pub(super) fn session(html: &str) -> Session {
     let url = Url::parse("https://teste.ferro/pagina").unwrap();
     let doc = crate::html::parse(html);
     let loaded = Loaded {
@@ -36,7 +36,7 @@ fn session(html: &str) -> Session {
     s
 }
 
-fn eval(s: &mut Session, code: &str) -> String {
+pub(super) fn eval(s: &mut Session, code: &str) -> String {
     match s.js.eval(code, "teste") {
         Ok(v) => match v {
             ferro_js::Value::String(t) => t.to_rust(),

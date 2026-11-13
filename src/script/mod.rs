@@ -1755,3 +1755,5 @@ pub(crate) fn ensure_layout(h: &Rc<RefCell<Host>>) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_caixas;

@@ -436,6 +436,9 @@ pub struct ComputedStyle {
     pub justify_content: Justify,
     pub align_items: Align,
     pub align_self: Option<Align>,
+    /// justify-items / justify-self (no grid; stretch = normal).
+    pub justify_items: Align,
+    pub justify_self: Option<Align>,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: FlexBasis,
@@ -454,6 +457,9 @@ pub struct ComputedStyle {
     /// grid-auto-rows / grid-auto-columns (vazio = auto).
     pub grid_auto_rows: Vec<TrackSize>,
     pub grid_auto_cols: Vec<TrackSize>,
+    /// grid-auto-flow: column (preenche descendo as linhas) e dense.
+    pub grid_flow_column: bool,
+    pub grid_flow_dense: bool,
     pub grid_areas: Option<Rc<Vec<Vec<String>>>>,
     pub grid_area: Option<String>,
     pub grid_col: (GridLine, GridLine),
@@ -612,6 +618,8 @@ impl ComputedStyle {
             justify_content: Justify::Start,
             align_items: Align::Stretch,
             align_self: None,
+            justify_items: Align::Stretch,
+            justify_self: None,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             flex_basis: FlexBasis::Auto,
@@ -627,6 +635,8 @@ impl ComputedStyle {
             grid_rows: GridTemplate::default(),
             grid_auto_rows: Vec::new(),
             grid_auto_cols: Vec::new(),
+            grid_flow_column: false,
+            grid_flow_dense: false,
             grid_areas: None,
             grid_area: None,
             grid_col: (GridLine::Auto, GridLine::Auto),
@@ -2460,6 +2470,12 @@ impl Cascade<'_> {
             let (prio, ctx) = if d.important { (2, u8::MAX - own_ctx) } else { (1, own_ctx) };
             matched.push(((prio, ctx, (1, 0, 0, 0), usize::MAX), d));
         }
+        // dicas de apresentação que vêm de outro elemento (cellpadding da
+        // tabela): nível de autor, antes de todas as regras do autor
+        let hints = if pseudo.is_none() { cell_hints(self.doc, node, el) } else { Vec::new() };
+        for d in &hints {
+            matched.push(((1, own_ctx, (0, 0, 0, 0), 0), d));
+        }
         matched.sort_by(|a, b| a.0.cmp(&b.0));
 
         // 2. aplica, começando pelas propriedades customizadas (--x)
@@ -2908,6 +2924,35 @@ impl Cascade<'_> {
                 }
             }
             "align-self" => s.align_self = if v.trim() == "auto" { None } else { parse_align(v) },
+            "justify-items" => {
+                if let Some(a) = parse_align(v) {
+                    s.justify_items = a
+                }
+            }
+            "justify-self" => s.justify_self = if v.trim() == "auto" { None } else { parse_align(v) },
+            // place-items: <align-items> [<justify-items>]
+            "place-items" | "place-self" => {
+                let mut parts = v.split_whitespace();
+                let a = parts.next().unwrap_or("");
+                let j = parts.next().unwrap_or(a);
+                let (a, j) = if d.name == "place-items" {
+                    (parse_align(a), parse_align(j))
+                } else {
+                    let p = |t: &str| if t == "auto" { Some(None) } else { parse_align(t).map(Some) };
+                    match (p(a), p(j)) {
+                        (Some(a), Some(j)) => {
+                            s.align_self = a;
+                            s.justify_self = j;
+                        }
+                        _ => {}
+                    }
+                    (None, None)
+                };
+                if let (Some(a), Some(j)) = (a, j) {
+                    s.align_items = a;
+                    s.justify_items = j;
+                }
+            }
             "flex-grow" => {
                 if let Ok(n) = v.trim().parse::<f32>() {
                     s.flex_grow = n.max(0.0)
@@ -3023,6 +3068,11 @@ impl Cascade<'_> {
             }
             "grid-auto-rows" => s.grid_auto_rows = parse_tracks(v, &u).tracks,
             "grid-auto-columns" => s.grid_auto_cols = parse_tracks(v, &u).tracks,
+            "grid-auto-flow" => {
+                let lv = v.to_ascii_lowercase();
+                s.grid_flow_column = lv.split_whitespace().any(|w| w == "column");
+                s.grid_flow_dense = lv.split_whitespace().any(|w| w == "dense");
+            }
             "grid-area" => {
                 let parts: Vec<&str> = v.split('/').map(str::trim).collect();
                 if parts.len() == 1 && !parts[0].chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-') && !parts[0].starts_with("span") && parts[0] != "auto" {
@@ -3614,8 +3664,9 @@ fn parse_align(v: &str) -> Option<Align> {
     let v = v.trim().trim_start_matches("safe ").trim_start_matches("unsafe ");
     Some(match v {
         "stretch" | "normal" => Align::Stretch,
-        "flex-start" | "start" | "self-start" => Align::Start,
-        "flex-end" | "end" | "self-end" => Align::End,
+        "flex-start" | "start" | "self-start" | "left" => Align::Start,
+        "flex-end" | "end" | "self-end" | "right" => Align::End,
+        "legacy" => Align::Stretch,
         "center" => Align::Center,
         "baseline" | "first baseline" | "last baseline" => Align::Baseline,
         _ => return None,
@@ -3842,6 +3893,41 @@ fn substitute_vars(v: &str, vars: &CustomVars, depth: u32) -> Option<String> {
     }
     out.push_str(rest);
     Some(out)
+}
+
+/// Dicas de apresentação de uma célula que vêm da tabela: `cellpadding`
+/// vira o padding das células.
+fn cell_hints(doc: &Document, node: NodeId, el: &crate::dom::ElementData) -> Vec<Declaration> {
+    if el.tag != "td" && el.tag != "th" {
+        return Vec::new();
+    }
+    // td → tr → (tbody/thead/tfoot) → table
+    let mut table = None;
+    let mut cur = doc.node(node).parent;
+    for _ in 0..3 {
+        let Some(p) = cur else { break };
+        match doc.tag(p) {
+            Some("table") => {
+                table = Some(p);
+                break;
+            }
+            Some("tr" | "tbody" | "thead" | "tfoot") => cur = doc.node(p).parent,
+            _ => break,
+        }
+    }
+    let pad = table
+        .and_then(|t| doc.element(t))
+        .and_then(|t| t.attr("cellpadding"))
+        .and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok())
+        .filter(|v| *v >= 0.0);
+    match pad {
+        Some(p) => vec![Declaration {
+            name: "padding".to_string(),
+            value: format!("{p}px"),
+            important: false,
+        }],
+        None => Vec::new(),
+    }
 }
 
 /// Atributos de apresentação do HTML antigo (bgcolor, width, align...).
