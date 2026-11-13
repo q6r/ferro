@@ -450,3 +450,41 @@ fn web_crypto_subtle() {
         );
     });
 }
+
+/// Mede a criação de sessões (prelúdio incluído): `cargo test --release
+/// medir_criacao_de_sessao -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn medir_criacao_de_sessao() {
+    with_stack(|| {
+        let fonts = Rc::new(Fonts::system().expect("fontes do sistema"));
+        let url = Url::parse("https://teste.ferro/pagina").unwrap();
+        let nova = || {
+            let loaded = Loaded {
+                url: url.clone(),
+                base: url.clone(),
+                status: 200,
+                doc: crate::html::parse("<p>oi</p>"),
+                css: Vec::new(),
+                title: String::new(),
+                sheet_texts: Default::default(),
+            };
+            let t = std::time::Instant::now();
+            let s = Session::new(loaded, Net::new(), fonts.clone(), 800.0, 600.0);
+            let ms = t.elapsed().as_secs_f64() * 1000.0;
+            drop(s);
+            ms
+        };
+        let primeira = nova();
+        let resto: Vec<f64> = (0..20).map(|_| nova()).collect();
+        let mut ord = resto.clone();
+        ord.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        eprintln!(
+            "[medida] sessão: primeira {primeira:.1} ms; seguintes: mediana {:.1} ms, mín {:.1} ms, média {:.1} ms",
+            ord[ord.len() / 2],
+            ord[0],
+            resto.iter().sum::<f64>() / resto.len() as f64
+        );
+    });
+}
+

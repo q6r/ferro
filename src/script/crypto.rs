@@ -1217,10 +1217,17 @@ fn okp_nativo(vm: &mut Vm, a: &mut CallArgs) -> R {
     bytes(vm, r)
 }
 
+/// `__native.subtle()`: compila o corpo do `crypto.subtle` (`subtle.js`) na
+/// primeira vez que a página usa; devolve a função que monta os métodos.
+fn subtle_source(vm: &mut Vm, _a: &mut CallArgs) -> R {
+    vm.eval_script(include_str!("subtle.js"), "ferro:subtle")
+}
+
 pub(crate) fn install(vm: &Vm, n: &ObjRef) {
     let r = &vm.realm;
     for (name, len, f) in [
-        ("cryptoRandom", 1, random as ferro_js::value::NativeFn),
+        ("subtle", 0, subtle_source as ferro_js::value::NativeFn),
+        ("cryptoRandom", 1, random),
         ("cryptoDigest", 2, digest_nativo),
         ("cryptoHmac", 4, hmac_nativo),
         ("cryptoPbkdf2", 5, pbkdf2_nativo),
