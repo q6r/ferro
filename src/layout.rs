@@ -256,6 +256,8 @@ fn build(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox> {
             if block || inline_block {
                 if b.style.display.is_flex() || b.style.display.is_grid() {
                     make_flex_items(doc, &mut b);
+                } else if b.style.display == Display::Table {
+                    wrap_table_children(doc, &mut b);
                 } else {
                     wrap_inline_children(doc, &mut b);
                 }
@@ -319,6 +321,47 @@ fn only_whitespace(doc: &Document, run: &[LayoutBox]) -> bool {
 
 /// Se um bloco tem filhos de bloco e em linha misturados, agrupa os em linha
 /// (e os floats e posicionados entre eles) em blocos anônimos (CSS 2.1 §9.2.1.1).
+/// Filhos de uma tabela que não são partes de tabela (texto, elementos em
+/// linha, blocos comuns) vão para uma célula anônima, como manda o CSS
+/// (§17.2.1); sem isso a tabela os ignorava e ficava com largura 0.
+fn wrap_table_children(doc: &Document, b: &mut LayoutBox) {
+    let part = |c: &LayoutBox| {
+        matches!(
+            c.style.display,
+            Display::TableCaption | Display::TableRowGroup | Display::TableRow | Display::TableCell
+        ) || c.is_out_of_flow()
+    };
+    if b.children.iter().all(part) {
+        return;
+    }
+    let mut cell = ComputedStyle::inherit_from(&b.style);
+    cell.display = Display::TableCell;
+    let cell = Rc::new(cell);
+    let mut out = Vec::new();
+    let mut run: Vec<LayoutBox> = Vec::new();
+    let flush = |run: &mut Vec<LayoutBox>, out: &mut Vec<LayoutBox>| {
+        if run.is_empty() {
+            return;
+        }
+        let children = std::mem::take(run);
+        if !only_whitespace(doc, &children) {
+            let mut c = LayoutBox::new(BoxKind::Anonymous, cell.clone(), children);
+            wrap_inline_children(doc, &mut c);
+            out.push(c);
+        }
+    };
+    for child in std::mem::take(&mut b.children) {
+        if part(&child) {
+            flush(&mut run, &mut out);
+            out.push(child);
+        } else {
+            run.push(child);
+        }
+    }
+    flush(&mut run, &mut out);
+    b.children = out;
+}
+
 fn wrap_inline_children(doc: &Document, b: &mut LayoutBox) {
     if !has_inflow_blocks(b) {
         return;
