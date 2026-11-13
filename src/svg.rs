@@ -103,36 +103,72 @@ fn parse_paint(v: &str) -> Option<Paint> {
 
 /// Números de uma lista SVG ("1.5-2e3,4 .5.5" → 1.5, -2000, 4, 0.5, 0.5).
 fn numbers(s: &str) -> Vec<f32> {
-    let b = s.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
+    while let Some(v) = next_number(s, &mut i) {
+        out.push(v);
+    }
+    out
+}
+
+/// Próximo número a partir de `*i` (pula separadores e lixo).
+fn next_number(s: &str, i: &mut usize) -> Option<f32> {
+    let b = s.as_bytes();
+    while *i < b.len() {
+        let c = b[*i];
         if c.is_ascii_digit() || c == b'-' || c == b'+' || c == b'.' {
-            let start = i;
-            i += 1;
+            let start = *i;
+            *i += 1;
             let mut seen_dot = c == b'.';
-            while i < b.len() {
-                let d = b[i];
+            while *i < b.len() {
+                let d = b[*i];
                 if d.is_ascii_digit() {
-                    i += 1;
+                    *i += 1;
                 } else if d == b'.' && !seen_dot {
                     seen_dot = true;
-                    i += 1;
-                } else if (d == b'e' || d == b'E') && i + 1 < b.len() {
-                    i += 1;
-                    if b[i] == b'-' || b[i] == b'+' {
-                        i += 1;
+                    *i += 1;
+                } else if (d == b'e' || d == b'E') && *i + 1 < b.len() {
+                    *i += 1;
+                    if b[*i] == b'-' || b[*i] == b'+' {
+                        *i += 1;
                     }
                 } else {
                     break;
                 }
             }
-            if let Ok(v) = s[start..i].parse() {
-                out.push(v);
+            if let Ok(v) = s[start..*i].parse() {
+                return Some(v);
             }
         } else {
+            *i += 1;
+        }
+    }
+    None
+}
+
+/// Argumentos de um arco: em cada grupo de 7, o 4º e o 5º são bandeiras de um
+/// caractere só, que podem vir grudadas no número seguinte ("a1 1 0 000 2" =
+/// 1, 1, 0, 0, 0, 0, 2).
+fn arc_numbers(s: &str) -> Vec<f32> {
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    loop {
+        if matches!(out.len() % 7, 3 | 4) {
+            while i < b.len() && (b[i].is_ascii_whitespace() || b[i] == b',') {
+                i += 1;
+            }
+            match b.get(i) {
+                Some(b'0') => out.push(0.0),
+                Some(b'1') => out.push(1.0),
+                _ => break,
+            }
             i += 1;
+        } else {
+            match next_number(s, &mut i) {
+                Some(v) => out.push(v),
+                None => break,
+            }
         }
     }
     out
@@ -272,16 +308,17 @@ fn parse_path(d: &str) -> Vec<Seg> {
     // separa em (comando, números)
     let mut cmds: Vec<(char, Vec<f32>)> = Vec::new();
     let mut start = None;
+    let args = |cmd: char, s: &str| if matches!(cmd, 'a' | 'A') { arc_numbers(s) } else { numbers(s) };
     for (i, c) in d.char_indices() {
         if c.is_ascii_alphabetic() && c != 'e' && c != 'E' {
             if let Some((s, cmd)) = start {
-                cmds.push((cmd, numbers(&d[s..i])));
+                cmds.push((cmd, args(cmd, &d[s..i])));
             }
             start = Some((i + 1, c));
         }
     }
     if let Some((s, cmd)) = start {
-        cmds.push((cmd, numbers(&d[s..])));
+        cmds.push((cmd, args(cmd, &d[s..])));
     }
 
     let mut out = Vec::new();
@@ -795,6 +832,18 @@ mod tests {
     #[test]
     fn numeros_svg() {
         assert_eq!(numbers("1.5-2e1,4 .5.5"), vec![1.5, -20.0, 4.0, 0.5, 0.5]);
+    }
+
+    #[test]
+    fn bandeiras_do_arco_grudadas() {
+        // "a1 1 0 000 2" = rx 1, ry 1, rotação 0, bandeiras 0 e 0, ponto (0, 2)
+        assert_eq!(arc_numbers("1 1 0 000 2"), vec![1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 2.0]);
+        assert_eq!(arc_numbers("9 9 0 105.641 16.01"), vec![9.0, 9.0, 0.0, 1.0, 0.0, 5.641, 16.01]);
+        assert_eq!(arc_numbers("1 1 0 0,1 2 0 1 1 0 1 1 3 3"), vec![1.0, 1.0, 0.0, 0.0, 1.0, 2.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 3.0, 3.0]);
+        // a lupa do YouTube termina no ponto certo
+        let segs = parse_path("M11 2a9 9 0 105.641 16.01");
+        let Some(Seg::Cubic(_, _, end)) = segs.last() else { panic!() };
+        assert!((end.0 - 16.641).abs() < 0.01 && (end.1 - 18.01).abs() < 0.01, "{end:?}");
     }
 
     #[test]
