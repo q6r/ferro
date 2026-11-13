@@ -359,9 +359,38 @@ enum Prop {
     Strings(usize),
 }
 
+thread_local! {
+    /// Propriedades já montadas (o mesmo `\p{L}` em várias regex não decodifica de novo).
+    static PROPS: RefCell<Vec<(String, Rc<Ranges>)>> = const { RefCell::new(Vec::new()) };
+}
+
 /// Procura a propriedade pelos nomes exatos do spec (sem casamento frouxo).
 /// Com `build` falso só confere o nome.
 fn find_property(name: &str, value: Option<&str>, build: bool) -> Option<Prop> {
+    if !build {
+        return find_property_in(name, value, false);
+    }
+    let key = match value {
+        Some(v) => format!("{name}={v}"),
+        None => name.to_string(),
+    };
+    if let Some(r) = PROPS.with(|c| c.borrow().iter().find(|e| e.0 == key).map(|e| e.1.clone())) {
+        return Some(Prop::Chars((*r).clone()));
+    }
+    let p = find_property_in(name, value, true)?;
+    if let Prop::Chars(r) = &p {
+        PROPS.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 32 {
+                c.remove(0);
+            }
+            c.push((key, Rc::new(r.clone())));
+        });
+    }
+    Some(p)
+}
+
+fn find_property_in(name: &str, value: Option<&str>, build: bool) -> Option<Prop> {
     let chars = |f: &dyn Fn() -> Ranges| Some(Prop::Chars(if build { f() } else { Vec::new() }));
     if let Some(v) = value {
         return match name {
