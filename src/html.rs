@@ -365,6 +365,18 @@ const SCOPE_BOUNDARY: &[&str] = &[
 /// Analisa `input` como o conteúdo de um elemento `<context>` (innerHTML) e
 /// cria os nós (soltos) em `doc`. Devolve os nós de primeiro nível.
 pub fn parse_fragment(input: &str, context: &str, doc: &mut Document) -> Vec<NodeId> {
+    // contexto de texto cru (innerHTML num <script>, <style>, <textarea>...):
+    // o leitor começa no estado do elemento, e tudo vira um texto só
+    let raw = match context {
+        "script" | "style" | "xmp" | "iframe" | "noembed" | "noframes" | "noscript" | "plaintext" => {
+            Some(input.to_string())
+        }
+        "title" | "textarea" => Some(decode_entities(input)),
+        _ => None,
+    };
+    if let Some(text) = raw {
+        return if text.is_empty() { Vec::new() } else { vec![doc.create(NodeData::Text(text))] };
+    }
     let (wrapped, path): (String, &[&str]) = match context {
         "table" => (format!("<table>{input}</table>"), &["table"]),
         "tbody" | "thead" | "tfoot" => (format!("<table><tbody>{input}</tbody></table>"), &["table", "tbody"]),
