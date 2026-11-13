@@ -20,10 +20,10 @@ pub fn install(r: &Realm) {
         ("decodeURI", 1, decode_uri),
         ("escape", 1, escape),
         ("unescape", 1, unescape),
-        ("eval", 1, eval),
     ] {
         r.method(g, name, len, f);
     }
+    g.borrow_mut().props.insert(PropKey::str("eval"), Property::hidden(Value::Object(r.eval_fn.clone())));
 }
 
 fn is_nan(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -198,10 +198,11 @@ fn unescape(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::String(JsStr::from_units(out)))
 }
 
-/// `eval` indireto: roda o texto como um script global.
-pub(crate) fn eval(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+/// `eval` chamado de forma indireta (`(0, eval)(x)`, `globalThis.eval(x)`);
+/// o direto (`eval(x)`) é a instrução CallEval.
+pub(super) fn eval(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let Value::String(src) = a.arg(0) else { return Ok(a.arg(0)) };
-    vm.eval_script(&src.to_rust(), "eval")
+    vm.indirect_eval(&src.to_rust())
 }
 
 impl Vm {

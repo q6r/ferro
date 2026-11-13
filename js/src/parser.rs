@@ -480,11 +480,37 @@ impl Parser {
                     return self.err(format!("Unexpected strict mode reserved word '{n}'"));
                 }
                 let n = n.clone();
+                self.strict_target(&n)?;
                 self.advance()?;
                 Ok(n)
             }
             _ => self.unexpected(),
         }
+    }
+
+    /// No modo estrito, `eval` e `arguments` não podem ser declarados nem
+    /// receber atribuição.
+    fn strict_target(&self, n: &str) -> PResult<()> {
+        if self.strict && (n == "eval" || n == "arguments") {
+            return self.err("Unexpected eval or arguments in strict mode");
+        }
+        Ok(())
+    }
+
+    /// "use strict" no próprio corpo vale também para o nome e os parâmetros,
+    /// lidos antes dele.
+    fn strict_params(&self, name: Option<&Name>, params: &[Pattern], rest: Option<&Pattern>) -> PResult<()> {
+        let mut names: Vec<Name> = name.into_iter().cloned().collect();
+        for p in params.iter().chain(rest) {
+            crate::compiler::bound_names(p, &mut names);
+        }
+        for n in &names {
+            if STRICT_RESERVED.contains(&&**n) {
+                return self.err(format!("Unexpected strict mode reserved word '{n}'"));
+            }
+            self.strict_target(n)?;
+        }
+        Ok(())
     }
 
     // --------------------------------------------------------- instruções
@@ -921,7 +947,10 @@ impl Parser {
     /// em padrão de atribuição: `[a, b] = ...`, `({x} = o)`.
     fn expr_to_pattern(&self, e: Expr) -> PResult<Pattern> {
         Ok(match e {
-            Expr::Ident(n, _) => Pattern::Ident(n),
+            Expr::Ident(n, _) => {
+                self.strict_target(&n)?;
+                Pattern::Ident(n)
+            }
             Expr::Member { .. } | Expr::Index { .. } | Expr::PrivateMember(..) | Expr::SuperMember(_) | Expr::SuperIndex(_) => {
                 Pattern::Target(Box::new(e))
             }
@@ -996,6 +1025,7 @@ impl Parser {
                 match left {
                     Expr::Ident(..) | Expr::Member { .. } | Expr::Index { .. } | Expr::PrivateMember(..) | Expr::SuperMember(_) | Expr::SuperIndex(_) => {
                         if let Expr::Ident(n, _) = left {
+                            self.strict_target(&n)?;
                             Pattern::Ident(n)
                         } else {
                             Pattern::Target(Box::new(left))
@@ -1117,6 +1147,9 @@ impl Parser {
                 stmts.push(self.parse_statement()?);
             }
             strict = self.strict;
+            if strict && !saved_strict {
+                self.strict_params(None, &params, rest.as_ref())?;
+            }
             self.strict = saved_strict;
             FnBody::Block(stmts)
         } else {
@@ -1195,6 +1228,9 @@ impl Parser {
         if let Some(op) = op {
             self.advance()?;
             let arg = self.parse_unary()?;
+            if op == UnOp::Delete && self.strict && matches!(arg, Expr::Ident(..)) {
+                return self.err("Delete of an unqualified identifier in strict mode.");
+            }
             return Ok(Expr::Unary(op, Box::new(arg)));
         }
         if self.is_kw("await") && (self.ctx.in_async || !self.ctx.in_function) && self.ctx.in_async {
@@ -1206,6 +1242,9 @@ impl Parser {
             let inc = self.is("++");
             self.advance()?;
             let target = self.parse_unary()?;
+            if let Expr::Ident(n, _) = &target {
+                self.strict_target(n)?;
+            }
             return Ok(Expr::Update {
                 inc,
                 prefix: true,
@@ -1214,6 +1253,9 @@ impl Parser {
         }
         let e = self.parse_lhs()?;
         if (self.is("++") || self.is("--")) && !self.tok.nl_before {
+            if let Expr::Ident(n, _) = &e {
+                self.strict_target(n)?;
+            }
             let inc = self.is("++");
             self.advance()?;
             return Ok(Expr::Update {
@@ -1707,6 +1749,10 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
         let strict = self.strict;
+        if strict && !saved_strict {
+            let own = if kind == FnKind::Normal { name.as_ref() } else { None };
+            self.strict_params(own, &params, rest.as_ref())?;
+        }
         self.ctx = saved_ctx;
         self.strict = saved_strict;
         let source = self.lx.source_slice(start, self.prev_end);
@@ -1728,12 +1774,13 @@ impl Parser {
         let start = self.tok.start;
         let line = self.line();
         self.expect_kw("class")?;
+        // a classe inteira (inclusive o nome) é código estrito
+        let saved_strict = self.strict;
+        self.strict = true;
         let name = match &self.tok.tok {
             Tok::Ident(n) if &**n != "extends" => Some(self.binding_ident()?),
             _ => None,
         };
-        let saved_strict = self.strict;
-        self.strict = true;
         let superclass = if self.eat_kw("extends")? { Some(self.parse_lhs()?) } else { None };
         let saved_ctx = self.ctx;
         self.ctx.in_class = true;

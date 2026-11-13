@@ -165,6 +165,8 @@ pub enum Op {
     /// Como Call, mas se fn for o `eval` original é eval direto: o texto é
     /// compilado nos escopos descritos em `eval_sites[1]`.
     CallEval(u32, u32),
+    /// [fn this array] → [resultado]: `eval(...args)`.
+    CallEvalSpread(u32),
     /// Declaração de um eval direto não estrito (nome, modo `EVAL_*`).
     EvalDecl(u32, u8),
     /// [fn this array] → [resultado]
@@ -482,6 +484,32 @@ impl EvalSite {
     pub fn strict(&self) -> bool {
         self.fns.last().is_some_and(|f| f.strict)
     }
+
+    /// O escopo global, visto por um eval indireto.
+    pub fn global() -> EvalSite {
+        let top = ScopeC {
+            key: 0,
+            vars: Vec::new(),
+            index: FxHashMap::default(),
+            env_size: 0,
+            has_env: false,
+            kind: ScopeKind::Script,
+            reg_base: 0,
+            catch: false,
+            snap: None,
+        };
+        EvalSite {
+            fns: vec![EvalFn {
+                kind: FnKind::Normal,
+                strict: false,
+                is_script: true,
+                is_eval: false,
+                scopes: vec![Rc::new(top)],
+            }],
+            in_params: false,
+            imports: Rc::default(),
+        }
+    }
 }
 
 struct EvalFn {
@@ -501,6 +529,8 @@ pub trait EvalHost {
     fn can_declare_global_var(&self, name: &str) -> bool;
     /// CanDeclareGlobalFunction.
     fn can_declare_global_fn(&self, name: &str) -> bool;
+    /// O objeto global tem a propriedade (própria).
+    fn global_has(&self, name: &str) -> bool;
 }
 
 /// Erro ao preparar um eval: de sintaxe ou TypeError (global não extensível...).
@@ -1323,6 +1353,54 @@ pub fn compile_eval(prog: &Program, site: &EvalSite, host: &dyn EvalHost) -> Res
     c.eval_code(prog, strict, site, host, key)
 }
 
+/// Eval indireto não estrito roda como script (o `$262.evalScript` do
+/// test262 depende disso), mas antes confere as `var` e funções do topo como
+/// o EvalDeclarationInstantiation: se uma falhar, nenhuma ligação é criada.
+pub fn check_global_script(prog: &Program, host: &dyn EvalHost) -> Result<(), EvalFail> {
+    let mut vars = Vec::new();
+    var_names(&prog.body, &mut vars, false, false);
+    let mut fns: Vec<Name> = Vec::new();
+    for s in &prog.body {
+        if let Stmt::Function(f) = s
+            && let Some(n) = &f.name
+            && !fns.contains(n)
+        {
+            fns.push(n.clone());
+        }
+    }
+    if let Some(n) = vars.iter().chain(fns.iter()).find(|n| host.global_lexical(n)) {
+        return Err(redeclared(n));
+    }
+    check_global_defs(&vars, &fns, host)
+}
+
+fn redeclared(n: &str) -> EvalFail {
+    EvalFail::Syntax(ParseError {
+        msg: format!("Identifier '{n}' has already been declared"),
+        line: 0,
+        eof: false,
+    })
+}
+
+/// CanDeclareGlobalFunction / CanDeclareGlobalVar das declarações do topo.
+fn check_global_defs(vars: &[Name], fns: &[Name], host: &dyn EvalHost) -> Result<(), EvalFail> {
+    let not_extensible = |n: &str| EvalFail::Type(format!("Cannot add property {n}, object is not extensible"));
+    for n in fns.iter().rev() {
+        if !host.can_declare_global_fn(n) {
+            if host.global_has(n) {
+                return Err(EvalFail::Type(format!("Identifier '{n}' has already been declared")));
+            }
+            return Err(not_extensible(n));
+        }
+    }
+    for n in vars {
+        if !fns.contains(n) && !host.can_declare_global_var(n) {
+            return Err(not_extensible(n));
+        }
+    }
+    Ok(())
+}
+
 /// Onde mora a `var` de um eval não estrito.
 #[derive(Clone, Copy)]
 enum VarAt {
@@ -1619,18 +1697,10 @@ impl Compiler {
         }
         let mut seen: FxHashSet<Name> = FxHashSet::default();
         let all: Vec<Name> = var_list.iter().chain(fn_names.iter()).filter(|n| seen.insert((*n).clone())).cloned().collect();
-        let redeclared = |n: &str| EvalFail::Syntax(ParseError {
-            msg: format!("Identifier '{n}' has already been declared"),
-            line: 0,
-            eof: false,
-        });
         // eval nos parâmetros: não pode repetir um parâmetro (nem `arguments`)
         let params_fn = (site.in_params && vf == self.fns.len() - 2).then_some(vf);
         for n in &all {
-            if global && host.global_lexical(n) {
-                return Err(redeclared(n));
-            }
-            if self.eval_binding_between(vf, n, true, params_fn.is_some()) {
+            if (global && host.global_lexical(n)) || self.eval_binding_between(vf, n, true, params_fn.is_some()) {
                 return Err(redeclared(n));
             }
             if let Some(pf) = params_fn {
@@ -1642,16 +1712,7 @@ impl Compiler {
             }
         }
         if global {
-            for n in fn_names.iter().rev() {
-                if !host.can_declare_global_fn(n) {
-                    return Err(EvalFail::Type(format!("Cannot redefine property: {n}")));
-                }
-            }
-            for n in &var_list {
-                if !fn_names.contains(n) && !host.can_declare_global_var(n) {
-                    return Err(EvalFail::Type(format!("Cannot define property {n}, object is not extensible")));
-                }
-            }
+            check_global_defs(&var_list, &fn_names, host)?;
         }
         // Anexo B.3.3.3: funções em blocos que viram `var`
         let candidates = annex_b_functions(body, lex.iter().map(|(n, _)| n.clone()).collect());
@@ -3864,6 +3925,10 @@ impl Compiler {
                         self.emit(Op::CallEval(n, site))
                     }
                     Some(n) => self.emit(Op::Call(n)),
+                    None if is_direct_eval(callee, *optional) => {
+                        let site = self.eval_site();
+                        self.emit(Op::CallEvalSpread(site))
+                    }
                     None => self.emit(Op::CallSpread),
                 };
                 self.call_name(at, callee);
