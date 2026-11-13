@@ -497,6 +497,28 @@ impl Parser {
         Ok(())
     }
 
+    /// Erros dos parâmetros que dependem do corpo: "use strict" no corpo só com
+    /// parâmetros simples, e nomes repetidos só em função comum não estrita
+    /// com parâmetros simples (`unique`: arrow e métodos nunca aceitam).
+    fn check_params(&self, params: &[Pattern], rest: Option<&Pattern>, use_strict: bool, unique: bool) -> PResult<()> {
+        let simple = rest.is_none() && params.iter().all(|p| matches!(p, Pattern::Ident(_)));
+        if use_strict && !simple {
+            return self.err("Illegal 'use strict' directive in function with non-simple parameter list");
+        }
+        if unique || self.strict || !simple {
+            let mut names: Vec<Name> = Vec::new();
+            for p in params.iter().chain(rest) {
+                crate::compiler::bound_names(p, &mut names);
+            }
+            for (i, n) in names.iter().enumerate() {
+                if names[..i].contains(n) {
+                    return self.err("Duplicate parameter name not allowed in this context");
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// "use strict" no próprio corpo vale também para o nome e os parâmetros,
     /// lidos antes dele.
     fn strict_params(&self, name: Option<&Name>, params: &[Pattern], rest: Option<&Pattern>) -> PResult<()> {
@@ -524,8 +546,8 @@ impl Parser {
         Ok(body)
     }
 
-    /// "use strict" no começo do programa/função.
-    fn directives(&mut self) -> PResult<()> {
+    /// "use strict" no começo do programa/função (devolve se achou).
+    fn directives(&mut self) -> PResult<bool> {
         if let Tok::Str(s) = &self.tok.tok {
             let text = String::from_utf16_lossy(s);
             let raw = self.lx.source_slice(self.tok.start + 1, self.tok.end - 1);
@@ -533,10 +555,11 @@ impl Parser {
                 let next = self.peek()?;
                 if matches!(next.tok, Tok::Punct(";") | Tok::Punct("}") | Tok::Eof) || next.nl_before {
                     self.strict = true;
+                    return Ok(true);
                 }
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     fn parse_block(&mut self) -> PResult<Vec<Stmt>> {
@@ -1138,7 +1161,7 @@ impl Parser {
         let body = if self.is("{") {
             let saved_strict = self.strict;
             self.advance()?;
-            self.directives()?;
+            let use_strict = self.directives()?;
             let mut stmts = Vec::new();
             while !self.eat("}")? {
                 if self.tok.tok == Tok::Eof {
@@ -1147,12 +1170,14 @@ impl Parser {
                 stmts.push(self.parse_statement()?);
             }
             strict = self.strict;
+            self.check_params(&params, rest.as_ref(), use_strict, true)?;
             if strict && !saved_strict {
                 self.strict_params(None, &params, rest.as_ref())?;
             }
             self.strict = saved_strict;
             FnBody::Block(stmts)
         } else {
+            self.check_params(&params, rest.as_ref(), false, true)?;
             FnBody::Expr(Box::new(self.parse_assign(no_in)?))
         };
         self.ctx = saved_ctx;
@@ -1740,7 +1765,7 @@ impl Parser {
         }
         self.expect(")")?;
         self.expect("{")?;
-        self.directives()?;
+        let use_strict = self.directives()?;
         let mut body = Vec::new();
         while !self.eat("}")? {
             if self.tok.tok == Tok::Eof {
@@ -1749,6 +1774,7 @@ impl Parser {
             body.push(self.parse_statement()?);
         }
         let strict = self.strict;
+        self.check_params(&params, rest.as_ref(), use_strict, kind != FnKind::Normal)?;
         if strict && !saved_strict {
             let own = if kind == FnKind::Normal { name.as_ref() } else { None };
             self.strict_params(own, &params, rest.as_ref())?;
