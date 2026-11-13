@@ -24,6 +24,35 @@ struct WebFont {
     weight: (u16, u16),
     italic: bool,
     font: Arc<Font>,
+    /// Fonte variável com eixo de peso (wght): os bytes e o intervalo do eixo.
+    var: Option<VarInfo>,
+}
+
+struct VarInfo {
+    data: Arc<Vec<u8>>,
+    min: f32,
+    def: f32,
+    max: f32,
+}
+
+/// Ids das instâncias de fontes variáveis: base + índice da fonte web × 1024 + peso.
+const VAR_BASE: FontId = 1 << 24;
+
+/// (fonte web de base, peso da instância) de um id.
+fn var_split(id: FontId) -> (FontId, Option<u16>) {
+    if id >= VAR_BASE {
+        let k = id - VAR_BASE;
+        (WEB_FONT_BASE + k / 1024, Some((k % 1024) as u16))
+    } else {
+        (id, None)
+    }
+}
+
+/// Eixo de peso de uma fonte variável, se tiver.
+fn wght_axis(data: &[u8]) -> Option<(f32, f32, f32)> {
+    let face = ttf_parser::Face::parse(data, 0).ok()?;
+    let tag = ttf_parser::Tag::from_bytes(b"wght");
+    face.variation_axes().into_iter().find(|a| a.tag == tag).map(|a| (a.min_value, a.def_value, a.max_value))
 }
 
 /// Catálogo de fontes web, compartilhado entre as threads: o motor mede o
@@ -59,12 +88,14 @@ pub fn register_web_font(url: &str, family: &str, weight: (u16, u16), italic: bo
     } else {
         bytes.to_vec()
     };
+    let var = wght_axis(&data).map(|(min, def, max)| VarInfo { data: Arc::new(data.clone()), min, def, max });
     let Ok(font) = Font::from_bytes(data, FontSettings::default()) else { return false };
     web_fonts().write().unwrap().push(WebFont {
         family: family.to_string(),
         weight,
         italic,
         font: Arc::new(font),
+        var,
     });
     true
 }
@@ -83,12 +114,24 @@ fn find_web(name: &str, weight: u16, italic: bool) -> Option<FontId> {
             };
             (f.italic != italic) as u32 * 1000 + dist as u32
         })
-        .map(|(i, _)| WEB_FONT_BASE + i)
+        .map(|(i, f)| match &f.var {
+            // variável: uma instância no peso pedido (fora o padrão da fonte)
+            Some(v) => {
+                let w = (weight as f32).clamp(v.min, v.max).round();
+                if (w - v.def).abs() >= 1.0 && (1.0..1024.0).contains(&w) {
+                    VAR_BASE + i * 1024 + w as usize
+                } else {
+                    WEB_FONT_BASE + i
+                }
+            }
+            None => WEB_FONT_BASE + i,
+        })
 }
 
 /// Outra fonte web da mesma família que tenha o caractere (as fontes do
 /// Google vêm divididas por alfabeto).
 fn web_sibling(id: FontId, ch: char) -> Option<FontId> {
+    let id = var_split(id).0;
     let list = web_fonts().read().unwrap();
     let me = list.get(id - WEB_FONT_BASE)?;
     list.iter()
@@ -276,6 +319,7 @@ impl Fonts {
     }
 
     fn face(&self, id: FontId) -> Option<FontRef<'_>> {
+        let id = var_split(id).0;
         if id >= WEB_FONT_BASE {
             let list = web_fonts().read().unwrap();
             return list.get(id - WEB_FONT_BASE).map(|w| FontRef::Web(w.font.clone()));
@@ -369,7 +413,10 @@ impl Fonts {
             return *a;
         }
         let rid = self.resolve(id, ch);
-        let a = self.face(rid).map(|f| f.metrics(ch, size).advance_width).unwrap_or(size * 0.5);
+        let a = match self.var_advance(rid, ch, size) {
+            Some(a) => a,
+            None => self.face(rid).map(|f| f.metrics(ch, size).advance_width).unwrap_or(size * 0.5),
+        };
         self.advances.borrow_mut().insert(k, a);
         a
     }
@@ -513,13 +560,144 @@ impl Fonts {
         })
     }
 
+    /// Bytes de uma instância variável (fonte, peso).
+    fn var_face_data(id: FontId) -> Option<(Arc<Vec<u8>>, u16)> {
+        let (base, Some(w)) = var_split(id) else { return None };
+        let list = web_fonts().read().unwrap();
+        let v = list.get(base - WEB_FONT_BASE)?.var.as_ref()?;
+        Some((v.data.clone(), w))
+    }
+
+    /// Avanço numa instância variável (o HVAR entra pelo ttf-parser).
+    fn var_advance(&self, id: FontId, ch: char, size: f32) -> Option<f32> {
+        let (data, w) = Self::var_face_data(id)?;
+        let mut face = ttf_parser::Face::parse(&data, 0).ok()?;
+        face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), w as f32);
+        let gid = face.glyph_index(ch)?;
+        Some(face.glyph_hor_advance(gid)? as f32 * size / face.units_per_em() as f32)
+    }
+
+    /// Glifo de uma instância variável: o contorno com a variação aplicada,
+    /// preenchido pelo rasterizador do canvas (o fontdue só desenha o padrão).
+    fn var_glyph(&self, id: FontId, ch: char, size: f32) -> Option<(Metrics, Vec<u8>)> {
+        use crate::canvas::{Bitmap, Cmd, Mat, Op, Paint, Style};
+        let (data, w) = Self::var_face_data(id)?;
+        let mut face = ttf_parser::Face::parse(&data, 0).ok()?;
+        face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), w as f32);
+        let gid = face.glyph_index(ch)?;
+        let scale = size / face.units_per_em() as f32;
+        let adv = face.glyph_hor_advance(gid).map(|a| a as f32 * scale).unwrap_or(size * 0.5);
+        let base = self.face(id)?.metrics(ch, size);
+        // contorno em unidades da fonte, guardando a caixa (a do glyf não varia)
+        #[derive(Default)]
+        struct Rec {
+            segs: Vec<(u8, [f32; 6])>,
+            x0: f32,
+            y0: f32,
+            x1: f32,
+            y1: f32,
+            any: bool,
+        }
+        impl Rec {
+            fn pt(&mut self, x: f32, y: f32) {
+                if !self.any {
+                    (self.x0, self.y0, self.x1, self.y1, self.any) = (x, y, x, y, true);
+                }
+                self.x0 = self.x0.min(x);
+                self.y0 = self.y0.min(y);
+                self.x1 = self.x1.max(x);
+                self.y1 = self.y1.max(y);
+            }
+        }
+        impl ttf_parser::OutlineBuilder for Rec {
+            fn move_to(&mut self, x: f32, y: f32) {
+                self.pt(x, y);
+                self.segs.push((0, [x, y, 0.0, 0.0, 0.0, 0.0]));
+            }
+            fn line_to(&mut self, x: f32, y: f32) {
+                self.pt(x, y);
+                self.segs.push((1, [x, y, 0.0, 0.0, 0.0, 0.0]));
+            }
+            fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+                self.pt(x1, y1);
+                self.pt(x, y);
+                self.segs.push((2, [x1, y1, x, y, 0.0, 0.0]));
+            }
+            fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+                self.pt(x1, y1);
+                self.pt(x2, y2);
+                self.pt(x, y);
+                self.segs.push((3, [x1, y1, x2, y2, x, y]));
+            }
+            fn close(&mut self) {
+                self.segs.push((4, [0.0; 6]));
+            }
+        }
+        let mut rec = Rec::default();
+        if face.outline_glyph(gid, &mut rec).is_none() || !rec.any {
+            // sem contorno (espaço): só o avanço
+            return Some((Metrics { xmin: 0, ymin: 0, width: 0, height: 0, advance_width: adv, ..base }, Vec::new()));
+        }
+        let px0 = (rec.x0 * scale).floor();
+        let py0 = (rec.y0 * scale).floor();
+        let wpx = ((rec.x1 * scale).ceil() - px0).max(1.0) as usize + 1;
+        let hpx = ((rec.y1 * scale).ceil() - py0).max(1.0) as usize + 1;
+        let top = py0 + hpx as f32;
+        let p = |x: f32, y: f32| (x * scale - px0, top - y * scale);
+        let mut cmds = Vec::with_capacity(rec.segs.len());
+        let mut last = (0.0f32, 0.0f32);
+        for (k, a) in &rec.segs {
+            match k {
+                0 => {
+                    last = p(a[0], a[1]);
+                    cmds.push(Cmd::Move(last.0, last.1));
+                }
+                1 => {
+                    last = p(a[0], a[1]);
+                    cmds.push(Cmd::Line(last.0, last.1));
+                }
+                2 => {
+                    let (cx, cy) = p(a[0], a[1]);
+                    let (ex, ey) = p(a[2], a[3]);
+                    let (sx, sy) = last;
+                    cmds.push(Cmd::Cubic(
+                        sx + 2.0 / 3.0 * (cx - sx),
+                        sy + 2.0 / 3.0 * (cy - sy),
+                        ex + 2.0 / 3.0 * (cx - ex),
+                        ey + 2.0 / 3.0 * (cy - ey),
+                        ex,
+                        ey,
+                    ));
+                    last = (ex, ey);
+                }
+                3 => {
+                    let (b1, b2) = p(a[0], a[1]);
+                    let (c1, c2) = p(a[2], a[3]);
+                    let (e1, e2) = p(a[4], a[5]);
+                    cmds.push(Cmd::Cubic(b1, b2, c1, c2, e1, e2));
+                    last = (e1, e2);
+                }
+                _ => cmds.push(Cmd::Close),
+            }
+        }
+        let mut bmp = Bitmap::new(wpx, hpx);
+        let paint = Paint { style: Style::Solid([1.0, 1.0, 1.0, 1.0]), inv: Mat::IDENTITY, alpha: 1.0, op: Op::SourceOver };
+        bmp.fill_path(&cmds, false, &paint);
+        let img = bmp.snapshot();
+        let coverage: Vec<u8> = img.rgba.chunks(4).map(|px| px[3]).collect();
+        Some((Metrics { xmin: px0 as i32, ymin: py0 as i32, width: wpx, height: hpx, advance_width: adv, ..base }, coverage))
+    }
+
     pub fn glyph(&self, id: FontId, ch: char, size: f32) -> Option<Glyph> {
         let k = (id, ch, Self::key(size));
         if let Some(g) = self.glyphs.borrow().get(&k) {
             return Some(g.clone());
         }
         let rid = self.resolve(id, ch);
-        let (metrics, coverage) = self.face(rid)?.rasterize(ch, size);
+        let (metrics, coverage) = match self.var_glyph(rid, ch, size) {
+            Some(g) => g,
+            None => self.face(rid)?.rasterize(ch, size),
+        };
         let g = Glyph {
             metrics,
             coverage: std::rc::Rc::new(coverage),
