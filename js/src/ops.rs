@@ -774,8 +774,12 @@ impl Vm {
             let mut b = obj.borrow_mut();
             let frozen = b.frozen;
             let ext = b.extensible;
+            // índice com atributos especiais: o valor muda lá nas propriedades
+            let in_props = matches!(b.kind, Kind::Array(_)) && b.props.contains(&key);
             if let Kind::Array(vec) = &mut b.kind {
-                if let Some(i) = key.as_index() {
+                if let Some(i) = key.as_index()
+                    && !in_props
+                {
                     let i = i as usize;
                     if frozen {
                         return Ok(false);
@@ -855,18 +859,24 @@ impl Vm {
             return;
         }
         let mut b = obj.borrow_mut();
-        if let Kind::Array(vec) = &mut b.kind
+        if matches!(b.kind, Kind::Array(_))
             && let Some(i) = key.as_index()
         {
-            let i = i as usize;
-            if i < vec.len() {
-                vec[i] = v;
-                return;
+            // o elemento vai para o vetor: some a versão com atributos especiais
+            if !b.props.is_empty() {
+                b.props.remove(&key);
             }
-            if i < vec.len() + 1_000_000 {
-                vec.resize(i, Value::Empty);
-                vec.push(v);
-                return;
+            if let Kind::Array(vec) = &mut b.kind {
+                let i = i as usize;
+                if i < vec.len() {
+                    vec[i] = v;
+                    return;
+                }
+                if i < vec.len() + 1_000_000 {
+                    vec.resize(i, Value::Empty);
+                    vec.push(v);
+                    return;
+                }
             }
         }
         b.props.insert(key, Property::data(v));
@@ -907,13 +917,15 @@ impl Vm {
         let mut b = obj.borrow_mut();
         let frozen = b.frozen;
         if let Kind::Array(vec) = &mut b.kind {
+            // buraco no vetor: o índice pode estar nas propriedades (acessor...)
             if let Some(i) = key.as_index()
-                && (i as usize) < vec.len()
+                && let Some(x) = vec.get_mut(i as usize)
+                && !matches!(x, Value::Empty)
             {
                 if frozen {
                     return false;
                 }
-                vec[i as usize] = Value::Empty;
+                *x = Value::Empty;
                 return true;
             }
             if let PropKey::Str(s) = key

@@ -236,6 +236,9 @@ pub struct PropMap {
     index: Option<Box<crate::fxhash::FxHashMap<PropKey, usize>>>,
     /// Muda quando as posições das entradas mudam (remoção): invalida caches.
     generation: u32,
+    /// Muda a cada escrita (inserção, remoção, acesso mutável): invalida
+    /// caches que dependem dos valores.
+    version: u32,
 }
 
 const LINEAR: usize = 8;
@@ -277,12 +280,16 @@ impl PropMap {
 
     pub fn get_mut(&mut self, k: &PropKey) -> Option<&mut Property> {
         match self.find(k) {
-            Some(i) => Some(&mut self.entries[i].1),
+            Some(i) => {
+                self.version = self.version.wrapping_add(1);
+                Some(&mut self.entries[i].1)
+            }
             None => None,
         }
     }
 
     pub fn insert(&mut self, k: PropKey, p: Property) {
+        self.version = self.version.wrapping_add(1);
         match self.find(&k) {
             Some(i) => self.entries[i].1 = p,
             None => {
@@ -316,9 +323,14 @@ impl PropMap {
         self.generation
     }
 
+    pub fn version(&self) -> u32 {
+        self.version
+    }
+
     pub fn remove(&mut self, k: &PropKey) -> bool {
         let Some(i) = self.find(k) else { return false };
         self.generation = self.generation.wrapping_add(1);
+        self.version = self.version.wrapping_add(1);
         self.entries.remove(i);
         if self.index.is_some() {
             self.rebuild_index();

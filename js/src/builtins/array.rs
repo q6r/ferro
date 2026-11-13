@@ -11,7 +11,8 @@ use crate::vm::{Vm, same_value_zero, strict_equals, truthy};
 
 pub fn install(r: &Realm) {
     let proto = &r.array_proto;
-    let c = r.ctor("Array", 1, array_ctor, proto);
+    let c = r.array_ctor.clone();
+    r.link_ctor(&c, "Array", proto);
     r.method(&c, "isArray", 1, is_array);
     // of e from guardam o Array original (atalho quando `this` é ele)
     let of_f = r.method(&c, "of", 0, of);
@@ -19,7 +20,18 @@ pub fn install(r: &Realm) {
     let from_f = r.method(&c, "from", 1, from);
     super::set_native_data(&from_f, Value::Object(c.clone()));
     r.method(&c, "fromAsync", 1, super::array_async::from_async);
-    r.getter_sym(&c, &r.sym_species, "[Symbol.species]", species);
+    // o getter fica no Realm: species_create reconhece o original
+    c.borrow_mut().props.insert(
+        PropKey::Sym(r.sym_species.clone()),
+        Property {
+            slot: Slot::Accessor {
+                get: Some(r.array_species.clone()),
+                set: None,
+            },
+            enumerable: false,
+            configurable: true,
+        },
+    );
 
     r.method(proto, "at", 1, at);
     r.method(proto, "concat", 1, concat);
@@ -92,7 +104,7 @@ pub fn return_this(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(a.this.clone())
 }
 
-fn species(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+pub fn species(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(a.this.clone())
 }
 
@@ -142,6 +154,233 @@ fn del_i(vm: &mut Vm, o: &ObjRef, i: usize) -> Result<(), Value> {
     Ok(())
 }
 
+/// 2^53 - 1: maior tamanho de um array-like.
+const MAX_SAFE: usize = 9007199254740991;
+
+/// ArraySpeciesCreate: None = array novo comum (o caso de sempre);
+/// Some(obj) = objeto criado pelo construtor da espécie.
+fn species_create(vm: &mut Vm, o: &ObjRef, len: usize) -> Result<Option<ObjRef>, Value> {
+    if !default_species(vm, o)
+        && let Some(c) = species_ctor(vm, o)?
+    {
+        return match vm.construct(&c, vec![Value::Number(len as f64)], &c)? {
+            Value::Object(r) => Ok(Some(r)),
+            _ => Err(vm.type_error("object.constructor[Symbol.species] is not a constructor")),
+        };
+    }
+    // ArrayCreate(len)
+    if len as f64 > 4294967295.0 {
+        return Err(vm.range_error("Invalid array length"));
+    }
+    Ok(None)
+}
+
+/// Atalho sem consultas: array comum sem `constructor` próprio, com
+/// Array.prototype.constructor e o getter de Array[Symbol.species]
+/// originais (a espécie é o próprio %Array%).
+fn default_species(vm: &Vm, o: &ObjRef) -> bool {
+    let r = &vm.realm;
+    {
+        let b = o.borrow();
+        if !matches!(b.kind, Kind::Array(_))
+            || !b.proto.as_ref().is_some_and(|p| p.ptr_eq(&r.array_proto))
+            || b.props.contains(&r.key_constructor)
+        {
+            return false;
+        }
+    }
+    // as duas propriedades só são conferidas de novo quando alguma das
+    // tabelas mudou desde a última vez
+    let ap = r.array_proto.borrow();
+    let ac = r.array_ctor.borrow();
+    let stamp = (ap.props.version(), ac.props.version());
+    if r.species_stamp.get() == Some(stamp) {
+        return true;
+    }
+    let ok = matches!(
+        ap.props.get(&r.key_constructor),
+        Some(Property { slot: Slot::Data { value: Value::Object(c), .. }, .. }) if c.ptr_eq(&r.array_ctor)
+    ) && matches!(
+        ac.props.get(&PropKey::Sym(r.sym_species.clone())),
+        Some(Property { slot: Slot::Accessor { get: Some(g), .. }, .. }) if g.ptr_eq(&r.array_species)
+    );
+    if ok {
+        r.species_stamp.set(Some(stamp));
+    }
+    ok
+}
+
+/// Passos 1-7 do ArraySpeciesCreate: o construtor da espécie, ou None
+/// quando o resultado é um array comum (não é array, ou a espécie é
+/// undefined/%Array%).
+fn species_ctor(vm: &mut Vm, o: &ObjRef) -> Result<Option<ObjRef>, Value> {
+    if !vm.is_array(&Value::Object(o.clone()))? {
+        return Ok(None);
+    }
+    let key = vm.realm.key_constructor.clone();
+    let mut c = vm.get_obj(o, &key)?;
+    if let Value::Object(co) = &c {
+        let key = PropKey::Sym(vm.realm.sym_species.clone());
+        c = match vm.get_obj(co, &key)? {
+            Value::Null => Value::Undefined,
+            x => x,
+        };
+    }
+    match c {
+        Value::Undefined => Ok(None),
+        Value::Object(co) if co.ptr_eq(&vm.realm.array_ctor) => Ok(None),
+        Value::Object(co) if co.is_constructor() => Ok(Some(co)),
+        _ => Err(vm.type_error("object.constructor[Symbol.species] is not a constructor")),
+    }
+}
+
+/// Destino dos métodos que criam arrays: o vetor de um array novo (caso
+/// comum) ou o objeto da espécie, com CreateDataPropertyOrThrow.
+enum Sink {
+    Plain(Vec<Value>),
+    Species(ObjRef, usize),
+}
+
+impl Sink {
+    fn new(target: Option<ObjRef>) -> Sink {
+        match target {
+            Some(o) => Sink::Species(o, 0),
+            None => Sink::Plain(Vec::new()),
+        }
+    }
+
+    /// Próximo índice.
+    fn len(&self) -> usize {
+        match self {
+            Sink::Plain(v) => v.len(),
+            Sink::Species(_, n) => *n,
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, vm: &mut Vm, v: Value) -> Result<(), Value> {
+        match self {
+            Sink::Plain(out) => {
+                out.push(v);
+                Ok(())
+            }
+            Sink::Species(o, n) => species_push(vm, o, n, v),
+        }
+    }
+
+    /// Buraco: só avança.
+    fn skip(&mut self) {
+        match self {
+            Sink::Plain(out) => out.push(Value::Empty),
+            Sink::Species(_, n) => *n += 1,
+        }
+    }
+
+    /// O resultado; `set_length` faz Set(A, "length", n, true) no objeto
+    /// da espécie (no array novo o tamanho já é o do vetor).
+    fn finish(self, vm: &mut Vm, set_length: bool) -> Result<Value, Value> {
+        match self {
+            Sink::Plain(out) => Ok(vm.array_value(out)),
+            Sink::Species(o, n) => {
+                if set_length {
+                    set_len(vm, &o, n)?;
+                }
+                Ok(Value::Object(o))
+            }
+        }
+    }
+}
+
+/// CreateDataPropertyOrThrow no objeto da espécie (fora do caminho quente).
+#[inline(never)]
+fn species_push(vm: &mut Vm, o: &ObjRef, n: &mut usize, v: Value) -> Result<(), Value> {
+    super::iterator::create_data_or_throw(vm, o, index_key(*n), v)?;
+    *n += 1;
+    Ok(())
+}
+
+/// HasProperty seguido de Get num índice (None = não existe).
+#[inline(always)]
+fn elem(vm: &mut Vm, o: &ObjRef, i: usize) -> Result<Option<Value>, Value> {
+    if let Kind::Array(v) = &o.borrow().kind
+        && let Some(x) = v.get(i)
+        && !matches!(x, Value::Empty)
+    {
+        return Ok(Some(x.clone()));
+    }
+    elem_slow(vm, o, i)
+}
+
+#[inline(never)]
+fn elem_slow(vm: &mut Vm, o: &ObjRef, i: usize) -> Result<Option<Value>, Value> {
+    let k = index_key(i);
+    if !vm.has_property(o, &k)? {
+        return Ok(None);
+    }
+    vm.get_obj(o, &k).map(Some)
+}
+
+/// Nenhum objeto da cadeia de protótipos de `o` tem índices (nem é
+/// exótico): um buraco é só um buraco e pode ser copiado como tal.
+fn holes_are_plain(r: &Realm, o: &ObjRef) -> bool {
+    // cadeia de sempre (Array.prototype, Object.prototype): a resposta vale
+    // enquanto as chaves das duas tabelas não mudarem (tamanho e geração)
+    let stamp = {
+        let b = o.borrow();
+        let ap = r.array_proto.borrow();
+        let op = r.object_proto.borrow();
+        (b.proto.as_ref().is_some_and(|p| p.ptr_eq(&r.array_proto))
+            && ap.proto.as_ref().is_some_and(|p| p.ptr_eq(&r.object_proto))
+            && op.proto.is_none()
+            && matches!(&ap.kind, Kind::Array(v) if v.is_empty()))
+        .then(|| [ap.props.len(), ap.props.generation() as usize, op.props.len(), op.props.generation() as usize])
+    };
+    if stamp.is_some() && r.holes_stamp.get() == stamp {
+        return true;
+    }
+    let ok = no_inherited_indices(o);
+    if ok && stamp.is_some() {
+        r.holes_stamp.set(stamp);
+    }
+    ok
+}
+
+/// Caminho geral de holes_are_plain: olha a cadeia inteira.
+fn no_inherited_indices(o: &ObjRef) -> bool {
+    let mut cur = o.borrow().proto.clone();
+    while let Some(p) = cur {
+        let b = p.borrow();
+        match &b.kind {
+            Kind::Array(v) if v.iter().all(|x| matches!(x, Value::Empty)) => {}
+            Kind::Ordinary => {}
+            _ => return false,
+        }
+        if b.props.iter().any(|(k, _)| k.as_index().is_some()) {
+            return false;
+        }
+        cur = b.proto.clone();
+    }
+    true
+}
+
+/// Copia os elementos `src` do array comum `o` para `out`. Se houver
+/// buraco e a cadeia de protótipos tiver índices, não copia nada e
+/// devolve false (quem chama segue o caminho do spec).
+fn copy_elems(r: &Realm, out: &mut Vec<Value>, o: &ObjRef, src: &[Value]) -> bool {
+    // uma passada só: copia e anota se viu buraco
+    let start = out.len();
+    let mut holes = false;
+    out.extend(src.iter().map(|x| {
+        holes |= matches!(x, Value::Empty);
+        x.clone()
+    }));
+    if holes && !holes_are_plain(r, o) {
+        out.truncate(start);
+        return false;
+    }
+    true
+}
+
 /// Array comum, mutável: dá para mexer direto no vetor.
 fn is_plain_array(o: &ObjRef) -> bool {
     let b = o.borrow();
@@ -159,7 +398,7 @@ fn callback(vm: &mut Vm, a: &CallArgs, what: &str) -> Result<Value, Value> {
 
 // ------------------------------------------------------ construtor
 
-fn array_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+pub fn array_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let def = vm.realm.array_proto.clone();
     let proto = vm.proto_from_ctor(a.new_target.as_ref(), &def)?;
     let items = if a.args.len() == 1 {
@@ -345,34 +584,43 @@ fn is_spreadable(vm: &mut Vm, v: &Value) -> Result<bool, Value> {
     if !s.is_undefined() {
         return Ok(truthy(&s));
     }
-    Ok(matches!(o.borrow().kind, Kind::Array(_)))
+    vm.is_array(v)
 }
 
 fn concat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
-    let mut out = Vec::new();
-    let mut items = vec![Value::Object(o)];
+    let mut sink = Sink::new(species_create(vm, &o, 0)?);
+    let mut items = Vec::with_capacity(a.args.len() + 1);
+    items.push(Value::Object(o));
     items.extend(a.args.iter().cloned());
     for item in items {
-        if is_spreadable(vm, &item)? {
-            let Value::Object(e) = &item else { continue };
-            if let Kind::Array(v) = &e.borrow().kind {
-                out.extend(v.iter().cloned());
-                continue;
+        if !is_spreadable(vm, &item)? {
+            if sink.len() >= MAX_SAFE {
+                return Err(vm.type_error("Invalid array length"));
             }
-            let len = vm.length_of(e)?;
-            for i in 0..len {
-                if has_i(vm, e, i) {
-                    out.push(get_i(vm, e, i)?);
-                } else {
-                    out.push(Value::Empty);
-                }
+            sink.push(vm, item)?;
+            continue;
+        }
+        let Value::Object(e) = &item else { continue };
+        // array comum indo para o array novo: copia o vetor direto
+        if let Sink::Plain(out) = &mut sink
+            && let Kind::Array(v) = &e.borrow().kind
+            && copy_elems(&vm.realm, out, e, v)
+        {
+            continue;
+        }
+        let len = vm.length_of(e)?;
+        if sink.len() + len > MAX_SAFE {
+            return Err(vm.type_error("Invalid array length"));
+        }
+        for i in 0..len {
+            match elem(vm, e, i)? {
+                Some(v) => sink.push(vm, v)?,
+                None => sink.skip(),
             }
-        } else {
-            out.push(item);
         }
     }
-    Ok(vm.array_value(out))
+    sink.finish(vm, true)
 }
 
 fn copy_within(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -516,19 +764,19 @@ fn fill(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn filter(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
-    let f = callback(vm, a, "filter")?;
     let len = vm.length_of(&o)?;
-    let mut out = Vec::new();
+    let f = callback(vm, a, "filter")?;
+    let this_arg = a.arg(1);
+    let mut sink = Sink::new(species_create(vm, &o, 0)?);
     for i in 0..len {
-        if has_i(vm, &o, i) {
-            let v = get_i(vm, &o, i)?;
-            let r = vm.call(&f, a.arg(1), vec![v.clone(), Value::Number(i as f64), Value::Object(o.clone())])?;
+        if let Some(v) = elem(vm, &o, i)? {
+            let r = vm.call(&f, this_arg.clone(), vec![v.clone(), Value::Number(i as f64), Value::Object(o.clone())])?;
             if truthy(&r) {
-                out.push(v);
+                sink.push(vm, v)?;
             }
         }
     }
-    Ok(vm.array_value(out))
+    sink.finish(vm, false)
 }
 
 fn find_generic(vm: &mut Vm, a: &CallArgs, rev: bool, want_index: bool, what: &str) -> Result<Value, Value> {
@@ -562,52 +810,61 @@ fn find_last_index(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     find_generic(vm, a, true, true, "findLastIndex")
 }
 
-fn flatten_into(vm: &mut Vm, out: &mut Vec<Value>, src: &ObjRef, depth: f64) -> Result<(), Value> {
-    let len = vm.length_of(src)?;
+/// FlattenIntoArray: os `len` primeiros elementos de `src`, abrindo os
+/// arrays (IsArray) até a profundidade dada; `mapper` (função e this) é o
+/// de flatMap.
+fn flatten_into(vm: &mut Vm, sink: &mut Sink, src: &ObjRef, len: usize, depth: f64, mapper: Option<(&Value, &Value)>) -> Result<(), Value> {
+    // último nível de um array comum sem buracos indo para o array novo:
+    // nada a abrir nem a pular, copia o vetor
+    if depth <= 0.0
+        && mapper.is_none()
+        && let Sink::Plain(out) = sink
+        && let Kind::Array(v) = &src.borrow().kind
+        && v.len() == len
+        && !v.iter().any(|x| matches!(x, Value::Empty))
+    {
+        out.extend_from_slice(v);
+        return Ok(());
+    }
     for i in 0..len {
-        if !has_i(vm, src, i) {
-            continue;
+        let Some(mut v) = elem(vm, src, i)? else { continue };
+        if let Some((f, this_arg)) = mapper {
+            v = vm.call(f, this_arg.clone(), vec![v, Value::Number(i as f64), Value::Object(src.clone())])?;
         }
-        let v = get_i(vm, src, i)?;
         if depth > 0.0
             && let Value::Object(inner) = &v
-            && matches!(inner.borrow().kind, Kind::Array(_))
+            && vm.is_array(&v)?
         {
-            flatten_into(vm, out, inner, depth - 1.0)?;
+            let inner = inner.clone();
+            let n = vm.length_of(&inner)?;
+            flatten_into(vm, sink, &inner, n, depth - 1.0, None)?;
             continue;
         }
-        out.push(v);
+        if sink.len() >= MAX_SAFE {
+            return Err(vm.type_error("Invalid array length"));
+        }
+        sink.push(vm, v)?;
     }
     Ok(())
 }
 
 fn flat(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
-    let depth = if a.arg(0).is_undefined() { 1.0 } else { vm.to_integer(&a.arg(0))? };
-    let mut out = Vec::new();
-    flatten_into(vm, &mut out, &o, depth)?;
-    Ok(vm.array_value(out))
+    let len = vm.length_of(&o)?;
+    let depth = if a.arg(0).is_undefined() { 1.0 } else { vm.to_integer(&a.arg(0))?.max(0.0) };
+    let mut sink = Sink::new(species_create(vm, &o, 0)?);
+    flatten_into(vm, &mut sink, &o, len, depth, None)?;
+    sink.finish(vm, false)
 }
 
 fn flat_map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
-    let f = callback(vm, a, "flatMap")?;
     let len = vm.length_of(&o)?;
-    let mut out = Vec::new();
-    for i in 0..len {
-        if !has_i(vm, &o, i) {
-            continue;
-        }
-        let v = get_i(vm, &o, i)?;
-        let r = vm.call(&f, a.arg(1), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?;
-        match &r {
-            Value::Object(inner) if matches!(inner.borrow().kind, Kind::Array(_)) => {
-                flatten_into(vm, &mut out, inner, 0.0)?;
-            }
-            _ => out.push(r),
-        }
-    }
-    Ok(vm.array_value(out))
+    let f = callback(vm, a, "flatMap")?;
+    let this_arg = a.arg(1);
+    let mut sink = Sink::new(species_create(vm, &o, 0)?);
+    flatten_into(vm, &mut sink, &o, len, 1.0, Some((&f, &this_arg)))?;
+    sink.finish(vm, false)
 }
 
 fn for_each(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -734,19 +991,32 @@ fn join(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 fn map(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let o = this_obj(vm, a)?;
-    let f = callback(vm, a, "map")?;
     let len = vm.length_of(&o)?;
+    let f = callback(vm, a, "map")?;
     let this_arg = a.arg(1);
-    let mut out = Vec::with_capacity(len.min(1 << 20));
+    let mut sink = Sink::new(species_create(vm, &o, len)?);
+    // array novo comum: laço direto no vetor
+    if let Sink::Plain(out) = &mut sink {
+        out.reserve(len.min(1 << 20));
+        for i in 0..len {
+            let r = match elem(vm, &o, i)? {
+                Some(v) => vm.call(&f, this_arg.clone(), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?,
+                None => Value::Empty,
+            };
+            out.push(r);
+        }
+        return sink.finish(vm, false);
+    }
     for i in 0..len {
-        if has_i(vm, &o, i) {
-            let v = get_i(vm, &o, i)?;
-            out.push(vm.call(&f, this_arg.clone(), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?);
-        } else {
-            out.push(Value::Empty);
+        match elem(vm, &o, i)? {
+            Some(v) => {
+                let r = vm.call(&f, this_arg.clone(), vec![v, Value::Number(i as f64), Value::Object(o.clone())])?;
+                sink.push(vm, r)?;
+            }
+            None => sink.skip(),
         }
     }
-    Ok(vm.array_value(out))
+    sink.finish(vm, false)
 }
 
 fn pop(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
@@ -918,19 +1188,27 @@ fn slice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let len = vm.length_of(&o)?;
     let start = rel_index(vm, &a.arg(0), len, 0)?;
     let end = rel_index(vm, &a.arg(1), len, len)?;
-    if let Kind::Array(v) = &o.borrow().kind {
-        let part = if start < end { v[start..end.min(v.len())].to_vec() } else { Vec::new() };
-        return Ok(vm.array_value(part));
-    }
-    let mut out = Vec::new();
-    for i in start..end.max(start) {
-        if has_i(vm, &o, i) {
-            out.push(get_i(vm, &o, i)?);
-        } else {
-            out.push(Value::Empty);
+    let count = end.saturating_sub(start);
+    let target = species_create(vm, &o, count)?;
+    // array comum indo para o array novo: copia o trecho direto (se o
+    // array encolheu no meio do caminho, segue o spec)
+    if target.is_none()
+        && let Kind::Array(v) = &o.borrow().kind
+        && let Some(part) = v.get(start..start + count)
+    {
+        let mut out = Vec::with_capacity(part.len());
+        if copy_elems(&vm.realm, &mut out, &o, part) {
+            return Ok(vm.array_value(out));
         }
     }
-    Ok(vm.array_value(out))
+    let mut sink = Sink::new(target);
+    for i in start..start + count {
+        match elem(vm, &o, i)? {
+            Some(v) => sink.push(vm, v)?,
+            None => sink.skip(),
+        }
+    }
+    sink.finish(vm, true)
 }
 
 /// Ordena valores (estável), com comparador opcional que pode lançar.
@@ -1069,38 +1347,58 @@ fn splice(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         (n.max(0.0) as usize).min(len - start)
     };
     let items: Vec<Value> = a.args.iter().skip(2).cloned().collect();
-    if is_plain_array(&o) {
-        let removed: Vec<Value> = if let Kind::Array(v) = &mut o.borrow_mut().kind {
-            v.splice(start..start + del, items).collect()
-        } else {
-            Vec::new()
+    if len + items.len() - del > MAX_SAFE {
+        return Err(vm.type_error("Invalid array length"));
+    }
+    let target = species_create(vm, &o, del)?;
+    // array comum com a espécie padrão (e do tamanho lido): mexe no vetor
+    if target.is_none() && is_plain_array(&o) && matches!(&o.borrow().kind, Kind::Array(v) if v.len() == len) {
+        let removed: Vec<Value> = match &mut o.borrow_mut().kind {
+            Kind::Array(v) => v.splice(start..start + del, items).collect(),
+            _ => Vec::new(),
         };
         return Ok(vm.array_value(removed));
     }
-    let mut removed = Vec::new();
+    let mut sink = Sink::new(target);
     for k in 0..del {
-        removed.push(get_i(vm, &o, start + k)?);
+        match elem(vm, &o, start + k)? {
+            Some(v) => sink.push(vm, v)?,
+            None => sink.skip(),
+        }
     }
+    let removed = sink.finish(vm, true)?;
+    splice_rest(vm, &o, len, start, del, items)?;
+    Ok(removed)
+}
+
+/// Resto de splice: abre ou fecha o espaço, grava os itens novos e acerta
+/// o length.
+fn splice_rest(vm: &mut Vm, o: &ObjRef, len: usize, start: usize, del: usize, items: Vec<Value>) -> Result<(), Value> {
     let n = items.len();
     if n < del {
         for k in start..len - del {
-            let v = get_i(vm, &o, k + del)?;
-            set_i(vm, &o, k + n, v)?;
+            move_i(vm, o, k + del, k + n)?;
         }
         for k in (len - del + n..len).rev() {
-            del_i(vm, &o, k)?;
+            del_i(vm, o, k)?;
         }
     } else if n > del {
         for k in (start..len - del).rev() {
-            let v = get_i(vm, &o, k + del)?;
-            set_i(vm, &o, k + n, v)?;
+            move_i(vm, o, k + del, k + n)?;
         }
     }
     for (k, v) in items.into_iter().enumerate() {
-        set_i(vm, &o, start + k, v)?;
+        set_i(vm, o, start + k, v)?;
     }
-    set_len(vm, &o, len - del + n)?;
-    Ok(vm.array_value(removed))
+    set_len(vm, o, len - del + n)
+}
+
+/// O[to] = O[from]; se `from` não existe, apaga `to`.
+fn move_i(vm: &mut Vm, o: &ObjRef, from: usize, to: usize) -> Result<(), Value> {
+    match elem(vm, o, from)? {
+        Some(v) => set_i(vm, o, to, v),
+        None => del_i(vm, o, to),
+    }
 }
 
 fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {

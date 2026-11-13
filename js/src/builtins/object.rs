@@ -264,16 +264,21 @@ pub fn define_own_property(vm: &mut Vm, o: &ObjRef, key: PropKey, d: Descriptor)
             let mut b = o.borrow_mut();
             let frozen = b.frozen;
             let ext = b.extensible;
+            // índice que já tem atributos especiais: segue o caminho geral
+            let in_props = b.props.contains(&key);
             if let Kind::Array(vec) = &mut b.kind {
                 let i = i as usize;
                 let exists = i < vec.len() && !matches!(vec[i], Value::Empty);
                 if exists && frozen {
                     return Ok(false);
                 }
-                if !exists && !ext {
+                if !exists && !in_props && !ext {
                     return Ok(false);
                 }
-                if plain && (exists || (d.writable == Some(true) && d.enumerable == Some(true) && d.configurable == Some(true))) {
+                if plain
+                    && !in_props
+                    && (exists || (d.writable == Some(true) && d.enumerable == Some(true) && d.configurable == Some(true)))
+                {
                     let v = d.value.clone().unwrap_or_else(|| if exists { vec[i].clone() } else { Value::Undefined });
                     if i < vec.len() {
                         vec[i] = v;

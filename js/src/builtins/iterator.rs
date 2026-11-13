@@ -313,7 +313,15 @@ fn close_all(vm: &mut Vm, iters: &[Value], completion: Result<(), Value>) -> Res
 /// CreateDataPropertyOrThrow.
 pub fn create_data_or_throw(vm: &mut Vm, o: &ObjRef, key: PropKey, v: Value) -> Result<(), Value> {
     if !define_own_property(vm, o, key.clone(), Descriptor::data(v, true))? {
-        return Err(vm.type_error(format!("Cannot add property {}, object is not extensible", crate::ops::key_display(&key))));
+        let k = crate::ops::key_display(&key);
+        let msg = if super::proxy::is_proxy(o) {
+            format!("'defineProperty' on proxy: trap returned falsish for property '{k}'")
+        } else if o.borrow().own(&key).is_some() {
+            format!("Cannot redefine property: {k}")
+        } else {
+            format!("Cannot define property {k}, object is not extensible")
+        };
+        return Err(vm.type_error(msg));
     }
     Ok(())
 }

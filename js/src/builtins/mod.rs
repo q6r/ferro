@@ -49,6 +49,18 @@ pub struct Realm {
     pub uri_error_proto: ObjRef,
     pub suppressed_error_proto: ObjRef,
     pub iterator_proto: ObjRef,
+    /// %Array% e o getter original de Array[Symbol.species] (atalho do
+    /// ArraySpeciesCreate quando nada foi trocado).
+    pub array_ctor: ObjRef,
+    pub array_species: ObjRef,
+    /// Chave "constructor" pronta (a mesma usada nos protótipos).
+    pub key_constructor: PropKey,
+    /// Versões das tabelas de Array.prototype e de Array da última vez que
+    /// o atalho do ArraySpeciesCreate conferiu `constructor` e @@species.
+    pub species_stamp: std::cell::Cell<Option<(u32, u32)>>,
+    /// Tamanho e geração das tabelas de Array.prototype e Object.prototype
+    /// da última vez que nenhuma tinha índices (buracos copiados direto).
+    pub holes_stamp: std::cell::Cell<Option<[usize; 4]>>,
     /// %IteratorHelperPrototype% (map, filter, Iterator.concat...).
     pub iterator_helper_proto: ObjRef,
     /// %WrapForValidIteratorPrototype% (Iterator.from).
@@ -138,6 +150,8 @@ impl Realm {
         let array_values = mk_native("values", 0, array::values);
         let function_has_instance = mk_native("[Symbol.hasInstance]", 1, function::has_instance);
         let regexp_exec = regexp::exec_native(&function_proto);
+        let array_ctor = native_fn(&function_proto, "Array", 1, array::array_ctor, true);
+        let array_species = mk_native("get [Symbol.species]", 0, array::species);
         let realm = Realm {
             global: plain(p),
             array_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Array(Vec::new()))),
@@ -152,6 +166,11 @@ impl Realm {
             eval_error_proto: plain(Some(&error_proto)),
             uri_error_proto: plain(Some(&error_proto)),
             suppressed_error_proto: plain(Some(&error_proto)),
+            array_ctor,
+            array_species,
+            key_constructor: PropKey::str("constructor"),
+            species_stamp: Default::default(),
+            holes_stamp: Default::default(),
             iterator_helper_proto: plain(ip),
             wrap_for_valid_iter_proto: plain(ip),
             array_iter_proto: plain(ip),
@@ -287,6 +306,12 @@ impl Realm {
     /// Construtor global ligado ao seu protótipo.
     pub fn ctor(&self, name: &str, len: u32, f: NativeFn, proto: &ObjRef) -> ObjRef {
         let c = native_fn(&self.function_proto, name, len, f, true);
+        self.link_ctor(&c, name, proto);
+        c
+    }
+
+    /// Liga um construtor já criado ao protótipo e ao objeto global.
+    pub fn link_ctor(&self, c: &ObjRef, name: &str, proto: &ObjRef) {
         c.borrow_mut().props.insert(
             PropKey::str("prototype"),
             Property {
@@ -298,9 +323,8 @@ impl Realm {
                 configurable: false,
             },
         );
-        proto.borrow_mut().props.insert(PropKey::str("constructor"), Property::hidden(Value::Object(c.clone())));
+        proto.borrow_mut().props.insert(self.key_constructor.clone(), Property::hidden(Value::Object(c.clone())));
         self.global.borrow_mut().props.insert(PropKey::str(name), Property::hidden(Value::Object(c.clone())));
-        c
     }
 
     /// Valor constante (não gravável, não enumerável).
