@@ -155,6 +155,9 @@ pub enum TextAlign {
     Left,
     Center,
     Right,
+    /// `-webkit-center` (<center>, align=center): centraliza o texto e também
+    /// os blocos filhos com margens que não são auto.
+    WebkitCenter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2463,7 +2466,8 @@ impl Cascade<'_> {
             }
             "text-align" => {
                 s.text_align = match v {
-                    "center" | "-webkit-center" => TextAlign::Center,
+                    "center" => TextAlign::Center,
+                    "-webkit-center" | "-moz-center" | "-khtml-center" => TextAlign::WebkitCenter,
                     "right" | "end" | "-webkit-right" => TextAlign::Right,
                     "left" | "start" | "justify" | "-webkit-left" => TextAlign::Left,
                     _ => return,
@@ -3514,7 +3518,7 @@ fn presentational_hints(el: &crate::dom::ElementData, s: &mut ComputedStyle, u: 
         && matches!(el.tag.as_str(), "div" | "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "td" | "th")
     {
         match align.to_ascii_lowercase().as_str() {
-            "center" => s.text_align = TextAlign::Center,
+            "center" | "middle" => s.text_align = TextAlign::WebkitCenter,
             "right" => s.text_align = TextAlign::Right,
             _ => {}
         }

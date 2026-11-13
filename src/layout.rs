@@ -1991,13 +1991,26 @@ impl<'a> Ctx<'a> {
                 self.add_pending(child, x, cursor, inh);
                 continue;
             }
-            let bm = match child.kind {
+            let mut bm = match child.kind {
                 BoxKind::Anonymous => BoxModel::anonymous(w),
                 _ if child.style.display == Display::Table || child.style.width_kw.is_some() => {
                     self.shrink_bm(child, w, true)
                 }
                 _ => self.box_model(&child.style, w),
             };
+            // text-align: -webkit-center (<center>): o bloco mais estreito que
+            // o pai vai para o meio, se as margens não forem auto
+            if b.style.text_align == TextAlign::WebkitCenter
+                && !matches!(child.kind, BoxKind::Anonymous)
+                && child.style.margin[LEFT] != Len::Auto
+                && child.style.margin[RIGHT] != Len::Auto
+            {
+                let free = w - bm.content_w - bm.extra_h() - bm.margin[LEFT] - bm.margin[RIGHT];
+                if free > 0.5 {
+                    bm.margin[LEFT] += free / 2.0;
+                    bm.margin[RIGHT] += free / 2.0;
+                }
+            }
             let mut top = cursor + collapse_margins(prev_mb, bm.margin[TOP]);
             if child.style.clear != Clear::None {
                 top = top.max(self.clear_y(child.style.clear));
@@ -3240,7 +3253,7 @@ impl<'a> Ctx<'a> {
             let offset = line.inset
                 + match b.style.text_align {
                     TextAlign::Left => 0.0,
-                    TextAlign::Center => free / 2.0,
+                    TextAlign::Center | TextAlign::WebkitCenter => free / 2.0,
                     TextAlign::Right => free,
                 };
             let baseline = cy + line.above;

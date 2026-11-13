@@ -774,7 +774,13 @@ fn css_props(st: &crate::style::ComputedStyle, rect: Option<crate::layout::Rect>
             LineHeight::Px(p) => format!("{}px", trim_num(p)),
         },
     );
-    push("text-align", kebab(&format!("{:?}", st.text_align)));
+    push(
+        "text-align",
+        match st.text_align {
+            crate::style::TextAlign::WebkitCenter => "-webkit-center".to_string(),
+            a => kebab(&format!("{a:?}")),
+        },
+    );
     push("white-space", kebab(&format!("{:?}", st.white_space)));
     push("opacity", trim_num(st.opacity));
     push("z-index", st.z_index.map_or("auto".into(), |z| z.to_string()));
