@@ -25,6 +25,7 @@ pub fn number_to_string(n: f64) -> String {
     let (mant, exp) = s.split_once('e').unwrap_or((&s, "0"));
     let exp: i32 = exp.parse().unwrap_or(0);
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits = tie_to_even(n, digits, exp);
     let k = digits.len() as i32;
     let point = exp + 1;
     if k <= point && point <= 21 {
@@ -51,6 +52,51 @@ pub fn number_to_string(n: f64) -> String {
             format!("{}.{}e{sign}{}", &digits[..1], &digits[1..], e.abs())
         }
     }
+}
+
+/// Desempate do spec (Number::toString, passo 5): quando o valor exato fica
+/// bem no meio de dois candidatos com o mesmo número de dígitos, vale o par.
+/// O Rust arredonda esse empate para cima (2.5033950805664062e-6 saía
+/// terminando em 063). Só acontece com 16 ou 17 dígitos.
+fn tie_to_even(n: f64, digits: String, exp: i32) -> String {
+    let k = digits.len();
+    if k < 16 || (digits.as_bytes()[k - 1] - b'0') % 2 == 0 {
+        return digits;
+    }
+    // expansão decimal exata (um double tem no máximo 767 dígitos)
+    let exact = format!("{:.*e}", k + 780, n);
+    let Some((m, e)) = exact.split_once('e') else { return digits };
+    if e.parse::<i32>().ok() != Some(exp) {
+        return digits;
+    }
+    let ed: Vec<u8> = m.bytes().filter(u8::is_ascii_digit).collect();
+    if ed.get(k) != Some(&b'5') || ed[k + 1..].iter().any(|&d| d != b'0') {
+        return digits;
+    }
+    // empate: os candidatos são ed[..k] e ed[..k] + 1; o par é o certo
+    let mut cand: Vec<u8> = ed[..k].to_vec();
+    if (cand[k - 1] - b'0') % 2 == 1 {
+        let mut i = k;
+        loop {
+            if i == 0 {
+                return digits;
+            }
+            i -= 1;
+            if cand[i] == b'9' {
+                cand[i] = b'0';
+            } else {
+                cand[i] += 1;
+                break;
+            }
+        }
+    }
+    let cand = String::from_utf8(cand).unwrap_or_default();
+    if cand == digits {
+        return digits;
+    }
+    // confere que reproduz o número
+    let test = format!("{}.{}e{exp}", &cand[..1], &cand[1..]);
+    if test.parse::<f64>() == Ok(n) { cand } else { digits }
 }
 
 /// `Number.prototype.toString(base)` para bases diferentes de 10.
@@ -416,6 +462,14 @@ mod tests {
 
     fn n2s(n: f64) -> String {
         number_to_string(n)
+    }
+
+    #[test]
+    fn empate_vai_para_o_par() {
+        // valor exato 2.50339508056640625e-6: entre ...062 e ...063, o par
+        assert_eq!(n2s(2.5033950805664062e-6), "0.0000025033950805664062");
+        assert_eq!(n2s(9007199254740993.0), "9007199254740992");
+        assert_eq!(n2s(0.1 + 0.7), "0.7999999999999999");
     }
 
     #[test]
