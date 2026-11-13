@@ -26,6 +26,8 @@ pub fn install(r: &Realm) {
         ("replace", &r.sym_replace),
         ("search", &r.sym_search),
         ("split", &r.sym_split),
+        ("dispose", &r.sym_dispose),
+        ("asyncDispose", &r.sym_async_dispose),
     ] {
         r.constant(&c, name, Value::Symbol(s.clone()));
     }

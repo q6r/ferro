@@ -52,6 +52,25 @@ pub fn install(r: &Realm) {
     r.method(proto, "isWellFormed", 0, is_well_formed);
     r.method(proto, "toWellFormed", 0, to_well_formed);
     r.method_sym(proto, &r.sym_iterator, "[Symbol.iterator]", 0, iterator);
+    // métodos HTML do Anexo B: nome, tag e atributo
+    for (name, tag, attr) in [
+        ("anchor", "a", "name"),
+        ("big", "big", ""),
+        ("blink", "blink", ""),
+        ("bold", "b", ""),
+        ("fixed", "tt", ""),
+        ("fontcolor", "font", "color"),
+        ("fontsize", "font", "size"),
+        ("italics", "i", ""),
+        ("link", "a", "href"),
+        ("small", "small", ""),
+        ("strike", "strike", ""),
+        ("sub", "sub", ""),
+        ("sup", "sup", ""),
+    ] {
+        let f = r.method(proto, name, if attr.is_empty() { 0 } else { 1 }, create_html);
+        super::set_native_data(&f, Value::str(&format!("{name} {tag} {attr}")));
+    }
 
     let ip = &r.string_iter_proto;
     r.method(ip, "next", 0, iter_next);
@@ -714,4 +733,36 @@ fn iter_next(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         Some(p) => iter_result(vm, Value::String(p), false),
         None => iter_result(vm, Value::Undefined, true),
     })
+}
+
+/// CreateHTML (Anexo B): `<tag attr="valor">texto</tag>`.
+fn create_html(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let data = super::native_data(&a.callee);
+    let spec = match &data {
+        Value::String(s) => s.to_rust(),
+        _ => String::new(),
+    };
+    let mut parts = spec.split(' ');
+    let (name, tag, attr) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    if a.this.is_nullish() {
+        return Err(vm.type_error(format!("String.prototype.{name} called on null or undefined")));
+    }
+    let s = vm.to_string(&a.this)?;
+    let mut units: Vec<u16> = format!("<{tag}").encode_utf16().collect();
+    if !attr.is_empty() {
+        let v = vm.to_string(&a.arg(0))?;
+        units.extend(format!(" {attr}=\"").encode_utf16());
+        for &c in v.units() {
+            if c == b'"' as u16 {
+                units.extend("&quot;".encode_utf16());
+            } else {
+                units.push(c);
+            }
+        }
+        units.push(b'"' as u16);
+    }
+    units.push(b'>' as u16);
+    units.extend_from_slice(s.units());
+    units.extend(format!("</{tag}>").encode_utf16());
+    Ok(Value::String(JsStr::from_units(units)))
 }
