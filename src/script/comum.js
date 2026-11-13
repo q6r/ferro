@@ -1,7 +1,8 @@
-// Prelúdio comum: a parte da plataforma que não depende do DOM (eventos,
-// DOMException, clone estruturado, crypto, texto, URL, Blob, fetch/XHR,
-// mensagens). O Rust junta este arquivo com o `prelude.js` (página), dentro
-// da mesma função `(function (N) { ... })(__native)`.
+// Prelúdio comum: a parte da plataforma que vale na página e nos Web
+// Workers (eventos, DOMException, clone estruturado, crypto, texto, URL, Blob,
+// fetch/XHR, portas de mensagem, Worker). O Rust junta este arquivo com o
+// `prelude.js` (página) ou com o `worker.js` (worker), dentro da mesma
+// função `(function (N) { ... })(__native)`.
 //
 // Cada variante define estas funções (declarações sobem para o topo da
 // função, então podem vir depois): `baseURL()` (base dos endereços),
@@ -21,9 +22,11 @@ const methods = (o, obj) => {
 const named = (f, name) => Object.defineProperty(f, 'name', { value: name });
 
 // ------------------------------------------------------------- global
+const IS_WINDOW = typeof Window === 'function' && G instanceof Window;
 hidden(G, 'isSecureContext', true);
 hidden(G, 'origin', N.urlParse(N.href())?.origin ?? 'null');
 hidden(G, 'reportError', (e) => N.reportError(e));
+hidden(G, 'crossOriginIsolated', false);
 
 // ---------------------------------------------------------- DOMException
 const DOM_CODES = {
@@ -111,7 +114,7 @@ const CustomEvent = eventClass('CustomEvent', Event, { detail: null });
 hidden(CustomEvent.prototype, 'initCustomEvent', function (type, b, c, detail) {
   this.initEvent(type, b, c); this.detail = detail;
 });
-eventClass('ErrorEvent', Event, { message: '', filename: '', lineno: 0, colno: 0, error: null });
+const ErrorEvent = eventClass('ErrorEvent', Event, { message: '', filename: '', lineno: 0, colno: 0, error: null });
 const MessageEvent = eventClass('MessageEvent', Event, { data: null, origin: '', lastEventId: '', source: null, ports: [] });
 const ProgressEvent = eventClass('ProgressEvent', Event, { lengthComputable: false, loaded: 0, total: 0 });
 eventClass('PromiseRejectionEvent', Event, { promise: null, reason: undefined });
@@ -169,8 +172,14 @@ function callHandler(t, ev, s) {
   const h = handlerOf(t, s.type);
   if (!h) return;
   try {
-    const r = h.call(t, ev);
-    if (r === false && s.type !== 'mouseover' && s.type !== 'error') ev.preventDefault();
+    if (t === G && s.type === 'error' && ev instanceof ErrorEvent) {
+      // onerror do global: (mensagem, arquivo, linha, coluna, erro); true cancela
+      const r = h.call(t, ev.message, ev.filename, ev.lineno, ev.colno, ev.error);
+      if (r === true) ev.preventDefault();
+    } else {
+      const r = h.call(t, ev);
+      if (r === false && s.type !== 'mouseover' && s.type !== 'error') ev.preventDefault();
+    }
   } catch (e) { N.reportError(e); }
 }
 function invoke(t, ev, s, phase) {
@@ -207,8 +216,9 @@ function dispatch(t, ev) {
   s.dispatching = true; s.target = t; s.stop = s.stopNow = false;
   const path = eventPath(t, s);
   s.path = path;
-  const prevEvent = G.event;
-  G.event = ev;
+  // window.event (só na janela)
+  const prevEvent = IS_WINDOW ? G.event : undefined;
+  if (IS_WINDOW) G.event = ev;
   try {
     s.phase = 1;
     for (let i = path.length - 1; i > 0 && !s.stop; i--) invoke(path[i], ev, s, 1);
@@ -219,7 +229,7 @@ function dispatch(t, ev) {
     }
   } finally {
     s.dispatching = false; s.phase = 0; s.currentTarget = null;
-    G.event = prevEvent;
+    if (IS_WINDOW) G.event = prevEvent;
   }
   return !s.canceled;
 }
@@ -289,35 +299,46 @@ class PerformanceObserver {
 hidden(G, 'PerformanceObserver', PerformanceObserver);
 
 // ------------------------------------------------- structuredClone
-function clone(v, seen) {
-  if (typeof v !== 'object' || v === null) {
-    if (typeof v === 'function' || typeof v === 'symbol')
-      throw new DOMException(`${String(v)} could not be cloned.`, 'DataCloneError');
-    return v;
+// O clone em si é do Rust (script/clone.rs), também para postMessage. Aqui
+// ficam os objetos da plataforma feitos em JS: o que guardar deles
+// ([etiqueta, dados]; '!' = não clonável) e como remontá-los do outro lado.
+const NOT_CLONEABLE = () => [EventTarget, Event, URL, URLSearchParams, Headers, Request, Response, FormData,
+  AbortController, MessageChannel, TextEncoder, TextDecoder];
+function cloneOut(o) {
+  const b = BLOB.get(o);
+  if (b) return o instanceof File ? ['File', [b.bytes, b.type, o.name, o.lastModified]] : ['Blob', [b.bytes, b.type]];
+  const k = KEYS.get(o);
+  if (k) return ['CryptoKey', [k.tipo, k.ext, k.alg, k.usos, k.m]];
+  if (G.ImageData && o instanceof G.ImageData) return ['ImageData', [o.data, o.width, o.height]];
+  // o global (window/self) é tratado como objeto JS: "#<Window>"
+  if (o === G) return ['!', '#<' + Object.prototype.toString.call(o).slice(8, -1) + '>'];
+  for (const C of NOT_CLONEABLE()) {
+    if (o instanceof C) return ['!', (Object.getPrototypeOf(o)?.constructor?.name || C.name) + ' object'];
   }
-  if (seen.has(v)) return seen.get(v);
-  let out;
-  if (Array.isArray(v)) {
-    out = [];
-    seen.set(v, out);
-    for (let i = 0; i < v.length; i++) out[i] = clone(v[i], seen);
-    return out;
-  }
-  if (v instanceof Date) return new Date(v.getTime());
-  if (v instanceof RegExp) return new RegExp(v.source, v.flags);
-  if (v instanceof Map) { out = new Map(); seen.set(v, out); for (const [a, b] of v) out.set(clone(a, seen), clone(b, seen)); return out; }
-  if (v instanceof Set) { out = new Set(); seen.set(v, out); for (const a of v) out.add(clone(a, seen)); return out; }
-  if (v instanceof ArrayBuffer) return v.slice(0);
-  if (ArrayBuffer.isView(v)) return v.slice ? v.slice() : new DataView(v.buffer.slice(0));
-  if (v instanceof Error) { const e = new v.constructor(v.message); seen.set(v, e); return e; }
-  if (KEYS.has(v)) return clonaChave(v);
-  if (v instanceof Node) throw new DOMException(`${Object.prototype.toString.call(v)} could not be cloned.`, 'DataCloneError');
-  out = {};
-  seen.set(v, out);
-  for (const k of Object.keys(v)) out[k] = clone(v[k], seen);
-  return out;
+  return undefined;
 }
-hidden(G, 'structuredClone', function structuredClone(v) { return clone(v, new Map()); });
+function cloneIn(tag, d) {
+  switch (tag) {
+    case 'Blob': return new Blob([d[0]], { type: d[1] });
+    case 'File': return new File([d[0]], d[2], { type: d[1], lastModified: d[3] });
+    case 'CryptoKey': return novaChave(d[0], d[1], d[2], d[3], d[4]);
+    case 'ImageData': return G.ImageData ? new G.ImageData(d[0], d[1], d[2]) : { data: d[0], width: d[1], height: d[2] };
+  }
+  return undefined;
+}
+/// Lista de transferência de postMessage(msg, transfer) ou postMessage(msg, { transfer }).
+function transferOf(t, ctx) {
+  if (t === undefined || t === null) return [];
+  if (typeof t !== 'object' && typeof t !== 'function') throw new TypeError(`${ctx}The provided value cannot be converted to a sequence.`);
+  if (typeof t[Symbol.iterator] !== 'function') return t.transfer === undefined || t.transfer === null ? [] : [...t.transfer];
+  return [...t];
+}
+hidden(G, 'structuredClone', function structuredClone(value, options) {
+  const ctx = `Failed to execute 'structuredClone' on '${IS_WINDOW ? 'Window' : 'WorkerGlobalScope'}': `;
+  if (arguments.length === 0) throw new TypeError(`${ctx}1 argument required, but only 0 present.`);
+  const list = options === undefined || options === null ? [] : transferOf(options.transfer === undefined ? [] : options.transfer, ctx);
+  return N.structuredClone(value, list, ctx, cloneOut, cloneIn);
+});
 
 // ------------------------------------------------- crypto
 // Crypto: getRandomValues e randomUUID com o gerador do sistema operacional;
@@ -385,7 +406,6 @@ function novaChave(tipo, ext, alg, usos, m) {
   KEYS.set(k, { tipo, ext, alg, usos, m });
   return k;
 }
-const clonaChave = (k) => { const s = KEYS.get(k); return novaChave(s.tipo, s.ext, s.alg, s.usos, s.m); };
 // a ordem das propriedades é a do Chrome: name, hash, length/modulusLength...
 function algoritmoJs(a) {
   const o = { name: a.name };
@@ -524,12 +544,21 @@ class URL {
   }
   static canParse(u, b) { return !!N.urlParse(String(u), b === undefined ? undefined : String(b)); }
   static parse(u, b) { try { return new URL(u, b); } catch (e) { return null; } }
-  static createObjectURL(blob) {
+  static createObjectURL(obj) {
     const id = uuid();
-    BLOBS.set(id, blob);
-    return `blob:${G.origin}/${id}`;
+    const url = `blob:${G.origin}/${id}`;
+    // Blob: no registro do Rust (vale para fetch, workers, <img>, <video>...)
+    const b = BLOB.get(obj);
+    if (b) N.blobRegister(url, b.bytes, b.type);
+    else if (G.MediaSource && obj instanceof G.MediaSource) BLOBS.set(id, obj);
+    else throw new TypeError("Failed to execute 'createObjectURL' on 'URL': Overload resolution failed.");
+    return url;
   }
-  static revokeObjectURL(u) { BLOBS.delete(String(u).split('/').pop()); }
+  static revokeObjectURL(u) {
+    u = String(u);
+    N.blobRevoke(u);
+    BLOBS.delete(u.split('/').pop());
+  }
   get searchParams() {
     const d = URL_DATA.get(this);
     if (!d.params) {
@@ -541,6 +570,7 @@ class URL {
   toString() { return this.href; }
   toJSON() { return this.href; }
 }
+// blob: de MediaSource (o objeto não sai da realm)
 const BLOBS = new Map();
 for (const part of ['href', 'protocol', 'username', 'password', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'origin']) {
   accessor(URL.prototype, part, function () { return URL_DATA.get(this).parts[part]; }, part === 'origin' ? undefined : function (v) {
@@ -620,6 +650,58 @@ class FormData {
   [Symbol.iterator]() { return this.entries(); }
 }
 hidden(G, 'FormData', FormData);
+
+// ------------------------------------------------- FileReader
+const READER = new WeakMap();
+function binaryOf(b) {
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return s;
+}
+function readBlob(fr, blob, how, enc) {
+  const s = READER.get(fr);
+  if (!(blob instanceof Blob)) throw new TypeError(`Failed to execute '${how}' on 'FileReader': parameter 1 is not of type 'Blob'.`);
+  if (s.state === 1) throw new DOMException(`Failed to execute '${how}' on 'FileReader': The object is already busy reading Blobs.`, 'InvalidStateError');
+  s.state = 1; s.result = null; s.error = null;
+  const seq = ++s.seq;
+  const bytes = BLOB.get(blob).bytes, type = blob.type, n = bytes.length;
+  const fire = (t) => fireTrusted(fr, new ProgressEvent(t, { lengthComputable: true, loaded: n, total: n }));
+  setTimeout(() => {
+    if (s.seq !== seq) return;
+    fire('loadstart');
+    if (how === 'readAsArrayBuffer') s.result = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + n);
+    else if (how === 'readAsText') s.result = N.utf8Decode(bytes, enc === undefined ? 'utf-8' : String(enc));
+    else if (how === 'readAsDataURL') s.result = `data:${type || 'application/octet-stream'};base64,${btoa(binaryOf(bytes))}`;
+    else s.result = binaryOf(bytes);
+    s.state = 2;
+    fire('progress');
+    fire('load');
+    fire('loadend');
+  }, 0);
+}
+class FileReader extends EventTarget {
+  constructor() { super(); READER.set(this, { state: 0, result: null, error: null, seq: 0 }); }
+  get readyState() { return READER.get(this).state; }
+  get result() { return READER.get(this).result; }
+  get error() { return READER.get(this).error; }
+  readAsArrayBuffer(b) { readBlob(this, b, 'readAsArrayBuffer'); }
+  readAsText(b, enc) { readBlob(this, b, 'readAsText', enc); }
+  readAsDataURL(b) { readBlob(this, b, 'readAsDataURL'); }
+  readAsBinaryString(b) { readBlob(this, b, 'readAsBinaryString'); }
+  abort() {
+    const s = READER.get(this);
+    if (s.state !== 1) return;
+    s.seq++; s.state = 2; s.result = null;
+    fireTrusted(this, new ProgressEvent('abort'));
+    fireTrusted(this, new ProgressEvent('loadend'));
+  }
+}
+for (const [k, v] of [['EMPTY', 0], ['LOADING', 1], ['DONE', 2]]) {
+  Object.defineProperty(FileReader, k, { value: v });
+  Object.defineProperty(FileReader.prototype, k, { value: v });
+}
+defineHandlers(FileReader.prototype, ['loadstart', 'progress', 'load', 'abort', 'error', 'loadend']);
+hidden(G, 'FileReader', FileReader);
 
 // ------------------------------------------------- Abort
 class AbortSignal extends EventTarget {
@@ -816,9 +898,16 @@ hidden(G, 'fetch', function fetch(input, init) {
     const req = new Request(input, init);
     if (req.signal.aborted) { reject(req.signal.reason); return; }
     if (req.url.startsWith('blob:')) {
-      const b = BLOBS.get(req.url.split('/').pop());
-      if (b) resolve(new Response(b, { status: 200 }));
-      else reject(new TypeError('Failed to fetch'));
+      // blob URL: do registro do Rust (pode ter sido criado em outra realm)
+      const b = req.method === 'GET' ? N.blobGet(req.url) : null;
+      if (!b) { reject(new TypeError('Failed to fetch')); return; }
+      const h = [['content-length', String(b[0].length)]];
+      if (b[1]) h.push(['content-type', b[1]]);
+      const res = new Response(null, { status: 200, headers: h });
+      res._bytes = b[0];
+      res.url = req.url;
+      res.type = 'basic';
+      resolve(res);
       return;
     }
     const [bytes, ct] = encodeBody(req._body);
@@ -976,37 +1065,115 @@ hidden(G, 'XMLHttpRequestEventTarget', XMLHttpRequestEventTarget);
 hidden(G, 'XMLHttpRequest', XMLHttpRequest);
 
 // ------------------------------------------------- mensagens
+// MessagePort, BroadcastChannel e Worker: as mensagens vão pelo Rust
+// (script/messaging.rs), serializadas, e podem atravessar threads.
+const PORT_STATE = new WeakMap();
+function portState(p) {
+  let s = PORT_STATE.get(p);
+  if (!s) PORT_STATE.set(p, s = { started: false, queue: [] });
+  return s;
+}
+/// Liga a fila da porta (start() ou onmessage): o que esperava sai em ordem.
+function startPort(p) {
+  const s = portState(p);
+  if (s.started) return;
+  s.started = true;
+  for (const ev of s.queue.splice(0)) setTimeout(() => fireTrusted(p, ev), 0);
+}
 class MessagePort extends EventTarget {
-  constructor() { super(); this._other = null; this._started = false; }
-  postMessage(data) {
-    const target = this._other;
-    if (!target) return;
-    const ev = new MessageEvent('message', { data: structuredClone(data) });
-    setTimeout(() => fireTrusted(target, ev), 0);
+  constructor() { throw new TypeError('Illegal constructor'); }
+  postMessage(message, transfer) {
+    const ctx = "Failed to execute 'postMessage' on 'MessagePort': ";
+    if (arguments.length === 0) throw new TypeError(`${ctx}1 argument required, but only 0 present.`);
+    N.portPost(this, message, transferOf(transfer, ctx), cloneOut);
   }
-  start() {} close() { this._other = null; }
+  start() { startPort(this); }
+  close() { N.portClose(this); }
 }
 defineHandlers(MessagePort.prototype, ['message', 'messageerror']);
+{
+  const d = Object.getOwnPropertyDescriptor(MessagePort.prototype, 'onmessage');
+  accessor(MessagePort.prototype, 'onmessage', d.get, function (v) { d.set.call(this, v); startPort(this); });
+}
+N.portSetup(MessagePort.prototype);
+const CHANNEL = new WeakMap();
 class MessageChannel {
-  constructor() {
-    this.port1 = new MessagePort();
-    this.port2 = new MessagePort();
-    this.port1._other = this.port2;
-    this.port2._other = this.port1;
-  }
+  constructor() { CHANNEL.set(this, N.channelNew()); }
+  get port1() { return CHANNEL.get(this)[0]; }
+  get port2() { return CHANNEL.get(this)[1]; }
 }
 hidden(G, 'MessagePort', MessagePort);
 hidden(G, 'MessageChannel', MessageChannel);
+const BCAST = new WeakMap();
 class BroadcastChannel extends EventTarget {
-  constructor(name) { super(); this.name = String(name); }
-  postMessage() {} close() {}
+  constructor(name) {
+    if (arguments.length === 0) throw new TypeError("Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.");
+    super();
+    const n = String(name);
+    BCAST.set(this, { name: n, id: N.bcOpen(this, n), closed: false });
+  }
+  get name() { return BCAST.get(this).name; }
+  postMessage(message) {
+    const ctx = "Failed to execute 'postMessage' on 'BroadcastChannel': ";
+    if (arguments.length === 0) throw new TypeError(`${ctx}1 argument required, but only 0 present.`);
+    const s = BCAST.get(this);
+    if (s.closed) throw new DOMException(`${ctx}Channel is closed`, 'InvalidStateError');
+    N.bcPost(s.id, message, cloneOut);
+  }
+  close() {
+    const s = BCAST.get(this);
+    if (!s.closed) { s.closed = true; N.bcClose(s.id); }
+  }
 }
 defineHandlers(BroadcastChannel.prototype, ['message', 'messageerror']);
 hidden(G, 'BroadcastChannel', BroadcastChannel);
+const WORKER_ID = new WeakMap();
+class Worker extends EventTarget {
+  constructor(url, options) {
+    const ctx = "Failed to construct 'Worker': ";
+    if (arguments.length === 0) throw new TypeError(`${ctx}1 argument required, but only 0 present.`);
+    super();
+    const o = options === undefined || options === null ? {} : options;
+    const type = o.type === undefined ? 'classic' : String(o.type);
+    if (type !== 'classic' && type !== 'module') {
+      throw new TypeError(`${ctx}Failed to read the 'type' property from 'WorkerOptions': The provided value '${type}' is not a valid enum value of type WorkerType.`);
+    }
+    WORKER_ID.set(this, N.workerNew(this, String(url), type, o.name === undefined ? '' : String(o.name)));
+  }
+  postMessage(message, transfer) {
+    const ctx = "Failed to execute 'postMessage' on 'Worker': ";
+    if (arguments.length === 0) throw new TypeError(`${ctx}1 argument required, but only 0 present.`);
+    N.workerPost(WORKER_ID.get(this), message, transferOf(transfer, ctx), cloneOut);
+  }
+  terminate() { N.workerTerminate(WORKER_ID.get(this)); }
+}
+defineHandlers(Worker.prototype, ['message', 'messageerror', 'error']);
+hidden(G, 'Worker', Worker);
 
 // ---------------------------------------------------- ganchos do Rust
-// (a página acrescenta os seus e publica em __ferroHooks no fim)
+// (cada variante acrescenta os seus e publica em __ferroHooks no fim)
 const hooks = {
+  cloneIn,
+  portMessage(port, data, ports) {
+    const ev = ports === null ? new MessageEvent('messageerror', { data: null })
+      : new MessageEvent('message', { data, ports: Object.freeze(ports) });
+    const s = portState(port);
+    if (!s.started) { s.queue.push(ev); return; }
+    fireTrusted(port, ev);
+  },
+  broadcastMessage(bc, data, origin) {
+    const s = BCAST.get(bc);
+    if (!s || s.closed) return;
+    fireTrusted(bc, origin === null ? new MessageEvent('messageerror', { data: null }) : new MessageEvent('message', { data, origin }));
+  },
+  workerEvent(w, kind, a, b, c, d) {
+    if (kind === 'message') fireTrusted(w, new MessageEvent('message', { data: a, ports: Object.freeze(b) }));
+    else if (kind === 'messageerror') fireTrusted(w, new MessageEvent('messageerror', { data: null }));
+    else if (kind === 'error') return fireTrusted(w, new ErrorEvent('error', { message: a, filename: b, lineno: c, colno: d, error: null, cancelable: true }));
+    else if (kind === 'loaderror') fireTrusted(w, new Event('error', { cancelable: true }));
+    return true;
+  },
+
   // módulos ES (ver script/module.rs)
   newNamespace() {
     const ns = Object.create(null);

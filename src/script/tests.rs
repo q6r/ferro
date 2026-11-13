@@ -512,3 +512,157 @@ fn handler_onx_na_ordem_dos_listeners() {
     });
 }
 
+/// Roda o laço da sessão até `cond` (JS) dar true ou o tempo acabar.
+fn esperar(s: &mut Session, cond: &str) {
+    let t = std::time::Instant::now();
+    while t.elapsed().as_millis() < 4000 && eval(s, cond) != "true" {
+        s.tick();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn worker_mensagens_e_transferencia() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<script>
+              window.log = [];
+              const src = `onmessage = (e) => {
+                const d = e.data;
+                if (d.buf) { const n = new Uint8Array(d.buf); postMessage({ soma: n[0] + n[1] }); postMessage(d.buf, [d.buf]); return; }
+                postMessage({ eco: d.a, tipo: typeof window, nome: self.name, data: d.d instanceof Date, mapa: d.m.get('k') });
+              };`;
+              const w = new Worker(URL.createObjectURL(new Blob([src])), { name: 'eco' });
+              w.onmessage = (e) => log.push(e.data instanceof ArrayBuffer ? 'buf:' + e.data.byteLength : JSON.stringify(e.data));
+              w.postMessage({ a: [1, 2], d: new Date(0), m: new Map([['k', 'v']]) });
+              const b = new Uint8Array([3, 4]).buffer;
+              w.postMessage({ buf: b }, [b]);
+              log.push('destacado:' + b.byteLength);
+            </script>"#,
+        );
+        esperar(&mut s, "log.length >= 4");
+        assert_eq!(
+            eval(&mut s, "log.join(' | ')"),
+            r#"destacado:0 | {"eco":[1,2],"tipo":"undefined","nome":"eco","data":true,"mapa":"v"} | {"soma":7} | buf:2"#
+        );
+        // clone que não dá: DataCloneError, como no Chrome
+        assert_eq!(
+            eval(&mut s, "try { new Worker('data:,').postMessage(() => 1) } catch (e) { e.name + ': ' + e.message }"),
+            "DataCloneError: Failed to execute 'postMessage' on 'Worker': () => 1 could not be cloned."
+        );
+    });
+}
+
+#[test]
+fn worker_erros_importscripts_e_modulo() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<script>
+              window.log = [];
+              const url = (t) => URL.createObjectURL(new Blob([t], { type: 'text/javascript' }));
+              const lib = url('self.LIB = 40;');
+              // importScripts com blob; erro de sintaxe dentro dele vira exceção
+              const w = new Worker(url(`importScripts(${JSON.stringify(lib)});
+                try { importScripts(${JSON.stringify(url('var = ;'))}); } catch (e) { postMessage('pegou ' + e.name); }
+                postMessage('lib ' + (LIB + 2));
+                const x = 1;
+                throw new TypeError('ruim');`));
+              w.onmessage = (e) => log.push(e.data);
+              w.onerror = (e) => { log.push(['erro', e.constructor.name, e.message, e.lineno].join(',')); e.preventDefault(); };
+              // módulo: import estático (data:) e dinâmico
+              const m = new Worker(url(`import { v } from 'data:text/javascript,export const v = 5;';
+                const d = await import('data:text/javascript,export default 6;');
+                postMessage('modulo ' + (v + d.default));`), { type: 'module' });
+              m.onmessage = (e) => log.push(e.data);
+              // blob revogado: o script não carrega (Event simples)
+              const r = url('1'); URL.revokeObjectURL(r);
+              new Worker(r).onerror = (e) => log.push('nao carregou ' + e.constructor.name);
+            </script>"#,
+        );
+        esperar(&mut s, "log.length >= 5");
+        assert_eq!(
+            eval(&mut s, "log.slice().sort().join(' | ')"),
+            "erro,ErrorEvent,Uncaught TypeError: ruim,5 | lib 42 | modulo 11 | nao carregou Event | pegou SyntaxError"
+        );
+    });
+}
+
+#[test]
+fn worker_terminate_close_e_fim_das_threads() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<script>
+              window.log = [];
+              const url = (t) => URL.createObjectURL(new Blob([t]));
+              // laço sem fim (com try/finally): terminate() para mesmo assim
+              window.ocupado = new Worker(url("postMessage('rodando'); for (;;) { try { } finally { } }"));
+              ocupado.onmessage = (e) => { log.push(e.data); ocupado.terminate(); };
+              // close(): o que veio antes chega, timer depois não
+              const f = new Worker(url("postMessage('a'); setTimeout(() => postMessage('timer'), 0); close(); postMessage('b');"));
+              f.onmessage = (e) => log.push(e.data);
+              // um que fica vivo para sempre (some quando a sessão acaba)
+              window.eterno = new Worker(url('setInterval(() => {}, 5)'));
+            </script>"#,
+        );
+        esperar(&mut s, "log.length >= 3");
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 300 {
+            s.tick();
+        }
+        assert_eq!(eval(&mut s, "log.slice().sort().join()"), "a,b,rodando");
+        // as threads do ocupado e do que fechou acabaram (o laço já juntou)
+        let pronto = |s: &Session| {
+            let hb = s.host.borrow();
+            hb.mailbox.workers.len() == 1 && hb.mailbox.dying.is_empty()
+        };
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 3000 && !pronto(&s) {
+            s.tick();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(pronto(&s), "workers parados ainda vivos");
+        // a página vai embora: o que sobrou para e a thread acaba
+        let threads: Vec<_> = s.host.borrow_mut().mailbox.workers.values_mut().filter_map(|w| w.thread.take()).collect();
+        assert_eq!(threads.len(), 1);
+        drop(s);
+        let t = std::time::Instant::now();
+        while t.elapsed().as_millis() < 3000 && !threads.iter().all(|h| h.is_finished()) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(threads.iter().all(|h| h.is_finished()), "thread do worker não acabou");
+    });
+}
+
+#[test]
+fn portas_e_broadcast_entre_threads() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<script>
+              window.log = [];
+              const w = new Worker(URL.createObjectURL(new Blob([`
+                onmessage = (e) => {
+                  const p = e.ports[0];
+                  p.onmessage = (ev) => p.postMessage('worker: ' + ev.data);
+                  const bc = new BroadcastChannel('c');
+                  bc.onmessage = (ev) => bc.postMessage('bc: ' + ev.data);
+                  postMessage('pronto');
+                };`])));
+              const ch = new MessageChannel();
+              ch.port1.onmessage = (e) => log.push(e.data);
+              const bc = new BroadcastChannel('c');
+              bc.onmessage = (e) => log.push(e.data);
+              w.onmessage = () => { ch.port1.postMessage('oi'); bc.postMessage('ola'); };
+              w.postMessage(null, [ch.port2]);
+              // a porta transferida não vale mais aqui (postMessage não faz nada)
+              ch.port2.postMessage('morta');
+              // na mesma realm: só entrega depois de start()
+              const local = new MessageChannel();
+              local.port2.addEventListener('message', (e) => log.push('local: ' + e.data));
+              local.port1.postMessage('x');
+              setTimeout(() => local.port2.start(), 50);
+            </script>"#,
+        );
+        esperar(&mut s, "log.length >= 3");
+        assert_eq!(eval(&mut s, "log.slice().sort().join(' | ')"), "bc: ola | local: x | worker: oi");
+    });
+}
