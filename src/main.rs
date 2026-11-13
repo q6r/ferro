@@ -6,6 +6,7 @@ use ferro::fonts::Fonts;
 use ferro::layout;
 use ferro::net::Net;
 use ferro::paint::Canvas;
+use ferro_js::Value;
 use url::Url;
 
 /// Alocador próprio (objetos pequenos sem passar pelo heap do sistema).
@@ -32,6 +33,10 @@ Opções do modo PNG:
 
 JavaScript (motor próprio, Ferro JS):
   ferro --js arquivo.js               executa um script ('-' lê da entrada padrão)
+  ferro --js arquivo.mjs              executa um módulo ES (import/export, await no topo)
+  ferro --js a.js --modulo b.js       executa em ordem; --modulo: o próximo é módulo
+      --caminho <arquivo>             caminho do código lido da entrada padrão
+                                      (base dos imports relativos e import.meta.url)
   ferro --js                          abre o console interativo (REPL)
 
 Captura da interface (sem abrir janela):
@@ -131,11 +136,11 @@ fn parse_args() -> Result<Args, String> {
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     if raw.first().map(String::as_str) == Some("--js") {
-        let file = raw.get(1).cloned();
+        let args = raw[1..].to_vec();
         // pilha grande: o interpretador é recursivo nas chamadas de função
         let code = std::thread::Builder::new()
             .stack_size(1 << 30)
-            .spawn(move || run_js(file))
+            .spawn(move || run_js(args))
             .map(|h| h.join().unwrap_or(70))
             .unwrap_or(70);
         std::process::exit(code);
@@ -188,78 +193,150 @@ fn main() {
     }
 }
 
-/// `ferro --js [arquivo]`: executa um script ou abre o REPL.
-fn run_js(file: Option<String>) -> i32 {
+/// Um arquivo do `--js`: script clássico ou módulo.
+struct JsFile {
+    path: String,
+    module: bool,
+}
+
+/// `ferro --js [--modulo] [--caminho arq] [arquivo...]`: executa os scripts
+/// e módulos em ordem ('-' lê da entrada padrão), ou abre o REPL.
+fn run_js(args: Vec<String>) -> i32 {
+    let mut files = Vec::new();
+    let mut next_module = false;
+    let mut stdin_path: Option<String> = None;
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--modulo" => next_module = true,
+            "--caminho" => match it.next() {
+                Some(p) => stdin_path = Some(p),
+                None => {
+                    eprintln!("erro: --caminho espera um arquivo");
+                    return 2;
+                }
+            },
+            _ => {
+                let module = next_module || a.ends_with(".mjs");
+                files.push(JsFile { path: a, module });
+                next_module = false;
+            }
+        }
+    }
     let mut js = ferro_js::Engine::new();
     js.vm.max_depth = 8000;
     ferro::jshost::setup(&mut js);
-    match file {
-        Some(path) => {
-            // "-": o script vem da entrada padrão (executores de testes)
-            let read = if path == "-" {
-                let mut s = String::new();
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map(|_| s)
-            } else {
-                std::fs::read_to_string(&path)
-            };
-            let src = match read {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("erro: não consegui ler {path}: {e}");
-                    return 2;
+    // a entrada padrão finge ser o arquivo de --caminho (imports relativos a ele)
+    let stdin_url = stdin_path.as_deref().and_then(|p| ferro::jshost::file_url(std::path::Path::new(p)));
+    let cwd = std::env::current_dir().ok().and_then(|d| Url::from_directory_path(d).ok());
+    let base = files
+        .iter()
+        .find_map(|f| if f.path == "-" { stdin_url.clone() } else { ferro::jshost::file_url(std::path::Path::new(&f.path)) })
+        .or(cwd)
+        .unwrap_or_else(|| Url::parse("file:///").expect("URL fixa"));
+    ferro::jshost::setup_modules(&mut js, base);
+    if files.is_empty() {
+        return repl(&mut js);
+    }
+    let t = Instant::now();
+    let mut code = 0;
+    // promessas da avaliação dos módulos (erro no corpo = código 1)
+    let mut evaluations = Vec::new();
+    for f in &files {
+        let read = if f.path == "-" {
+            let mut s = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut s).map(|_| s)
+        } else {
+            std::fs::read_to_string(&f.path)
+        };
+        let src = match read {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("erro: não consegui ler {}: {e}", f.path);
+                return 2;
+            }
+        };
+        // nome do script/módulo: a URL do arquivo (base dos imports e import.meta.url)
+        let url = if f.path == "-" { stdin_url.clone() } else { ferro::jshost::file_url(std::path::Path::new(&f.path)) };
+        let name = url.map(String::from).unwrap_or_else(|| f.path.clone());
+        if f.module {
+            let ran = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let out = ran.clone();
+            js.vm.run_module(&name, Some(src), Box::new(move |_, r| *out.borrow_mut() = Some(r)));
+            let r = ran.borrow_mut().take();
+            match r {
+                Some(ferro_js::module::Ran::Started(p)) => {
+                    // rejeição vira "Uncaught ..." (e não "Uncaught (in promise)")
+                    if let Value::Object(o) = &p {
+                        js.vm.perform_then(o, Value::Undefined, Value::Undefined, None);
+                    }
+                    evaluations.push(p);
+                    js.vm.run_microtasks();
                 }
-            };
-            let name = std::path::Path::new(&path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or(path.clone());
-            let t = Instant::now();
-            let r = js.eval(&src, &name);
-            let code = match r {
-                Ok(_) => 0,
-                Err(e) => {
+                Some(ferro_js::module::Ran::Failed(e) | ferro_js::module::Ran::FetchFailed(e)) => {
                     eprintln!("{}", js.error_text(&e));
-                    1
+                    code = 1;
+                    break;
                 }
-            };
-            js.run_event_loop();
-            if std::env::var("FERRO_TEMPOS").is_ok() {
-                eprintln!("[ferro-js] {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+                None => {}
             }
-            code
+        } else if let Err(e) = js.eval(&src, &name) {
+            eprintln!("{}", js.error_text(&e));
+            code = 1;
+            break;
         }
-        None => {
-            use std::io::{BufRead, Write};
-            println!("Ferro JS — console interativo. Digite .sair para sair.");
-            let stdin = std::io::stdin();
-            let mut buf = String::new();
-            loop {
-                print!("{}", if buf.is_empty() { "> " } else { "… " });
-                let _ = std::io::stdout().flush();
-                let mut line = String::new();
-                if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
-                    println!();
-                    return 0;
+    }
+    js.run_event_loop();
+    for p in &evaluations {
+        let Value::Object(o) = p else { continue };
+        if let ferro_js::value::Kind::Promise(d) = &o.borrow().kind {
+            match d.state {
+                ferro_js::builtins::promise::PState::Rejected(_) => code = 1,
+                ferro_js::builtins::promise::PState::Pending if code == 0 => {
+                    eprintln!("Warning: Detected unsettled top-level await");
+                    code = 13;
                 }
-                let trimmed = line.trim();
-                if buf.is_empty() && (trimmed == ".sair" || trimmed == ".exit") {
-                    return 0;
-                }
-                buf.push_str(&line);
-                // entrada incompleta (bloco aberto): continua lendo
-                if let Err(e) = ferro_js::parser::parse_program(&buf)
-                    && e.eof
-                {
-                    continue;
-                }
-                let src = std::mem::take(&mut buf);
-                match js.eval(&src, "repl") {
-                    Ok(v) => println!("{}", js.inspect(&v)),
-                    Err(e) => println!("{}", js.error_text(&e)),
-                }
-                js.run_due_timers();
+                _ => {}
             }
         }
+    }
+    if std::env::var("FERRO_TEMPOS").is_ok() {
+        eprintln!("[ferro-js] {:.1} ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
+    code
+}
+
+/// Console interativo do Ferro JS.
+fn repl(js: &mut ferro_js::Engine) -> i32 {
+    use std::io::{BufRead, Write};
+    println!("Ferro JS — console interativo. Digite .sair para sair.");
+    let stdin = std::io::stdin();
+    let mut buf = String::new();
+    loop {
+        print!("{}", if buf.is_empty() { "> " } else { "… " });
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if stdin.lock().read_line(&mut line).unwrap_or(0) == 0 {
+            println!();
+            return 0;
+        }
+        let trimmed = line.trim();
+        if buf.is_empty() && (trimmed == ".sair" || trimmed == ".exit") {
+            return 0;
+        }
+        buf.push_str(&line);
+        // entrada incompleta (bloco aberto): continua lendo
+        if let Err(e) = ferro_js::parser::parse_program(&buf)
+            && e.eof
+        {
+            continue;
+        }
+        let src = std::mem::take(&mut buf);
+        match js.eval(&src, "repl") {
+            Ok(v) => println!("{}", js.inspect(&v)),
+            Err(e) => println!("{}", js.error_text(&e)),
+        }
+        js.run_due_timers();
     }
 }
 
