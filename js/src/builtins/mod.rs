@@ -24,6 +24,7 @@ pub mod reflect;
 pub mod regexp;
 pub mod strings;
 pub mod symbol;
+pub mod temporal;
 pub mod timers;
 pub mod typed;
 
@@ -121,6 +122,8 @@ pub struct Realm {
     pub sym_split: Sym,
     pub sym_dispose: Sym,
     pub sym_async_dispose: Sym,
+    /// Protótipos do Temporal (PlainDate, Duration...).
+    pub temporal: temporal::Protos,
 }
 
 fn plain(proto: Option<&ObjRef>) -> ObjRef {
@@ -160,6 +163,7 @@ impl Realm {
         let array_ctor = native_fn(&function_proto, "Array", 1, array::array_ctor, true);
         let array_species = mk_native("get [Symbol.species]", 0, array::species);
         let eval_fn = mk_native("eval", 1, global::eval);
+        let temporal = temporal::Protos::new(&object_proto);
         let realm = Realm {
             global: plain(p),
             array_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Array(Vec::new()))),
@@ -227,6 +231,7 @@ impl Realm {
             sym_split: sym("Symbol.split"),
             sym_dispose: sym("Symbol.dispose"),
             sym_async_dispose: sym("Symbol.asyncDispose"),
+            temporal,
             error_proto,
             iterator_proto,
             object_proto,
@@ -256,6 +261,7 @@ impl Realm {
         typed::install(&realm);
         proxy::install(&realm);
         intl::install(&realm);
+        temporal::install(&realm);
         realm
     }
 

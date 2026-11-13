@@ -881,6 +881,8 @@ pub enum Kind {
     /// Objeto de JSON.rawJSON.
     RawJson,
     FinReg(Box<crate::builtins::collections::FinRegData>),
+    /// Objetos do Temporal (PlainDate, Instant, Duration...).
+    Temporal(Box<crate::builtins::temporal::TemporalData>),
 }
 
 pub struct Object {
