@@ -2754,27 +2754,40 @@ function clone(v, seen) {
 hidden(G, 'structuredClone', function structuredClone(v) { return clone(v, new Map()); });
 
 // ------------------------------------------------- crypto
-let seed = (Date.now() ^ (N.now() * 1e6)) >>> 0 || 0x9e3779b9;
-function rand32() {
-  // xorshift32 misturado com Math.random (não é criptográfico!)
-  seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0;
-  return (seed ^ Math.floor(Math.random() * 0x100000000)) >>> 0;
+// Crypto: getRandomValues e randomUUID com o gerador do sistema operacional.
+const TA_TAG = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+const INTEIROS = ['Int8Array', 'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array', 'Int32Array',
+  'Uint32Array', 'BigInt64Array', 'BigUint64Array'];
+function uuid() {
+  const b = N.cryptoRandom(16);
+  b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+  const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
-hidden(G, 'crypto', {
+class Crypto {
+  constructor() { throw new TypeError('Illegal constructor'); }
   getRandomValues(arr) {
-    if (!ArrayBuffer.isView(arr)) throw new TypeError("Failed to execute 'getRandomValues' on 'Crypto': parameter 1 is not of type 'ArrayBufferView'.");
-    const bytes = new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-    for (let i = 0; i < bytes.length; i++) bytes[i] = rand32() & 255;
+    const ctx = "Failed to execute 'getRandomValues' on 'Crypto': ";
+    if (!arguments.length) throw new TypeError(`${ctx}1 argument required, but only 0 present.`);
+    if (!ArrayBuffer.isView(arr)) throw new TypeError(`${ctx}parameter 1 is not of type 'ArrayBufferView'.`);
+    const tipo = TA_TAG.call(arr) || 'DataView';
+    if (!INTEIROS.includes(tipo)) {
+      throw new DOMException(`${ctx}The provided ArrayBufferView is of type '${tipo}', which is not an integer array type.`, 'TypeMismatchError');
+    }
+    if (arr.byteLength > 65536) {
+      throw new DOMException(`${ctx}The ArrayBufferView's byte length (${arr.byteLength}) exceeds the number of bytes of entropy available via this API (65536).`, 'QuotaExceededError');
+    }
+    new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength).set(N.cryptoRandom(arr.byteLength));
     return arr;
-  },
-  randomUUID() {
-    const b = G.crypto.getRandomValues(new Uint8Array(16));
-    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
-    const h = [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
-    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
-  },
-  subtle: {},
-});
+  }
+  randomUUID() { return uuid(); }
+  get subtle() { return SUBTLE; }
+}
+const SUBTLE = {};
+for (const n of ['getRandomValues', 'randomUUID', 'subtle']) Object.defineProperty(Crypto.prototype, n, { enumerable: true });
+Object.defineProperty(Crypto.prototype, Symbol.toStringTag, { value: 'Crypto', configurable: true });
+hidden(G, 'Crypto', Crypto);
+hidden(G, 'crypto', Object.create(Crypto.prototype));
 
 // ------------------------------------------------- texto
 class TextEncoder {
@@ -2871,7 +2884,7 @@ class URL {
   static canParse(u, b) { return !!N.urlParse(String(u), b === undefined ? undefined : String(b)); }
   static parse(u, b) { try { return new URL(u, b); } catch (e) { return null; } }
   static createObjectURL(blob) {
-    const id = G.crypto.randomUUID();
+    const id = uuid();
     BLOBS.set(id, blob);
     return `blob:${G.origin}/${id}`;
   }
@@ -3038,7 +3051,7 @@ function encodeBody(body) {
   if (body instanceof Blob) return [BLOB.get(body).bytes, body.type || null];
   if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return [toBytes(body), null];
   if (body instanceof FormData) {
-    const boundary = '----FerroFormBoundary' + G.crypto.randomUUID().replace(/-/g, '');
+    const boundary = '----FerroFormBoundary' + uuid().replace(/-/g, '');
     const parts = [];
     for (const [k, v, name] of body._list) {
       let head = `--${boundary}\r\nContent-Disposition: form-data; name="${k}"`;
