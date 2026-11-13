@@ -3763,7 +3763,7 @@ impl<'a> Ctx<'a> {
                         let label = match el.attr("value").filter(|v| !v.is_empty()) {
                             Some(v) if ty == "password" => Some(("•".repeat(v.chars().count()), s.color)),
                             Some(v) => Some((v.to_string(), s.color)),
-                            None => el.attr("placeholder").map(|p| (p.to_string(), gray)),
+                            None => el.attr("placeholder").map(|p| (p.to_string(), s.placeholder_color.unwrap_or(gray))),
                         };
                         let size: f32 = el.attr("size").and_then(|v| v.parse().ok()).unwrap_or(20.0);
                         let (bw, bh) = (outer_w(w, size * fs * 0.55), outer_h(h, line));
@@ -3791,7 +3791,7 @@ impl<'a> Ctx<'a> {
                 let rows: f32 = el.attr("rows").and_then(|v| v.parse().ok()).unwrap_or(2.0);
                 let text = self.doc.text_content(n);
                 let label = if text.trim().is_empty() {
-                    el.attr("placeholder").map(|p| (p.to_string(), gray))
+                    el.attr("placeholder").map(|p| (p.to_string(), s.placeholder_color.unwrap_or(gray)))
                 } else {
                     Some((text.trim().to_string(), s.color))
                 };

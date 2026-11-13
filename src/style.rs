@@ -477,6 +477,8 @@ pub struct ComputedStyle {
     /// `width`/`height: fit-content | max-content | min-content`.
     pub width_kw: Option<SizeKw>,
     pub height_kw: Option<SizeKw>,
+    /// Cor do texto do placeholder (::placeholder) de <input>/<textarea>.
+    pub placeholder_color: Option<Color>,
 }
 
 thread_local! {
@@ -582,6 +584,7 @@ impl ComputedStyle {
             explicit_inherit: false,
             width_kw: None,
             height_kw: None,
+            placeholder_color: None,
             content_hidden: false,
             border_box: false,
             underline: false,
@@ -1638,7 +1641,9 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
         let style = match &doc.node(node).data {
             NodeData::Element(_) => {
                 cx.prepare_ancestors(node);
-                let s = Rc::new(cx.style_for(node, &parent, None).0);
+                let mut st = cx.style_for(node, &parent, None).0;
+                cx.placeholder(node, &mut st);
+                let s = Rc::new(st);
                 if doc.node(node).parent == Some(Document::ROOT) {
                     cx.root_font = s.font_size;
                 }
@@ -1886,7 +1891,9 @@ pub fn compute_incremental(
                     || old.as_ref().is_none_or(|o| prestyled && o.explicit_inherit);
                 if need {
                     cx.prepare_ancestors(node);
-                    let s = Rc::new(cx.style_for(node, &parent, None).0);
+                    let mut st = cx.style_for(node, &parent, None).0;
+                    cx.placeholder(node, &mut st);
+                    let s = Rc::new(st);
                     if doc.node(node).parent == Some(Document::ROOT) && s.font_size != key.root_font {
                         // rem mudou: vale tudo de novo
                         return compute(doc, sheets, media);
@@ -2077,6 +2084,22 @@ impl Cascade<'_> {
 
     /// Estilo do elemento (ou de um pseudo-elemento dele). Devolve também se
     /// alguma regra casou.
+    /// ::placeholder de <input>/<textarea> com placeholder: a cor fica no
+    /// estilo do próprio elemento.
+    fn placeholder(&self, node: NodeId, st: &mut ComputedStyle) {
+        if self.index.pseudo.len == 0 || st.display == Display::None {
+            return;
+        }
+        let Some(el) = self.doc.element(node) else { return };
+        if !matches!(el.tag.as_str(), "input" | "textarea") || el.attr("placeholder").is_none() {
+            return;
+        }
+        let (ps, matched) = self.style_for(node, st, Some(css::PseudoElement::Placeholder));
+        if matched {
+            st.placeholder_color = Some(ps.color);
+        }
+    }
+
     fn style_for(
         &self,
         node: NodeId,
