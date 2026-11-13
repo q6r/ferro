@@ -188,6 +188,26 @@ impl Document {
         out
     }
 
+    /// Como `descendants`, entrando também nas sombras dos hospedeiros (a raiz
+    /// de sombra não entra, só o que está nela).
+    pub fn shadow_including_descendants(&self, id: NodeId) -> Vec<NodeId> {
+        if self.shadow_roots.is_empty() {
+            return self.descendants(id);
+        }
+        let mut out = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            if n != id {
+                out.push(n);
+            }
+            stack.extend(self.nodes[n].children.iter().rev().copied());
+            if let Some(&root) = self.shadow_roots.get(&n) {
+                stack.extend(self.nodes[root].children.iter().rev().copied());
+            }
+        }
+        out
+    }
+
     pub fn find_all(&self, tag: &str) -> Vec<NodeId> {
         self.descendants(Self::ROOT)
             .into_iter()

@@ -320,6 +320,12 @@ pub(crate) fn inserted(vm: &mut Vm, nodes: &[NodeId], parent: NodeId) {
             let mut all = vec![n];
             all.extend(doc.descendants(n));
             for d in all {
+                // sombra montada fora do documento: as folhas dela entram junto
+                if let Some(&root) = doc.shadow_roots.get(&d)
+                    && doc.shadow_including_descendants(root).iter().any(|&x| matches!(doc.tag(x), Some("style" | "link")))
+                {
+                    h.styles_dirty = true;
+                }
                 match doc.tag(d) {
                     Some("style" | "link") => h.styles_dirty = true,
                     Some("script") if !h.started.contains(&d) => scripts.push(d),
@@ -366,7 +372,7 @@ fn removing(vm: &mut Vm, n: NodeId) {
             return;
         }
         if matches!(doc.tag(n), Some("style" | "link"))
-            || doc.descendants(n).iter().any(|&d| matches!(doc.tag(d), Some("style" | "link")))
+            || doc.shadow_including_descendants(n).iter().any(|&d| matches!(doc.tag(d), Some("style" | "link")))
             || doc.node(n).parent.is_some_and(|p| doc.tag(p) == Some("style"))
         {
             h.styles_dirty = true;
