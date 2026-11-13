@@ -15,8 +15,9 @@
 //! caixa e com a negação aplicada: casar é uma busca binária.
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use crate::unicode_props as up;
 
@@ -170,9 +171,17 @@ pub fn canon(c: u32, unicode: bool) -> u32 {
     table_get(if unicode { &up::SCF } else { &up::UPPER }, c).unwrap_or(c)
 }
 
-/// Tabela do Canonicalize e a inversa (canônico → códigos que levam a ele).
+/// Tabela do Canonicalize e a inversa (canônico → códigos que levam a ele),
+/// montada na primeira vez.
 fn case_tables(unicode: bool) -> (&'static [(u32, u32)], &'static [(u32, u32)]) {
-    if unicode { (&up::SCF, &up::SCF_INV) } else { (&up::UPPER, &up::UPPER_INV) }
+    static INV: [OnceLock<Ranges>; 2] = [OnceLock::new(), OnceLock::new()];
+    let map: &'static [(u32, u32)] = if unicode { &up::SCF } else { &up::UPPER };
+    let inv = INV[unicode as usize].get_or_init(|| {
+        let mut v: Ranges = map.iter().map(|&(s, d)| (d, s)).collect();
+        v.sort_unstable();
+        v
+    });
+    (map, inv)
 }
 
 /// Põe em `out` os caracteres com o mesmo canônico de `c` (ele incluso).
@@ -192,7 +201,7 @@ fn push_case_class(c: u32, unicode: bool, out: &mut Ranges) {
 thread_local! {
     /// Fechamentos de conjuntos grandes já calculados (o mesmo `\p{L}` com i
     /// em várias regex não refaz a conta).
-    static FECHADOS: RefCell<HashMap<(Ranges, bool), Rc<Ranges>>> = RefCell::new(HashMap::new());
+    static FECHADOS: RefCell<Vec<(Ranges, bool, Rc<Ranges>)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Fecha o conjunto pelas equivalências de caixa: sem diferenciar
@@ -202,7 +211,7 @@ fn close_case(a: &[(u32, u32)], unicode: bool) -> Ranges {
         return a.to_vec();
     }
     let grande = a.len() >= 32;
-    if grande && let Some(r) = FECHADOS.with(|c| c.borrow().get(&(a.to_vec(), unicode)).cloned()) {
+    if grande && let Some(r) = FECHADOS.with(|c| c.borrow().iter().find(|e| e.1 == unicode && e.0 == a).map(|e| e.2.clone())) {
         return (*r).clone();
     }
     let (map, inv) = case_tables(unicode);
@@ -237,10 +246,10 @@ fn close_case(a: &[(u32, u32)], unicode: bool) -> Ranges {
     if grande {
         FECHADOS.with(|c| {
             let mut c = c.borrow_mut();
-            if c.len() >= 64 {
-                c.clear();
+            if c.len() >= 16 {
+                c.remove(0);
             }
-            c.insert((a.to_vec(), unicode), Rc::new(r.clone()));
+            c.push((a.to_vec(), unicode, Rc::new(r.clone())));
         });
     }
     r
@@ -270,42 +279,66 @@ fn folded_chars() -> Ranges {
 
 // ---------------------------------------------------- propriedades Unicode
 
-/// Procura numa tabela (nome, valor) ordenada pelo nome (nome exato).
-fn lookup<T: Copy>(t: &[(&str, T)], name: &str) -> Option<T> {
-    t.binary_search_by(|(n, _)| (*n).cmp(name)).ok().map(|i| t[i].1)
+/// Lê um varint (LEB128 sem sinal) de `b` em `*i`.
+fn varint(b: &[u8], i: &mut usize) -> u32 {
+    let mut v = 0u32;
+    let mut sh = 0;
+    loop {
+        let x = b[*i];
+        *i += 1;
+        v |= ((x & 0x7F) as u32) << sh;
+        if x & 0x80 == 0 {
+            return v;
+        }
+        sh += 7;
+    }
 }
 
-/// Faixas das categorias gerais da máscara (bits de `GC_LEAF`).
-fn gc_ranges(mask: u32) -> Ranges {
-    let (st, va) = (&up::GC_START, &up::GC_VALUE);
-    let mut out: Ranges = Vec::new();
-    for k in 0..st.len() {
-        if mask & (1 << va[k]) == 0 {
-            continue;
-        }
-        let (a, b) = (st[k], st.get(k + 1).map_or(MAXCP, |&n| n - 1));
-        match out.last_mut() {
-            Some(last) if last.1 + 1 == a => last.1 = b,
-            _ => out.push((a, b)),
-        }
+/// Faixas de uma tabela compacta: (distância desde o fim da anterior, tamanho - 1).
+fn decode_ranges(b: &[u8]) -> Ranges {
+    let mut out = Vec::new();
+    let (mut i, mut prox) = (0, 0u32);
+    while i < b.len() {
+        let a = prox + varint(b, &mut i);
+        let e = a + varint(b, &mut i);
+        out.push((a, e));
+        prox = e + 1;
     }
     out
 }
 
+/// Faixas dos trechos (tamanho - 1, valor) cujo valor `pick` aceita.
+fn runs_where(b: &[u8], pick: impl Fn(u8) -> bool) -> Ranges {
+    let mut out: Ranges = Vec::new();
+    let (mut i, mut ini) = (0, 0u32);
+    while i < b.len() {
+        let fim = ini + varint(b, &mut i);
+        let v = b[i];
+        i += 1;
+        if pick(v) {
+            match out.last_mut() {
+                Some(last) if last.1 + 1 == ini => last.1 = fim,
+                _ => out.push((ini, fim)),
+            }
+        }
+        ini = fim + 1;
+    }
+    out
+}
+
+/// Valor de um nome numa lista de nomes separados por espaço (nome exato).
+fn lookup<T: Copy>(names: &str, vals: &[T], name: &str) -> Option<T> {
+    names.split(' ').position(|n| n == name).map(|k| vals[k])
+}
+
+/// Faixas das categorias gerais da máscara (bits das categorias folha).
+fn gc_ranges(mask: u32) -> Ranges {
+    runs_where(&up::GC_RUNS, |v| mask >> v & 1 != 0)
+}
+
 /// Faixas de uma escrita (Script; com `ext`, Script_Extensions).
 fn script_ranges(sc: u8, ext: bool) -> Ranges {
-    let (st, va) = (&up::SC_START, &up::SC_VALUE);
-    let mut out: Ranges = Vec::new();
-    for k in 0..st.len() {
-        if va[k] != sc {
-            continue;
-        }
-        let (a, b) = (st[k], st.get(k + 1).map_or(MAXCP, |&n| n - 1));
-        match out.last_mut() {
-            Some(last) if last.1 + 1 == a => last.1 = b,
-            _ => out.push((a, b)),
-        }
-    }
+    let mut out = runs_where(&up::SC_RUNS, |v| v == sc);
     if ext {
         let over: Ranges = up::SCX_RANGES.iter().map(|&(a, b, _)| (a, b)).collect();
         let add: Ranges = up::SCX_RANGES
@@ -322,7 +355,7 @@ fn script_ranges(sc: u8, ext: bool) -> Ranges {
 enum Prop {
     /// Propriedade de caracteres (faixas vazias se só estamos validando).
     Chars(Ranges),
-    /// Propriedade de strings (índice em `STRING_PROPS`, só com a flag v).
+    /// Propriedade de strings (índice em `STRING_PROPS`; o seguinte é RGI_Emoji).
     Strings(usize),
 }
 
@@ -333,43 +366,59 @@ fn find_property(name: &str, value: Option<&str>, build: bool) -> Option<Prop> {
     if let Some(v) = value {
         return match name {
             "General_Category" | "gc" => {
-                let m = lookup(&up::GC_ALIASES, v)?;
+                let m = lookup(up::GC_NAMES, &up::GC_MASKS, v)?;
                 chars(&|| gc_ranges(m))
             }
             "Script" | "sc" | "Script_Extensions" | "scx" => {
-                let s = lookup(&up::SC_ALIASES, v)?;
+                let s = lookup(up::SC_NAMES, &up::SC_INDEX, v)?;
                 let ext = name.starts_with("Script_") || name == "scx";
                 chars(&|| script_ranges(s, ext))
             }
             _ => None,
         };
     }
-    if let Some(m) = lookup(&up::GC_ALIASES, name) {
+    if let Some(m) = lookup(up::GC_NAMES, &up::GC_MASKS, name) {
         return chars(&|| gc_ranges(m));
     }
-    if let Some(r) = lookup(&up::BINARY, name) {
+    if let Some(k) = lookup(up::BINARY_NAMES, &up::BINARY_INDEX, name) {
         return match name {
             "Any" => chars(&|| vec![(0, MAXCP)]),
             "ASCII" => chars(&|| vec![(0, 0x7F)]),
-            "Assigned" => chars(&|| complement(&gc_ranges(lookup(&up::GC_ALIASES, "Cn").unwrap_or(0)))),
-            _ => chars(&|| r.to_vec()),
+            "Assigned" => chars(&|| complement(&gc_ranges(lookup(up::GC_NAMES, &up::GC_MASKS, "Cn").unwrap_or(0)))),
+            _ => chars(&|| decode_ranges(up::BINARY_DATA[k as usize])),
         };
     }
-    let k = up::STRING_PROPS.iter().position(|(n, _, _)| *n == name)?;
+    if name == "RGI_Emoji" {
+        return Some(Prop::Strings(up::STRING_PROPS.len()));
+    }
+    let k = up::STRING_PROPS.iter().position(|(n, _)| *n == name)?;
     Some(Prop::Strings(k))
 }
 
-/// Caracteres avulsos e strings de uma propriedade de strings.
+/// Caracteres avulsos e strings de uma propriedade de strings (RGI_Emoji = todas).
 fn string_prop(k: usize) -> (Ranges, Vec<Vec<u32>>) {
-    let (_, (a, b), singles) = up::STRING_PROPS[k];
     let mut strs = Vec::new();
-    let mut i = a;
-    while i < b {
-        let n = up::EMOJI_SEQS[i] as usize;
-        strs.push(up::EMOJI_SEQS[i + 1..i + 1 + n].to_vec());
-        i += 1 + n;
+    for (j, (_, b)) in up::STRING_PROPS.iter().enumerate() {
+        if j != k && k != up::STRING_PROPS.len() {
+            continue;
+        }
+        // sequências com o prefixo comum à anterior
+        let mut i = 0;
+        let mut ant: Vec<u32> = Vec::new();
+        while i < b.len() {
+            let (comum, novos) = (b[i] as usize, b[i + 1] as usize);
+            i += 2;
+            let mut sq = ant[..comum].to_vec();
+            for _ in 0..novos {
+                sq.push(varint(b, &mut i));
+            }
+            strs.push(sq.clone());
+            ant = sq;
+        }
     }
-    (singles.to_vec(), strs)
+    // os avulsos de RGI_Emoji são os de Basic_Emoji
+    let singles = if k == 0 || k == up::STRING_PROPS.len() { decode_ranges(&up::BASIC_EMOJI_SINGLES) } else { Vec::new() };
+    (singles, strs)
 }
 
 const SPACE_RANGES: &[(u32, u32)] = &[
@@ -444,29 +493,32 @@ struct StrSet {
 #[derive(Clone, Debug, Default)]
 struct VSet {
     ranges: Ranges,
-    strs: BTreeSet<Vec<u32>>,
+    /// Ordenadas e sem repetição.
+    strs: Vec<Vec<u32>>,
 }
 
 impl VSet {
     fn chars(ranges: Ranges) -> VSet {
-        VSet { ranges, strs: BTreeSet::new() }
+        VSet { ranges, strs: Vec::new() }
     }
 
     fn union(mut self, o: VSet) -> VSet {
         self.ranges = union(&self.ranges, &o.ranges);
         self.strs.extend(o.strs);
+        self.strs.sort_unstable();
+        self.strs.dedup();
         self
     }
 
     fn intersect(mut self, o: VSet) -> VSet {
         self.ranges = intersect(&self.ranges, &o.ranges);
-        self.strs.retain(|s| o.strs.contains(s));
+        self.strs.retain(|s| o.strs.binary_search(s).is_ok());
         self
     }
 
     fn subtract(mut self, o: VSet) -> VSet {
         self.ranges = subtract(&self.ranges, &o.ranges);
-        self.strs.retain(|s| !o.strs.contains(s));
+        self.strs.retain(|s| o.strs.binary_search(s).is_err());
         self
     }
 }
@@ -556,12 +608,18 @@ fn exclusive(a: &[(u32, u32)], b: &[(u32, u32)]) -> bool {
     false
 }
 
+/// ID_Start e ID_Continue (nomes de grupo), decodificados na primeira vez.
+fn id_ranges(cont: bool) -> &'static [(u32, u32)] {
+    static ID: [OnceLock<Ranges>; 2] = [OnceLock::new(), OnceLock::new()];
+    ID[cont as usize].get_or_init(|| decode_ranges(if cont { &up::BP_ID_CONTINUE } else { &up::BP_ID_START }))
+}
+
 fn is_id_start(c: u32) -> bool {
-    c == '$' as u32 || c == '_' as u32 || has(&up::BP_ID_START, c)
+    c == '$' as u32 || c == '_' as u32 || has(id_ranges(false), c)
 }
 
 fn is_id_continue(c: u32) -> bool {
-    c == '$' as u32 || c == 0x200C || c == 0x200D || has(&up::BP_ID_CONTINUE, c)
+    c == '$' as u32 || c == 0x200C || c == 0x200D || has(id_ranges(true), c)
 }
 
 impl Parser {
@@ -1034,7 +1092,7 @@ impl Parser {
         if set.strs.is_empty() {
             return Node::Class(ClassSet::new(ranges));
         }
-        let mut strs: Vec<Vec<u32>> = set.strs.into_iter().collect();
+        let mut strs = set.strs;
         let empty = strs.first().is_some_and(|s| s.is_empty());
         if empty {
             strs.remove(0);
@@ -1122,11 +1180,13 @@ impl Parser {
                     return Ok((VSet::default(), true));
                 }
                 let (singles, strs) = string_prop(k);
-                let strs = strs.into_iter().map(|s| if self.mods.icase { s.into_iter().map(|c| canon(c, true)).collect() } else { s });
+                let mut strs: Vec<Vec<u32>> = strs.into_iter().map(|s| if self.mods.icase { s.into_iter().map(|c| canon(c, true)).collect() } else { s }).collect();
+                strs.sort_unstable();
+                strs.dedup();
                 Ok((
                     VSet {
                         ranges: self.fold(singles),
-                        strs: strs.collect(),
+                        strs,
                     },
                     true,
                 ))
@@ -1542,7 +1602,9 @@ impl Parser {
                 if s.len() == 1 {
                     set.ranges = union(&set.ranges, &[(s[0], s[0])]);
                 } else {
-                    set.strs.insert(s);
+                    if let Err(k) = set.strs.binary_search(&s) {
+                        set.strs.insert(k, s);
+                    }
                 }
                 if end {
                     return Ok((set, may));

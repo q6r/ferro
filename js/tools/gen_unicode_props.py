@@ -283,8 +283,6 @@ def main():
         for k, v in tabela.items():
             if v in tabela:
                 sys.exit(f'{k:X} -> {v:X} -> {tabela[v]:X}: canônico não é fixo')
-    scf_inv = sorted((v, k) for k, v in scf.items())
-    canon_inv = sorted((v, k) for k, v in canon.items())
 
     # ---------------------------------------------------------------- saída
     out = []
@@ -319,21 +317,76 @@ def main():
     def pares(fx):
         return [f'({hx(a)}, {hx(b)})' for a, b in fx]
 
-    lista_u32('GC_START', 'u32', [hx(x) for x in gc_ini],
-              'Categoria geral: início de cada trecho (vai até o início do seguinte).')
-    lista_u32('GC_VALUE', 'u8', gc_val, 'Categoria (índice da categoria folha) de cada trecho de `GC_START`.')
-    w('// Categorias folha (valores de `GC_VALUE`, bits das máscaras de `GC_ALIASES`):')
+    def varint(v, out):
+        while True:
+            b = v & 0x7F
+            v >>= 7
+            if v:
+                out.append(b | 0x80)
+            else:
+                out.append(b)
+                return
+
+    def faixas_bytes(fx):
+        """Faixas → (distância desde o fim da anterior, tamanho - 1), em varint."""
+        out = []
+        prox = 0
+        for a, b in fx:
+            varint(a - prox, out)
+            varint(b - a, out)
+            prox = b + 1
+        return out
+
+    def trechos_bytes(inicios, vals):
+        """Trechos contíguos → (tamanho - 1 em varint, valor)."""
+        out = []
+        for k, ini in enumerate(inicios):
+            fim = inicios[k + 1] if k + 1 < len(inicios) else MAX + 1
+            varint(fim - ini - 1, out)
+            out.append(vals[k])
+        return out
+
+    def seqs_bytes(lista):
+        """Sequências ordenadas, com prefixo comum: (comum, novos, pontos novos em varint)."""
+        out = []
+        ant = ()
+        for sq in sorted(lista):
+            comum = 0
+            while comum < min(len(ant), len(sq)) and ant[comum] == sq[comum]:
+                comum += 1
+            out.append(comum)
+            out.append(len(sq) - comum)
+            for x in sq[comum:]:
+                varint(x, out)
+            ant = sq
+        return out
+
+    def bytes_(nome, dados, doc):
+        lista_u32(nome, 'u8', [str(x) for x in dados], doc)
+
+    def nomes(nome, lista, doc):
+        w(f'/// {doc}')
+        w(f'pub static {nome}: &str = "{" ".join(lista)}";')
+        w('')
+
+    w('// Formatos (o regex.rs decodifica ao compilar a regex):')
+    w('// - faixas: pares (distância desde o fim da faixa anterior, tamanho - 1) em varint')
+    w('// - trechos: (tamanho - 1 em varint, valor), cobrindo 0..=10FFFF em ordem')
+    w('// - sequências: (prefixo comum com a anterior, quantos pontos novos, pontos em varint)')
+    w('// varint = LEB128 sem sinal (7 bits por byte, bit alto = continua).')
+    w('')
+    bytes_('GC_RUNS', trechos_bytes(gc_ini, gc_val), 'Categoria geral em trechos (valor = categoria folha).')
+    w('// Categorias folha (valores de `GC_RUNS`, bits das máscaras de `GC_MASKS`):')
     w('// ' + ', '.join(f'{f}={i}' for i, f in enumerate(folhas)))
     w('')
-    lista_u32('GC_ALIASES', '(&str, u32)', [f'("{n}", 0x{m:X})' for n, m in sorted(gc_mascara.items())],
-              'Valores de General_Category (nomes e apelidos) → máscara das categorias folha. Ordenada.')
+    gc_lista = sorted(gc_mascara.items())
+    nomes('GC_NAMES', [n for n, _ in gc_lista], 'Valores de General_Category (nomes e apelidos), separados por espaço.')
+    lista_u32('GC_MASKS', 'u32', [f'0x{m:X}' for _, m in gc_lista], 'Máscara das categorias folha de cada nome de `GC_NAMES`.')
 
-    lista_u32('SC_START', 'u32', [hx(x) for x in sc_ini],
-              'Escrita (Script): início de cada trecho (vai até o início do seguinte).')
-    lista_u32('SC_VALUE', 'u8', sc_val, 'Escrita (índice em `SC_ALIASES`) de cada trecho de `SC_START`.')
+    bytes_('SC_RUNS', trechos_bytes(sc_ini, sc_val), 'Escrita (Script) em trechos (valor = índice da escrita).')
     sc_nomes = sorted((n, idx_esc[a]) for n, a in sc_curto.items())
-    lista_u32('SC_ALIASES', '(&str, u8)', [f'("{n}", {i})' for n, i in sc_nomes],
-              'Valores de Script/Script_Extensions (nomes e apelidos) → índice da escrita. Ordenada.')
+    nomes('SC_NAMES', [n for n, _ in sc_nomes], 'Valores de Script/Script_Extensions (nomes e apelidos), separados por espaço.')
+    lista_u32('SC_INDEX', 'u8', [str(i) for _, i in sc_nomes], 'Índice da escrita de cada nome de `SC_NAMES`.')
     lista_u32('SCX_RANGES', '(u32, u32, u16)', [f'({hx(a)}, {hx(b)}, {k})' for a, b, k in scx_faixas],
               'Script_Extensions onde difere de {Script}: (início, fim, índice em `SCX_SETS`).')
     w('/// Conjuntos de escritas usados por `SCX_RANGES`.')
@@ -343,60 +396,49 @@ def main():
     w('];')
     w('')
 
-    nomes_rust = {}
-    for nome, _ in BINARIAS:
-        if nome in CALCULADAS:
-            continue
-        rn = 'BP_' + nome.upper()
-        nomes_rust[nome] = rn
-        lista_u32(rn, '(u32, u32)', pares(binarias[nome]), f'{nome}.')
+    proprias = [nome for nome, _ in BINARIAS if nome not in CALCULADAS]
+    for nome in proprias:
+        bytes_('BP_' + nome.upper(), faixas_bytes(binarias[nome]), f'{nome} (faixas).')
     entradas = []
     for nome, apelidos in BINARIAS:
         for n in [nome] + apelidos:
             entradas.append((n, nome))
     entradas.sort()
-    w('/// Propriedades binárias da tabela do ECMAScript (nome ou apelido → faixas).')
-    w('/// `ASCII`, `Any` e `Assigned` ficam vazias aqui: o regex.rs as monta. Ordenada.')
-    w(f'pub static BINARY: [(&str, &[(u32, u32)]); {len(entradas)}] = [')
-    for n, nome in entradas:
-        w(f'    ("{n}", &{nomes_rust[nome]}),' if nome in nomes_rust else f'    ("{n}", &[]),')
+    nomes('BINARY_NAMES', [n for n, _ in entradas],
+          'Propriedades binárias da tabela do ECMAScript (nomes e apelidos), separadas por espaço.')
+    idx = {nome: i for i, nome in enumerate(proprias)}
+    lista_u32('BINARY_INDEX', 'u8', [str(idx.get(nome, 255)) for _, nome in entradas],
+              'Propriedade (em `BINARY_DATA`) de cada nome de `BINARY_NAMES`; 255 = montada no regex.rs '
+              '(`ASCII`, `Any`, `Assigned`).')
+    w('/// Faixas de cada propriedade binária.')
+    w(f'pub static BINARY_DATA: [&[u8]; {len(proprias)}] = [')
+    for nome in proprias:
+        w(f'    &BP_{nome.upper()},')
     w('];')
     w('')
 
-    planas = []
-    trechos_str = []
     for nome in STRINGS:
-        ini = len(planas)
-        for s in sorted(seqs[nome]):
-            planas.append(str(len(s)))
-            planas.extend(hx(x) for x in s)
-        trechos_str.append((nome, ini, len(planas)))
-    lista_u32('EMOJI_SEQS', 'u32', planas,
-              'Sequências de emoji (propriedades de strings): o tamanho seguido dos pontos de código.')
-    lista_u32('BASIC_EMOJI_SINGLES', '(u32, u32)', pares(avulsos), 'Basic_Emoji de um só ponto de código.')
-    w('/// Propriedades de strings (flag v): nome → (trecho de `EMOJI_SEQS`, avulsos).')
-    w(f'pub static STRING_PROPS: [(&str, (usize, usize), &[(u32, u32)]); {len(STRINGS) + 1}] = [')
-    for nome, a, b in trechos_str:
-        av = '&BASIC_EMOJI_SINGLES' if nome == 'Basic_Emoji' else '&[]'
-        w(f'    ("{nome}", ({a}, {b}), {av}),')
-    w(f'    ("RGI_Emoji", (0, {len(planas)}), &BASIC_EMOJI_SINGLES),')
+        bytes_('SEQ_' + nome.upper(), seqs_bytes(seqs[nome]), f'{nome} (sequências).')
+    bytes_('BASIC_EMOJI_SINGLES', faixas_bytes(avulsos), 'Basic_Emoji de um só ponto de código (faixas).')
+    w('/// Propriedades de strings (flag v); `RGI_Emoji` é a união de todas.')
+    w(f'pub static STRING_PROPS: [(&str, &[u8]); {len(STRINGS)}] = [')
+    for nome in STRINGS:
+        w(f'    ("{nome}", &SEQ_{nome.upper()}),')
     w('];')
     w('')
 
     lista_u32('SCF', '(u32, u32)', pares(sorted(scf.items())),
               'Dobra simples de caixa (CaseFolding.txt, status C e S): (código, dobrado). Ordenada.')
-    lista_u32('SCF_INV', '(u32, u32)', pares(scf_inv), 'Inversa de `SCF`: (dobrado, código). Ordenada.')
     lista_u32('UPPER', '(u32, u32)', pares(sorted(canon.items())),
               'Canonicalize sem as flags u/v (toUppercase de um caractere só, sem cair no ASCII): '
               '(código, canônico). Ordenada.')
-    lista_u32('UPPER_INV', '(u32, u32)', pares(canon_inv), 'Inversa de `UPPER`: (canônico, código). Ordenada.')
 
     with open(saida, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(out))
     tot_bin = sum(len(v) for v in binarias.values())
     print(f'gc: {len(gc_ini)} trechos, sc: {len(sc_ini)} trechos, scx: {len(scx_faixas)} faixas / '
-          f'{len(conjuntos)} conjuntos, binárias: {tot_bin} faixas, strings: {len(planas)} u32 '
-          f'({sum(len(v) for v in seqs.values())} sequências), avulsos: {len(avulsos)}, '
+          f'{len(conjuntos)} conjuntos, binárias: {tot_bin} faixas, '
+          f'{sum(len(v) for v in seqs.values())} sequências, avulsos: {len(avulsos)}, '
           f'scf: {len(scf)}, canon: {len(canon)}')
 
 
