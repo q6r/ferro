@@ -170,6 +170,8 @@ pub struct Vm {
     /// Último recurso para um nome global que não existe (no navegador:
     /// elementos com `id` viram variáveis globais).
     pub global_miss: Option<fn(&mut Vm, &crate::JsStr) -> Option<Value>>,
+    /// Módulos ES desta realm (o hospedeiro põe os ganchos em `modules.host`).
+    pub modules: crate::module::Modules,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -230,6 +232,7 @@ impl Vm {
             zones: Box::new(UtcOnly),
             host: None,
             global_miss: None,
+            modules: Default::default(),
         }
     }
 
@@ -1266,6 +1269,12 @@ impl Vm {
                     f.suspended = true;
                     f.suspend_await = false;
                     return Ok(Value::Undefined);
+                }
+                Op::ImportCall(phase) => {
+                    let opts = pop!();
+                    let spec = pop!();
+                    let p = crate::module::import_call(self, spec, opts, phase);
+                    f.stack.push(p);
                 }
                 Op::Yield => {
                     let v = pop!();

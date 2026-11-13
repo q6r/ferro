@@ -290,6 +290,12 @@ fn parse_text(vm: &mut Vm, text: &[u16], track: bool) -> Result<(Value, Option<R
     Ok(r)
 }
 
+/// JSON.parse sem reviver (módulos JSON).
+pub(crate) fn parse_json(vm: &mut Vm, text: &str) -> Result<Value, Value> {
+    let units: Vec<u16> = text.encode_utf16().collect();
+    Ok(parse_text(vm, &units, false)?.0)
+}
+
 fn parse(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let text = vm.to_string(&a.arg(0))?;
     let reviver = a.arg(1);

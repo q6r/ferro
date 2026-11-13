@@ -2,6 +2,7 @@
 
 use super::object::{Descriptor, define_own_property, from_property, to_descriptor};
 use super::{Realm, native_data, set_native_data};
+use crate::module::namespace_data;
 use crate::value::*;
 use crate::vm::{Vm, truthy};
 
@@ -78,6 +79,9 @@ impl Vm {
     }
 
     pub fn proxy_get(&mut self, o: &ObjRef, key: &PropKey, receiver: &Value) -> Result<Value, Value> {
+        if let Some(ns) = namespace_data(o) {
+            return self.ns_get(o, &ns, key, receiver);
+        }
         let (t, h) = self.proxy_parts(o, "get")?;
         match self.trap(&h, "get")? {
             Some(f) => self.call(&f, Value::Object(h), vec![Value::Object(t), key.to_value(), receiver.clone()]),
@@ -86,6 +90,10 @@ impl Vm {
     }
 
     pub fn proxy_set(&mut self, o: &ObjRef, key: PropKey, v: Value, receiver: &Value) -> Result<bool, Value> {
+        if namespace_data(o).is_some() {
+            // [[Set]] de namespace sempre falha
+            return Ok(false);
+        }
         let (t, h) = self.proxy_parts(o, "set")?;
         match self.trap(&h, "set")? {
             Some(f) => {
@@ -97,6 +105,9 @@ impl Vm {
     }
 
     pub fn proxy_has(&mut self, o: &ObjRef, key: &PropKey) -> Result<bool, Value> {
+        if let Some(ns) = namespace_data(o) {
+            return self.ns_has(o, &ns, key);
+        }
         let (t, h) = self.proxy_parts(o, "has")?;
         match self.trap(&h, "has")? {
             Some(f) => {
@@ -108,6 +119,9 @@ impl Vm {
     }
 
     pub fn proxy_delete(&mut self, o: &ObjRef, key: &PropKey) -> Result<bool, Value> {
+        if let Some(ns) = namespace_data(o) {
+            return self.ns_delete(o, &ns, key);
+        }
         let (t, h) = self.proxy_parts(o, "deleteProperty")?;
         match self.trap(&h, "deleteProperty")? {
             Some(f) => {
@@ -124,6 +138,9 @@ impl Vm {
     }
 
     pub fn proxy_own_keys(&mut self, o: &ObjRef) -> Result<Vec<PropKey>, Value> {
+        if let Some(ns) = namespace_data(o) {
+            return self.ns_own_keys(o, &ns);
+        }
         let (t, h) = self.proxy_parts(o, "ownKeys")?;
         match self.trap(&h, "ownKeys")? {
             Some(f) => {
@@ -147,6 +164,9 @@ impl Vm {
     }
 
     pub fn proxy_get_own_property(&mut self, o: &ObjRef, key: &PropKey) -> Result<Option<Property>, Value> {
+        if let Some(ns) = namespace_data(o) {
+            return self.ns_get_own_property(o, &ns, key);
+        }
         let (t, h) = self.proxy_parts(o, "getOwnPropertyDescriptor")?;
         match self.trap(&h, "getOwnPropertyDescriptor")? {
             Some(f) => {
@@ -177,6 +197,9 @@ impl Vm {
     }
 
     pub fn proxy_define(&mut self, o: &ObjRef, key: PropKey, d: Descriptor) -> Result<bool, Value> {
+        if let Some(ns) = namespace_data(o) {
+            return self.ns_define(o, &ns, key, d);
+        }
         let (t, h) = self.proxy_parts(o, "defineProperty")?;
         match self.trap(&h, "defineProperty")? {
             Some(f) => {
@@ -204,6 +227,9 @@ impl Vm {
     }
 
     pub fn proxy_get_proto(&mut self, o: &ObjRef) -> Result<Option<ObjRef>, Value> {
+        if namespace_data(o).is_some() {
+            return Ok(None);
+        }
         let (t, h) = self.proxy_parts(o, "getPrototypeOf")?;
         match self.trap(&h, "getPrototypeOf")? {
             Some(f) => match self.call(&f, Value::Object(h), vec![Value::Object(t)])? {
@@ -216,6 +242,10 @@ impl Vm {
     }
 
     pub fn proxy_set_proto(&mut self, o: &ObjRef, p: Option<ObjRef>) -> Result<bool, Value> {
+        if namespace_data(o).is_some() {
+            // SetImmutablePrototype
+            return Ok(p.is_none());
+        }
         let (t, h) = self.proxy_parts(o, "setPrototypeOf")?;
         match self.trap(&h, "setPrototypeOf")? {
             Some(f) => {
@@ -228,6 +258,9 @@ impl Vm {
     }
 
     pub fn proxy_is_extensible(&mut self, o: &ObjRef) -> Result<bool, Value> {
+        if namespace_data(o).is_some() {
+            return Ok(false);
+        }
         let (t, h) = self.proxy_parts(o, "isExtensible")?;
         match self.trap(&h, "isExtensible")? {
             Some(f) => Ok(truthy(&self.call(&f, Value::Object(h), vec![Value::Object(t)])?)),
@@ -236,6 +269,9 @@ impl Vm {
     }
 
     pub fn proxy_prevent_extensions(&mut self, o: &ObjRef) -> Result<bool, Value> {
+        if namespace_data(o).is_some() {
+            return Ok(true);
+        }
         let (t, h) = self.proxy_parts(o, "preventExtensions")?;
         match self.trap(&h, "preventExtensions")? {
             Some(f) => Ok(truthy(&self.call(&f, Value::Object(h), vec![Value::Object(t)])?)),

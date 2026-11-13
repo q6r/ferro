@@ -883,6 +883,8 @@ pub enum Kind {
     FinReg(Box<crate::builtins::collections::FinRegData>),
     /// Objetos do Temporal (PlainDate, Instant, Duration...).
     Temporal(Box<crate::builtins::temporal::TemporalData>),
+    /// Handler interno do Proxy que faz o namespace de um módulo.
+    ModuleNs(Rc<crate::module::NsData>),
 }
 
 pub struct Object {

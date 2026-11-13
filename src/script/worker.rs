@@ -28,7 +28,6 @@ use url::Url;
 
 use super::clone::{self, Message};
 use super::messaging::{self, Inbox, LIVE_WORKERS, Mailbox, RealmHost, WorkerEv, call_hook};
-use super::module::Modules;
 use super::{Done, Pool};
 use crate::net::{self, Net};
 
@@ -73,7 +72,6 @@ pub(crate) struct WorkerHost {
     in_flight: usize,
     fetch_seq: u32,
     fetch_waiters: HashMap<u32, Value>,
-    modules: Modules,
     /// O script principal já rodou: as mensagens de quem criou passam a
     /// ser entregues (antes disso esperam em `queued`).
     started: bool,
@@ -109,9 +107,6 @@ impl RealmHost for WorkerHost {
         self.fetch_waiters.insert(id, cb);
         let net = self.net.clone();
         self.submit(Box::new(move || Done::Fetch { id, res: crate::cors::fetch(&net, req) }));
-    }
-    fn modules(&mut self) -> &mut Modules {
-        &mut self.modules
     }
     fn import_map(&self) -> Option<&HashMap<String, Url>> {
         None
@@ -168,7 +163,6 @@ fn run(p: Params) {
         in_flight: 0,
         fetch_seq: 0,
         fetch_waiters: HashMap::new(),
-        modules: Default::default(),
         started: false,
         queued: VecDeque::new(),
         closing: false,
@@ -367,10 +361,7 @@ fn handle(js: &mut Engine, host: &Rc<RefCell<WorkerHost>>, d: Done) {
                 }
             }
         }
-        Done::Module { url, text } => {
-            super::module::arrived(vm, url, text);
-            super::module::drive(vm);
-        }
+        Done::Module { url, bytes } => super::module::fetched(vm, url, bytes),
         d @ (Done::Port { .. } | Done::Broadcast { .. } | Done::Worker { .. }) => messaging::deliver(vm, d),
         _ => {}
     }
@@ -575,7 +566,7 @@ fn install(vm: &mut Vm) {
     vm.realm.global.borrow_mut().proto = Some(dwgs);
     let n = vm.new_object();
     super::web::install_common(vm, &n);
-    super::module::install(vm, &n);
+    super::module::install(vm);
     for (name, len, f) in [
         ("href", 0, href as ferro_js::value::NativeFn),
         ("workerInfo", 0, worker_info),

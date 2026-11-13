@@ -495,6 +495,14 @@ fn make_view(kind: TaKind, buffer: ObjRef, offset: usize, length: usize, trackin
     ))
 }
 
+/// Uint8Array sobre um ArrayBuffer imutável com esses bytes (módulos `bytes`).
+pub(crate) fn immutable_bytes(vm: &mut Vm, bytes: Vec<u8>) -> Value {
+    let len = bytes.len();
+    let buf = buffer_from(vm, bytes, None, true);
+    let proto = vm.realm.typed_protos[TaKind::U8.index()].clone();
+    Value::Object(make_view(TaKind::U8, buf, 0, len, false, proto))
+}
+
 /// Cria um typed array novo (com buffer próprio zerado).
 pub fn new_typed(vm: &mut Vm, kind: TaKind, length: usize, proto: Option<ObjRef>) -> Result<ObjRef, Value> {
     let bytes = match length.checked_mul(kind.size()) {

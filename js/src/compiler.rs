@@ -179,8 +179,12 @@ pub enum Op {
     Return,
     Throw,
     ThrowError(u8, u32),
-    /// Fim do prólogo de um gerador: pausa até o primeiro next().
+    /// Fim do prólogo de um gerador: pausa até o primeiro next(). Num
+    /// módulo, o fim do InitializeEnvironment (a avaliação retoma daqui).
     InitialYield,
+    /// [especificador opções] → [promessa]: `import()` (fase: 0 comum, 1
+    /// `import.defer`, 2 `import.source`).
+    ImportCall(u8),
     /// [valor] → pausa devolvendo o valor; ao voltar: [enviado modo]
     Yield,
     /// [enviado modo] → normal: desvia com [enviado]; throw: lança; return: segue com [valor]
@@ -596,6 +600,8 @@ struct Usage {
     new_target: bool,
     super_prop: bool,
     super_call: bool,
+    /// `await` fora de funções (módulo com await no topo).
+    awaits: bool,
 }
 
 impl Usage {
@@ -654,6 +660,9 @@ impl Usage {
                 self.stmt(body, d, a);
             }
             Stmt::ForIn { left, right, body } | Stmt::ForOf { left, right, body, .. } => {
+                if let Stmt::ForOf { is_await: true, .. } = s {
+                    self.awaits |= d == 0;
+                }
                 match left {
                     ForHead::Var(_, p) | ForHead::Pattern(p) => self.pattern(p, d, a),
                 }
@@ -820,7 +829,12 @@ impl Usage {
                 self.elems(args, d, a);
             }
             Expr::Num(_) | Expr::BigInt(_) | Expr::Str(_) | Expr::Regex(..) | Expr::Null | Expr::Bool(_) | Expr::Unsupported(_) => {}
-            Expr::ImportCall(e) => self.expr(e, d, a),
+            Expr::ImportCall(e, opts, _) => {
+                self.expr(e, d, a);
+                if let Some(o) = opts {
+                    self.expr(o, d, a);
+                }
+            }
             Expr::ImportMeta => {}
             Expr::Template(_, es) => {
                 for e in es {
@@ -844,7 +858,11 @@ impl Usage {
             }
             Expr::Function(f) => self.func(f, d, a),
             Expr::Class(c) => self.class(c, d, a),
-            Expr::Unary(_, x) | Expr::Await(x) | Expr::Spread(x) | Expr::OptionalChain(x) => self.expr(x, d, a),
+            Expr::Await(x) => {
+                self.awaits |= d == 0;
+                self.expr(x, d, a);
+            }
+            Expr::Unary(_, x) | Expr::Spread(x) | Expr::OptionalChain(x) => self.expr(x, d, a),
             Expr::Update { target, .. } => self.expr(target, d, a),
             Expr::Binary(_, l, r) | Expr::Logical(_, l, r) => {
                 self.expr(l, d, a);
@@ -1160,12 +1178,12 @@ impl ParamExprs {
             | Expr::Spread(x)
             | Expr::OptionalChain(x)
             | Expr::SuperIndex(x)
-            | Expr::ImportCall(x)
+            | Expr::ImportCall(x, None, _)
             | Expr::PrivateMember(x, _)
             | Expr::PrivateIn(_, x)
             | Expr::Member { obj: x, .. } => self.expr(x),
             Expr::Update { target, .. } => self.expr(target),
-            Expr::Binary(_, l, r) | Expr::Logical(_, l, r) | Expr::Index { obj: l, index: r, .. } => {
+            Expr::Binary(_, l, r) | Expr::Logical(_, l, r) | Expr::Index { obj: l, index: r, .. } | Expr::ImportCall(l, Some(r), _) => {
                 self.expr(l);
                 self.expr(r);
             }
@@ -1416,6 +1434,8 @@ pub struct Compiler {
     with_depth: u32,
     /// Quantas funções com sacola de eval envolvem o código agora.
     bag_depth: u32,
+    /// Compilando a função de um módulo (ver `compile_module`).
+    module: bool,
 }
 
 fn syntax<T>(msg: impl Into<String>, line: u32) -> CResult<T> {
@@ -1445,6 +1465,7 @@ pub fn compile_script(prog: &Program, file: &str) -> CResult<Rc<Code>> {
         imports: Rc::new(prog.imports.clone()),
         with_depth: 0,
         bag_depth: 0,
+        module: false,
     };
     let code = c.script(prog)?;
     // depuração: FERRO_BYTECODE=1 mostra as instruções de cada função
@@ -1463,6 +1484,33 @@ pub fn compile_script(prog: &Program, file: &str) -> CResult<Rc<Code>> {
     Ok(code)
 }
 
+/// Compila um módulo: `prog` tem só a expressão da função do módulo (ver
+/// `module.rs`). Essa função não tem `arguments` e para no InitialYield
+/// depois de içar as funções: é o InitializeEnvironment do spec.
+pub fn compile_module(prog: &Program, file: &str) -> CResult<Rc<Code>> {
+    let mut r = Resolver::new(true);
+    r.program(prog);
+    let mut c = Compiler {
+        fns: Vec::new(),
+        file: file.into(),
+        captures: r.out,
+        evals: r.evals,
+        eval_fns: r.eval_fns,
+        imports: Rc::new(prog.imports.clone()),
+        with_depth: 0,
+        bag_depth: 0,
+        module: true,
+    };
+    c.script(prog)
+}
+
+/// O corpo de um módulo tem `await` no topo ([[HasTLA]])?
+pub fn has_top_level_await(body: &[Stmt]) -> bool {
+    let mut usage = Usage::default();
+    usage.stmts(body, 0, true);
+    usage.awaits
+}
+
 /// Compila uma função isolada no escopo global (`new Function`).
 pub fn compile_standalone(def: &FunctionDef, file: &str) -> CResult<Rc<Code>> {
     let mut r = Resolver::new(false);
@@ -1476,6 +1524,7 @@ pub fn compile_standalone(def: &FunctionDef, file: &str) -> CResult<Rc<Code>> {
         imports: Default::default(),
         with_depth: 0,
         bag_depth: 0,
+        module: false,
     };
     c.fns.push(FnState::new(FnKind::Normal, false, FxHashSet::default(), true));
     c.push_scope(ScopeKind::Script, 0);
@@ -1501,6 +1550,7 @@ pub fn compile_eval(prog: &Program, site: &EvalSite, host: &dyn EvalHost) -> Res
         imports: site.imports.clone(),
         with_depth: 0,
         bag_depth: 0,
+        module: false,
     };
     for ef in &site.fns {
         let mut st = FnState::new(ef.kind, ef.strict, FxHashSet::default(), ef.is_script);
@@ -2661,7 +2711,17 @@ impl Compiler {
         let strict = def.strict || self.fr().strict;
         let kind = def.kind;
         let is_arrow = kind == FnKind::Arrow;
+        // a função do módulo (direto no programa de `compile_module`)
+        let is_module = self.module && self.fns.len() == 1;
+        if is_module && usage.new_target {
+            return syntax("new.target expression is not allowed here", def.line);
+        }
+        if is_module && (usage.super_prop || usage.super_call) {
+            return syntax("'super' keyword unexpected here", def.line);
+        }
         let fname = def.name.clone().or(name).unwrap_or_else(|| "".into());
+        // `export default function () {}` liga `*default*`, mas o nome é "default"
+        let fname: Name = if &*fname == crate::module::DEFAULT_BINDING { "default".into() } else { fname };
         let fname_js = match kind {
             FnKind::Getter => JsStr::new(&format!("get {fname}")),
             FnKind::Setter => JsStr::new(&format!("set {fname}")),
@@ -2702,8 +2762,10 @@ impl Compiler {
         if let Some(r) = &def.rest {
             bound_names(r, &mut param_names);
         }
-        let uses_arguments =
-            !is_arrow && (usage.uses_arguments || usage.has_eval) && !param_names.iter().any(|n| &**n == "arguments");
+        let uses_arguments = !is_arrow
+            && !is_module
+            && (usage.uses_arguments || usage.has_eval)
+            && !param_names.iter().any(|n| &**n == "arguments");
         if uses_arguments {
             let cap = self.is_captured(&"arguments".into());
             self.declare("arguments".into(), Decl::Hidden, cap, true);
@@ -2856,13 +2918,23 @@ impl Compiler {
             self.emit(Op::Closure(idx));
             self.init(f.name.as_deref().unwrap_or(""));
         }
-        if def.is_generator {
+        // módulo: o registro dos exports (`%ex(...)`, ver module.rs) ainda é
+        // parte do InitializeEnvironment
+        let mut skip = 0;
+        if is_module
+            && let [Stmt::Expr(Expr::Call { callee, .. }, _), ..] = body_stmts
+            && matches!(&**callee, Expr::Ident(n, _) if &**n == crate::module::EXPORTS)
+        {
+            self.stmts(&body_stmts[..1])?;
+            skip = 1;
+        }
+        if def.is_generator || is_module {
             self.emit(Op::InitialYield);
         }
         // corpo
         match &def.body {
             FnBody::Block(b) => {
-                self.stmts(b)?;
+                self.stmts(&b[skip..])?;
                 self.emit(Op::Undef);
                 self.emit(Op::Return);
             }
@@ -4354,18 +4426,22 @@ impl Compiler {
                 let c = self.konst(&format!("{what} ainda não é suportado"));
                 self.emit(Op::ThrowError(ERR_SYNTAX, c));
             }
-            Expr::ImportCall(spec) => {
-                // __ferroImport(especificador, quem importa) → Promise
-                let g = self.konst("__ferroImport");
-                self.emit(Op::GetGlobal(g));
-                self.emit(Op::Undef);
+            Expr::ImportCall(spec, opts, phase) => {
                 self.expr(spec)?;
-                let file = self.file.clone();
-                let f = self.konst(&file);
-                self.emit(Op::Str(f));
-                self.emit(Op::Call(2));
+                match opts {
+                    Some(o) => self.expr(o)?,
+                    None => {
+                        self.emit(Op::Undef);
+                    }
+                }
+                let phase = match phase {
+                    ImportPhase::Evaluation => 0,
+                    ImportPhase::Defer => 1,
+                    ImportPhase::Source => 2,
+                };
+                self.emit(Op::ImportCall(phase));
             }
-            Expr::ImportMeta => self.load("__meta"),
+            Expr::ImportMeta => self.load(crate::module::META),
         }
         Ok(())
     }
@@ -4852,6 +4928,7 @@ impl Compiler {
     /// Compila uma classe e deixa o construtor na pilha.
     fn class(&mut self, c: &ClassDef, name: Option<Name>) -> CResult<()> {
         let cname = c.name.clone().or(name).unwrap_or_else(|| "".into());
+        let cname: Name = if &*cname == crate::module::DEFAULT_BINDING { "default".into() } else { cname };
         let saved_strict = self.fr().strict;
         self.f().strict = true;
         self.push_scope(ScopeKind::Block, key_of(c));
