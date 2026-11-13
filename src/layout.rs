@@ -1757,7 +1757,7 @@ impl<'a> Ctx<'a> {
                 self.flex_min_h = if definite_h.is_none() { fixed(s.min_height) } else { None };
                 self.layout_flex(b, content_x, content_y, w, definite_h, &inh)
             }
-            d if d.is_grid() => self.layout_grid(b, content_x, content_y, w, &inh),
+            d if d.is_grid() => self.layout_grid(b, content_x, content_y, w, definite_h, &inh),
             Display::Table => self.layout_table(b, content_x, content_y, w, &inh),
             _ if has_inflow_blocks(b) => self.layout_block_children(b, content_x, content_y, w, &inh),
             _ => self.layout_inline(b, content_x, content_y, w, &inh),
@@ -2787,7 +2787,15 @@ impl<'a> Ctx<'a> {
 
     // ---------------------------------------------------------------- grid
 
-    fn layout_grid(&mut self, b: &'a LayoutBox, x: f32, y: f32, w: f32, inh: &Inherited) -> (f32, Option<f32>) {
+    fn layout_grid(
+        &mut self,
+        b: &'a LayoutBox,
+        x: f32,
+        y: f32,
+        w: f32,
+        definite_h: Option<f32>,
+        inh: &Inherited,
+    ) -> (f32, Option<f32>) {
         let s = &b.style;
         let cgap = s.column_gap.resolve_or_zero(w);
         let rgap = s.row_gap.resolve_or_zero(w);
@@ -2820,7 +2828,7 @@ impl<'a> Ctx<'a> {
         }
         let areas = s.grid_areas.clone();
         let area_cols = areas.as_ref().map_or(0, |a| a.iter().map(Vec::len).max().unwrap_or(0));
-        let ncols = tracks.len().max(area_cols).max(1);
+        let mut ncols = tracks.len().max(area_cols).max(1);
         let auto = TrackSize {
             min: Track::Auto,
             max: Track::Auto,
@@ -2851,16 +2859,6 @@ impl<'a> Ctx<'a> {
                 (GridLine::Auto, GridLine::Span(sp)) => (None, sp as usize),
                 (GridLine::Auto, GridLine::Line(b)) => (Some(idx(b).saturating_sub(1)), 1),
                 _ => (None, 1),
-            }
-        };
-        let mark_cells = |occupied: &mut Vec<Vec<bool>>, r: usize, c: usize, rs: usize, cs: usize| {
-            while occupied.len() < r + rs {
-                occupied.push(vec![false; ncols]);
-            }
-            for row in occupied.iter_mut().skip(r).take(rs) {
-                for cell in row.iter_mut().skip(c).take(cs) {
-                    *cell = true;
-                }
             }
         };
         // linhas com nome: as do template e as implícitas das áreas (x-start/x-end)
@@ -2898,6 +2896,38 @@ impl<'a> Ctx<'a> {
             match find(&suffixed).or_else(|| find(n)) {
                 Some(i) => GridLine::Line(i as i32 + 1),
                 None => GridLine::Auto,
+            }
+        };
+        // colunas implícitas: item posto além das colunas explícitas ganha
+        // trilhas novas (grid-auto-columns; sem ele, auto)
+        let mut need = ncols;
+        for &c in &kids {
+            let cs = &c.style;
+            let (c0, c1) = (named(&cs.grid_col.0, false, true), named(&cs.grid_col.1, true, true));
+            if let (Some(col), span) = resolve(c0, c1, ncols) {
+                need = need.max(col + span);
+            }
+        }
+        if need > ncols {
+            for i in ncols..need.min(64) {
+                let t = if s.grid_auto_cols.is_empty() {
+                    auto
+                } else {
+                    s.grid_auto_cols[(i - ncols) % s.grid_auto_cols.len()]
+                };
+                tracks.push(t);
+            }
+            ncols = tracks.len();
+        }
+        let ncols = ncols;
+        let mark_cells = |occupied: &mut Vec<Vec<bool>>, r: usize, c: usize, rs: usize, cs: usize| {
+            while occupied.len() < r + rs {
+                occupied.push(vec![false; ncols]);
+            }
+            for row in occupied.iter_mut().skip(r).take(rs) {
+                for cell in row.iter_mut().skip(c).take(cs) {
+                    *cell = true;
+                }
             }
         };
         for &c in &kids {
@@ -3042,8 +3072,89 @@ impl<'a> Ctx<'a> {
             col_x[i + 1] = col_x[i] + widths[i] + cgap;
         }
 
-        // linhas: altura pelo conteúdo, item a item
         items.sort_by_key(|it| (it.row, it.col));
+        let explicit_rows = s.grid_rows.tracks.len();
+        let row_track = |r: usize| -> TrackSize {
+            if r < explicit_rows {
+                s.grid_rows.tracks[r]
+            } else if s.grid_auto_rows.is_empty() {
+                auto
+            } else {
+                s.grid_auto_rows[(r - explicit_rows) % s.grid_auto_rows.len()]
+            }
+        };
+        // linhas com altura conhecida antes do layout (px, % e fr com a
+        // altura do contêiner definida): calcula as linhas primeiro e monta
+        // cada item já com a altura da célula (esticado de verdade, e um
+        // filho com height: 100% acompanha)
+        let all_rows = items.iter().map(|it| it.row + it.rspan).max().unwrap_or(0).max(explicit_rows);
+        let row_fixed = |t: Track| -> Option<f32> {
+            match t {
+                Track::Len(Len::Px(v)) => Some(v),
+                Track::Len(l @ (Len::Percent(_) | Len::Calc(..))) => definite_h.and_then(|h| l.resolve(h)),
+                _ => None,
+            }
+        };
+        let known: Option<Vec<f32>> = (all_rows > 0).then(|| {
+            let mut fixed = vec![0.0f32; all_rows];
+            let mut frs = vec![0.0f32; all_rows];
+            for r in 0..all_rows {
+                let t = row_track(r);
+                match t.max {
+                    Track::Fr(f) if definite_h.is_some() => frs[r] = f.max(0.0),
+                    m => fixed[r] = row_fixed(m)?,
+                }
+            }
+            let tot: f32 = frs.iter().sum();
+            let free = (definite_h.unwrap_or(0.0) - fixed.iter().sum::<f32>() - rgap * (all_rows - 1) as f32).max(0.0);
+            Some((0..all_rows).map(|r| if frs[r] > 0.0 { free * frs[r] / tot } else { fixed[r] }).collect::<Vec<f32>>())
+        }).flatten();
+        if let Some(heights) = known {
+            let mut row_y = vec![y; all_rows + 1];
+            for r in 0..all_rows {
+                row_y[r + 1] = row_y[r] + heights[r] + rgap;
+            }
+            let mut first_baseline = None;
+            for it in &items {
+                let st = &it.b.style;
+                let cw = col_x[it.col + it.cspan] - col_x[it.col] - cgap;
+                let bm = match it.b.kind {
+                    BoxKind::Anonymous => BoxModel::anonymous(cw),
+                    _ => self.box_model(st, cw),
+                };
+                let cell_h = (row_y[it.row + it.rspan] - row_y[it.row] - rgap).max(0.0);
+                let align = st.align_self.unwrap_or(s.align_items);
+                let mut opts = Opts::bfc();
+                if align == Align::Stretch
+                    && st.height == Len::Auto
+                    && st.height_kw.is_none()
+                    && st.aspect_ratio.is_none()
+                    && st.margin[TOP] != Len::Auto
+                    && st.margin[BOTTOM] != Len::Auto
+                    && !matches!(it.b.kind, BoxKind::Anonymous)
+                {
+                    let vx = bm.border[TOP] + bm.border[BOTTOM] + bm.padding[TOP] + bm.padding[BOTTOM];
+                    opts.forced_h = Some((cell_h - bm.margin[TOP] - bm.margin[BOTTOM] - vx).max(0.0));
+                }
+                let m = self.mark();
+                let res = self.layout_block(it.b, &bm, col_x[it.col], row_y[it.row] + bm.margin[TOP], inh, opts);
+                let outer = res.height + bm.margin[TOP] + bm.margin[BOTTOM];
+                let dy = match align {
+                    Align::Center => (cell_h - outer) / 2.0,
+                    Align::End => cell_h - outer,
+                    _ => 0.0,
+                };
+                if dy > 0.0 {
+                    self.shift_between(&m, None, 0.0, dy);
+                }
+                if first_baseline.is_none() {
+                    first_baseline = res.first_baseline.map(|b| b + dy.max(0.0));
+                }
+            }
+            return ((row_y[all_rows] - y - rgap).max(0.0), first_baseline);
+        }
+
+        // linhas: altura pelo conteúdo, item a item
         let nrows = items.iter().map(|it| it.row + 1).max().unwrap_or(0);
         let mut row_y = y;
         let mut first_baseline = None;

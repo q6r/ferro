@@ -451,6 +451,9 @@ pub struct ComputedStyle {
     // grid
     pub grid_columns: GridTemplate,
     pub grid_rows: GridTemplate,
+    /// grid-auto-rows / grid-auto-columns (vazio = auto).
+    pub grid_auto_rows: Vec<TrackSize>,
+    pub grid_auto_cols: Vec<TrackSize>,
     pub grid_areas: Option<Rc<Vec<Vec<String>>>>,
     pub grid_area: Option<String>,
     pub grid_col: (GridLine, GridLine),
@@ -619,6 +622,8 @@ impl ComputedStyle {
             border_collapse: false,
             grid_columns: GridTemplate::default(),
             grid_rows: GridTemplate::default(),
+            grid_auto_rows: Vec::new(),
+            grid_auto_cols: Vec::new(),
             grid_areas: None,
             grid_area: None,
             grid_col: (GridLine::Auto, GridLine::Auto),
@@ -2693,6 +2698,8 @@ impl Cascade<'_> {
                     s.grid_columns = parse_tracks(cols, &u);
                 }
             }
+            "grid-auto-rows" => s.grid_auto_rows = parse_tracks(v, &u).tracks,
+            "grid-auto-columns" => s.grid_auto_cols = parse_tracks(v, &u).tracks,
             "grid-area" => {
                 let parts: Vec<&str> = v.split('/').map(str::trim).collect();
                 if parts.len() == 1 && !parts[0].chars().next().is_some_and(|c| c.is_ascii_digit() || c == '-') && !parts[0].starts_with("span") && parts[0] != "auto" {
