@@ -649,7 +649,7 @@ pub fn fetch_resources(
                     let Some(job) = queue.lock().unwrap().pop() else { return };
                     match job {
                         Job::Img(url, nodes) => {
-                            let Ok(res) = net.fetch(&url) else { continue };
+                            let Ok(res) = net.fetch_image(&url) else { continue };
                             if res.status >= 400 {
                                 continue;
                             }
@@ -662,7 +662,7 @@ pub fn fetch_resources(
                         }
                         Job::Bg(u) => {
                             let Ok(url) = Url::parse(&u) else { continue };
-                            let Ok(res) = net.fetch(&url) else { continue };
+                            let Ok(res) = net.fetch_image(&url) else { continue };
                             if res.status >= 400 {
                                 continue;
                             }
@@ -676,7 +676,7 @@ pub fn fetch_resources(
                                     break;
                                 }
                                 let Ok(url) = Url::parse(src) else { continue };
-                                let Ok(res) = net.fetch(&url) else { continue };
+                                let Ok(res) = net.fetch_font(&url) else { continue };
                                 if res.status < 400
                                     && res.body.len() < 4 * 1024 * 1024
                                     && fonts::register_web_font(src, &face.family, face.weight, face.italic, &res.body)

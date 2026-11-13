@@ -329,7 +329,7 @@ pub fn fetch(net: &Net, mut p: PageRequest) -> Result<(Response, Kind), String> 
 /// `<img crossorigin>`: a imagem de outro site pode ir para um canvas sem
 /// sujá-lo? (pede com `Origin` e confere a liberação)
 pub fn fetch_image(net: &Net, url: &Url, origin: &str, include: bool) -> Result<Response, String> {
-    let mut req = Request::get(url);
+    let mut req = Request::get_accepting(url, crate::net::ACCEPT_IMAGE);
     req.cookies = include;
     req.headers.push(("Origin".into(), origin.to_string()));
     let res = net.request(&req)?;

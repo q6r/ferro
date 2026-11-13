@@ -1653,7 +1653,7 @@ pub(crate) fn request_image(hb: &mut Host, url: Url, waiter: Option<NodeId>) {
     hb.pool.submit(Box::new(move || {
         let res = match cors {
             Some(include) => crate::cors::fetch_image(&net, &url, &origin, include),
-            None => net.fetch(&url),
+            None => net.fetch_image(&url),
         };
         let ok = res.is_ok();
         let img = res
@@ -1775,7 +1775,7 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
         hb.pool.submit(Box::new(move || {
             let img = Url::parse(&u)
                 .ok()
-                .and_then(|url| net.fetch(&url).ok())
+                .and_then(|url| net.fetch_image(&url).ok())
                 .filter(|r| r.status < 400)
                 .and_then(|r| engine::decode_image(&r.body))
                 .map(Arc::new);
@@ -1794,7 +1794,7 @@ pub(crate) fn render_host(h: &Rc<RefCell<Host>>) -> Page {
                     break;
                 }
                 let Ok(url) = Url::parse(src) else { continue };
-                let Ok(res) = net.fetch(&url) else { continue };
+                let Ok(res) = net.fetch_font(&url) else { continue };
                 if res.status < 400
                     && res.body.len() < 4 * 1024 * 1024
                     && fonts::register_web_font(src, &face.family, face.weight, face.italic, &res.body)

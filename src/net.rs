@@ -37,7 +37,23 @@ pub struct Request {
     pub cookies: bool,
 }
 
+/// `Accept` dos pedidos de imagem (o do Chrome, sem AVIF, que não decodificamos).
+pub const ACCEPT_IMAGE: &str = "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8";
+/// `Accept` dos pedidos de fonte e script (como o Chrome).
+pub const ACCEPT_ANY: &str = "*/*";
+
 impl Request {
+    /// GET com outro `Accept` (imagem, fonte...): servidores escolhem o que
+    /// mandar por ele (o CDN do Reddit redireciona para uma página quando o
+    /// pedido de imagem parece de documento).
+    pub fn get_accepting(url: &Url, accept: &str) -> Request {
+        let mut r = Request::get(url);
+        if let Some(h) = r.headers.iter_mut().find(|(k, _)| k == "Accept") {
+            h.1 = accept.to_string();
+        }
+        r
+    }
+
     pub fn get(url: &Url) -> Request {
         Request {
             method: "GET".into(),
@@ -146,6 +162,16 @@ impl Net {
 
     pub fn fetch(&self, url: &Url) -> Result<Response, String> {
         self.request(&Request::get(url))
+    }
+
+    /// GET de uma imagem (`Accept` de imagem).
+    pub fn fetch_image(&self, url: &Url) -> Result<Response, String> {
+        self.request(&Request::get_accepting(url, ACCEPT_IMAGE))
+    }
+
+    /// GET de uma fonte (`Accept: */*`).
+    pub fn fetch_font(&self, url: &Url) -> Result<Response, String> {
+        self.request(&Request::get_accepting(url, ACCEPT_ANY))
     }
 
     /// Cópia para os pedidos de um documento (scripts, folhas, imagens,
