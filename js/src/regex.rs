@@ -14,7 +14,9 @@
 //! diferenciar maiúsculas, a classe já sai fechada pelas equivalências de
 //! caixa e com a negação aplicada: casar é uma busca binária.
 
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
+use std::rc::Rc;
 
 use crate::unicode_props as up;
 
@@ -187,34 +189,61 @@ fn push_case_class(c: u32, unicode: bool, out: &mut Ranges) {
     }
 }
 
+thread_local! {
+    /// Fechamentos de conjuntos grandes já calculados (o mesmo `\p{L}` com i
+    /// em várias regex não refaz a conta).
+    static FECHADOS: RefCell<HashMap<(Ranges, bool), Rc<Ranges>>> = RefCell::new(HashMap::new());
+}
+
 /// Fecha o conjunto pelas equivalências de caixa: sem diferenciar
 /// maiúsculas, `c` casa se algum `a` do conjunto tem o mesmo canônico.
 fn close_case(a: &[(u32, u32)], unicode: bool) -> Ranges {
-    if a.first() == Some(&(0, MAXCP)) {
+    if a.is_empty() || a.first() == Some(&(0, MAXCP)) {
         return a.to_vec();
     }
+    let grande = a.len() >= 32;
+    if grande && let Some(r) = FECHADOS.with(|c| c.borrow().get(&(a.to_vec(), unicode)).cloned()) {
+        return (*r).clone();
+    }
     let (map, inv) = case_tables(unicode);
-    let mut extra = Vec::new();
+    // canônicos tocados: de quem muda ao canonicalizar e de quem já é canônico
+    let mut ds: Vec<u32> = Vec::new();
     for &(lo, hi) in a {
-        // quem muda ao canonicalizar e quem é canônico de alguém, na faixa
         let i = map.partition_point(|&(s, _)| s < lo);
-        for &(s, _) in map[i..].iter().take_while(|&&(s, _)| s <= hi) {
-            push_case_class(s, unicode, &mut extra);
-        }
+        ds.extend(map[i..].iter().take_while(|&&(s, _)| s <= hi).map(|&(_, d)| d));
         let j = inv.partition_point(|&(d, _)| d < lo);
-        let mut last = u32::MAX;
-        for &(d, _) in inv[j..].iter().take_while(|&&(d, _)| d <= hi) {
-            if d != last {
-                push_case_class(d, unicode, &mut extra);
-                last = d;
+        ds.extend(inv[j..].iter().take_while(|&&(d, _)| d <= hi).map(|&(d, _)| d));
+    }
+    ds.sort_unstable();
+    ds.dedup();
+    // cada classe tocada entra inteira (só o que ainda falta)
+    let mut extra = Vec::new();
+    let mut j = 0;
+    for d in ds {
+        if !has(a, d) {
+            extra.push((d, d));
+        }
+        j += inv[j..].partition_point(|&(x, _)| x < d);
+        for &(x, s) in &inv[j..] {
+            if x != d {
+                break;
+            }
+            if !has(a, s) {
+                extra.push((s, s));
             }
         }
     }
-    if extra.is_empty() {
-        return a.to_vec();
+    let r = if extra.is_empty() { a.to_vec() } else { union(a, &extra) };
+    if grande {
+        FECHADOS.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= 64 {
+                c.clear();
+            }
+            c.insert((a.to_vec(), unicode), Rc::new(r.clone()));
+        });
     }
-    extra.extend_from_slice(a);
-    norm(extra)
+    r
 }
 
 /// MaybeSimpleCaseFolding (flag v com i): cada caractere vira a sua dobra.
@@ -356,6 +385,11 @@ const SPACE_RANGES: &[(u32, u32)] = &[
     (0xFEFF, 0xFEFF),
 ];
 const DIGIT_RANGES: &[(u32, u32)] = &[(0x30, 0x39)];
+
+/// WhiteSpace ou LineTerminator do JS (o `\s`).
+pub fn is_space(c: u32) -> bool {
+    has(SPACE_RANGES, c)
+}
 const WORD_RANGES: &[(u32, u32)] = &[(0x30, 0x39), (0x41, 0x5A), (0x5F, 0x5F), (0x61, 0x7A)];
 
 // ----------------------------------------------------------------- classes
@@ -1599,7 +1633,8 @@ impl FirstSet {
                 if x < 256 {
                     low[(x >> 6) as usize] >> (x & 63) & 1 != 0
                 } else {
-                    high.iter().any(|&(a, b)| x >= a && x <= b)
+                    let i = high.partition_point(|&(_, b)| b < x);
+                    i < high.len() && high[i].0 <= x
                 }
             }),
         };
@@ -1800,8 +1835,16 @@ impl Compiler {
         if min == 0 && max == 1 {
             let split = self.emit(Inst::Split(0, 0));
             let body = self.here();
+            // iteração vazia não vale (o spec a descarta e segue sem ela)
+            let p = nullable(node).then(|| self.reg());
+            if let Some(p) = p {
+                self.emit(Inst::SetReg(p));
+            }
             clear(self);
             self.compile(node, back)?;
+            if let Some(p) = p {
+                self.emit(Inst::EmptyCheck(p));
+            }
             let exit = self.here();
             self.insts[split as usize] = self.split(greedy, body, exit);
             return Ok(());
@@ -1853,62 +1896,99 @@ impl Compiler {
     }
 }
 
+/// O nó pode casar a string vazia?
+fn nullable(n: &Node) -> bool {
+    match n {
+        Node::Char(_) | Node::Class(_) | Node::Any(_) => false,
+        Node::Strings(ss) => ss.empty,
+        Node::Group(inner, _) => nullable(inner),
+        Node::Repeat { node, min, .. } => *min == 0 || nullable(node),
+        Node::Concat(items) => items.iter().all(nullable),
+        Node::Alt(alts) => alts.iter().any(nullable),
+        // vazio, asserções e referências
+        _ => true,
+    }
+}
+
 /// Unidade inicial de um ponto de código (o substituto alto, se astral).
 fn first_unit(c: u32) -> u32 {
     if c > 0xFFFF { 0xD800 + ((c - 0x10000) >> 10) } else { c }
 }
 
-/// Faixas de unidades com que o nó pode começar (None = qualquer uma / vazio).
-fn first_ranges(n: &Node) -> Option<Ranges> {
-    match n {
-        Node::Char(c) => Some(vec![(first_unit(*c), first_unit(*c))]),
-        Node::Class(cs) => {
-            let mut v = Vec::new();
-            for &(a, b) in &cs.ranges {
-                if b > 0xFFFF {
-                    // astrais começam por um substituto alto
-                    v.push((first_unit(a.max(0x10000)), first_unit(b)));
-                    if a <= 0xFFFF {
-                        v.push((a, 0xFFFF));
-                    }
-                } else {
-                    v.push((a, b));
-                }
+/// Unidades iniciais das faixas de pontos de código.
+fn first_units(r: &[(u32, u32)], out: &mut Ranges) {
+    for &(a, b) in r {
+        if b > 0xFFFF {
+            // astrais começam por um substituto alto
+            out.push((first_unit(a.max(0x10000)), first_unit(b)));
+            if a <= 0xFFFF {
+                out.push((a, 0xFFFF));
             }
-            if v.is_empty() { None } else { Some(v) }
+        } else {
+            out.push((a, b));
         }
-        Node::Strings(ss) => {
-            if ss.empty {
-                return None;
-            }
-            let mut v = first_ranges(&Node::Class(ss.singles.clone())).unwrap_or_default();
-            for s in &ss.strs {
-                let u = first_unit(s[0]);
-                v.push((u, u));
-            }
-            if ss.icase {
-                // a entrada é comparada pela dobra: vale qualquer equivalente
-                let c = close_case(&norm(v.clone()), true);
-                v = c.into_iter().map(|(a, b)| (first_unit(a), first_unit(b))).collect();
-            }
-            Some(v)
-        }
-        Node::Concat(items) => items.first().and_then(first_ranges),
-        Node::Group(inner, _) => first_ranges(inner),
-        Node::Repeat { node, min, .. } if *min > 0 => first_ranges(node),
-        Node::Alt(alts) => {
-            let mut v = Vec::new();
-            for a in alts {
-                v.extend(first_ranges(a)?);
-            }
-            Some(v)
-        }
-        _ => None,
     }
 }
 
+/// Unidades com que o nó pode começar e se ele pode casar vazio
+/// (None = qualquer unidade).
+fn first_info(n: &Node) -> Option<(Ranges, bool)> {
+    Some(match n {
+        Node::Char(c) => (vec![(first_unit(*c), first_unit(*c))], false),
+        Node::Class(cs) => {
+            let mut v = Vec::new();
+            first_units(&cs.ranges, &mut v);
+            (v, false)
+        }
+        Node::Strings(ss) => {
+            let mut cps = ss.singles.ranges.clone();
+            cps.extend(ss.strs.iter().map(|s| (s[0], s[0])));
+            if ss.icase {
+                // a entrada é comparada pela dobra: vale qualquer equivalente
+                cps = close_case(&norm(cps), true);
+            }
+            let mut v = Vec::new();
+            first_units(&cps, &mut v);
+            (v, ss.empty)
+        }
+        // asserções não consomem: o começo vem do que vier depois
+        Node::Empty | Node::Start(_) | Node::End(_) | Node::WordB { .. } | Node::Look { .. } => (Vec::new(), true),
+        Node::Any(_) | Node::BackRef { .. } | Node::NamedRef { .. } => return None,
+        Node::Group(inner, _) => first_info(inner)?,
+        Node::Repeat { node, min, .. } => {
+            let (r, vazio) = first_info(node)?;
+            (r, vazio || *min == 0)
+        }
+        Node::Concat(items) => {
+            let mut v = Vec::new();
+            for it in items {
+                let (r, vazio) = first_info(it)?;
+                v.extend(r);
+                if !vazio {
+                    return Some((v, false));
+                }
+            }
+            (v, true)
+        }
+        Node::Alt(alts) => {
+            let mut v = Vec::new();
+            let mut vazio = false;
+            for a in alts {
+                let (r, z) = first_info(a)?;
+                v.extend(r);
+                vazio |= z;
+            }
+            (v, vazio)
+        }
+    })
+}
+
 fn first_set(n: &Node) -> Option<FirstSet> {
-    let r = norm(first_ranges(n)?);
+    let (r, vazio) = first_info(n)?;
+    if vazio || r.is_empty() {
+        return None;
+    }
+    let r = norm(r);
     let units: u32 = r.iter().map(|&(a, b)| b - a + 1).sum();
     if units == 1 {
         return Some(FirstSet::One(r[0].0 as u16));
@@ -1918,6 +1998,10 @@ fn first_set(n: &Node) -> Option<FirstSet> {
         let b = r.last().map_or(a, |x| x.1 as u16);
         return Some(FirstSet::Two(a, b));
     }
+    if units >= 0xF000 {
+        // quase tudo passa: o filtro só atrasaria
+        return None;
+    }
     let mut low = [0u64; 4];
     let mut high = Vec::new();
     for &(a, b) in &r {
@@ -1925,11 +2009,8 @@ fn first_set(n: &Node) -> Option<FirstSet> {
             low[(c >> 6) as usize] |= 1 << (c & 63);
         }
         if b >= 256 {
-            high.push((a.max(256) as u16, b.min(0xFFFF) as u16));
+            high.push((a.max(256) as u16, b as u16));
         }
-    }
-    if high.len() > 32 || units >= 0xFFFF {
-        return None;
     }
     Some(FirstSet::Set { low, high })
 }
@@ -1995,6 +2076,11 @@ enum Bt {
     Restore { reg: u32, val: usize },
     Greedy { pc: u32, min_pos: usize, cur: usize, back: bool },
     Lazy { pc: u32, rep: u32, cur: usize, count: u32 },
+}
+
+/// `i` cai entre as duas metades de um par substituto?
+fn mid_pair(s: &[u16], i: usize) -> bool {
+    i > 0 && i < s.len() && (0xDC00..0xE000).contains(&s[i]) && (0xD800..0xDC00).contains(&s[i - 1])
 }
 
 fn is_line_term(c: u16) -> bool {
@@ -2458,13 +2544,15 @@ impl Program {
 
     /// Procura a partir de `from` (ou só em `from`, se `sticky`).
     pub fn search(&self, s: &[u16], from: usize, sticky: bool) -> Option<Vec<usize>> {
+        let unicode = self.flags.full_unicode();
+        // com u, começar no meio de um par é começar no par inteiro
+        let from = if unicode && mid_pair(s, from) { from - 1 } else { from };
         if sticky {
             return if from <= s.len() { self.match_at(s, from) } else { None };
         }
         if self.anchored {
             return if from == 0 { self.match_at(s, 0) } else { None };
         }
-        let unicode = self.flags.full_unicode();
         let mut m = self.matcher(s);
         let mut regs = vec![NONE; self.nregs as usize];
         let mut pos = from;
@@ -2474,6 +2562,11 @@ impl Program {
                     return None;
                 }
                 match f.find(s, pos) {
+                    // a segunda metade de um par não é um começo possível
+                    Some(k) if unicode && mid_pair(s, k) => {
+                        pos = k + 1;
+                        continue;
+                    }
                     Some(k) => pos = k,
                     None => return None,
                 }
