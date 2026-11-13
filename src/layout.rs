@@ -3578,10 +3578,11 @@ impl<'a> Ctx<'a> {
                 }
                 if let FragKind::InlineBlock { h, base, hold } = &f.kind {
                     // move o inline-block já montado para o lugar dele
-                    let top = if f.valign == VAlign::Middle {
-                        baseline - f.mid - h / 2.0
-                    } else {
-                        baseline - base
+                    let top = match f.valign {
+                        VAlign::Middle => baseline - f.mid - h / 2.0,
+                        VAlign::Top => cy,
+                        VAlign::Bottom => cy + line_h - h,
+                        VAlign::Baseline => baseline - base,
                     };
                     let (items, start, end, tx, ty) = &mut held[*hold];
                     let (dx, dy) = (fx - *tx, top - *ty);
@@ -3596,7 +3597,12 @@ impl<'a> Ctx<'a> {
                     self.shift_between(&a, Some(&z), dx, dy);
                     continue;
                 }
-                self.emit_frag(f, fx, baseline);
+                let b = match (&f.kind, f.valign) {
+                    (FragKind::Box { base, .. }, VAlign::Top) => cy + base,
+                    (FragKind::Box { h, base, .. }, VAlign::Bottom) => cy + line_h - h + base,
+                    _ => baseline,
+                };
+                self.emit_frag(f, fx, b);
             }
             cy += line_h;
         }
@@ -4547,7 +4553,24 @@ impl<'a> LineBuilder<'a> {
         let lh = c.line_height_px(m.normal);
         let half = (lh - (m.ascent + m.descent)) / 2.0;
         let (mut above, mut below) = (m.ascent + half, m.descent + half);
+        // vertical-align: top/bottom: alinhados pela caixa da linha, que cresce para caber
+        let (mut tall_top, mut tall_bottom) = (0.0f32, 0.0f32);
         for f in &frags {
+            let full = match &f.kind {
+                FragKind::Box { h, mt, mb, .. } => Some(h + mt + mb),
+                FragKind::InlineBlock { h, .. } => Some(*h),
+                FragKind::Text(_) => None,
+            };
+            if matches!(f.valign, VAlign::Top | VAlign::Bottom)
+                && let Some(full) = full
+            {
+                if f.valign == VAlign::Top {
+                    tall_top = tall_top.max(full);
+                } else {
+                    tall_bottom = tall_bottom.max(full);
+                }
+                continue;
+            }
             match &f.kind {
                 FragKind::Text(_) => {
                     let m = self.fonts.line_metrics(f.font, f.style.font_size);
@@ -4569,6 +4592,12 @@ impl<'a> LineBuilder<'a> {
                     below = below.max(h - base);
                 }
             }
+        }
+        if tall_top > above + below {
+            below = tall_top - above;
+        }
+        if tall_bottom > above + below {
+            above = tall_bottom - below;
         }
         let mut segs = std::mem::take(&mut self.line_segs);
         let mut width = frags.last().map_or(0.0, |f| f.x + f.w);
