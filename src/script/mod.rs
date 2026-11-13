@@ -9,16 +9,25 @@
 //! - `dom.rs`: Node, Element, Document... em Rust, direto sobre a arena do DOM;
 //! - `web.rs`: o resto da plataforma em Rust (rede, URL, armazenamento...);
 //! - `crypto.rs`: a matemática do Web Crypto (`crypto.subtle`);
-//! - `prelude.js`: o que é mais natural em JS (eventos, `style`, `classList`,
-//!   `dataset`, atributos refletidos, fetch/XHR sobre as funções nativas).
+//! - `clone.rs`, `messaging.rs`, `worker.rs`: clone estruturado, mensagens
+//!   entre threads (MessagePort, BroadcastChannel) e os Web Workers;
+//! - `comum.js` + `prelude.js`: o que é mais natural em JS (eventos, `style`,
+//!   `classList`, `dataset`, atributos refletidos, fetch/XHR sobre as funções
+//!   nativas). `comum.js` também abre o prelúdio dos workers (`worker.js`).
 
 mod canvas;
+mod clone;
 mod crypto;
 mod dom;
 mod frames;
 mod media;
+mod messaging;
 mod module;
 mod web;
+mod worker;
+
+/// Prelúdio das páginas: a parte comum (também dos workers) e a da página.
+const PRELUDE: &str = concat!("(function (N) {\n'use strict';\n", include_str!("comum.js"), include_str!("prelude.js"), "\n})(__native);\n");
 
 pub use web::{export_local_storage, import_local_storage};
 
@@ -83,9 +92,24 @@ pub(crate) enum Done {
     Frame { node: NodeId, url: Url, result: Result<Box<Loaded>, String> },
     /// Arquivo de mídia (`<video src>`/`<audio src>`).
     MediaFile { node: NodeId, url: Url, bytes: Option<Vec<u8>> },
+    /// Mensagem para uma MessagePort desta realm.
+    Port { port: u64, msg: clone::Message },
+    /// Mensagem de um BroadcastChannel.
+    Broadcast { id: u64, msg: clone::Message },
+    /// Algo de um worker criado aqui (mensagem, erro, fim).
+    Worker { id: u32, ev: messaging::WorkerEv },
+    /// (só no worker) mensagem de quem o criou.
+    Parent(clone::Message),
+    /// (só no worker) `terminate()`: acorda o laço para ele ver a parada.
+    Terminate,
 }
 
 impl Done {
+    /// Veio pela caixa de entrada (mensagens) e não pela rede?
+    fn via_inbox(&self) -> bool {
+        matches!(self, Done::Port { .. } | Done::Broadcast { .. } | Done::Worker { .. } | Done::Parent(_) | Done::Terminate)
+    }
+
     /// Nome do tipo (para o log de lentidão).
     fn kind(&self) -> &'static str {
         match self {
@@ -99,6 +123,9 @@ impl Done {
             Done::Module { .. } => "módulo",
             Done::Frame { .. } => "iframe",
             Done::MediaFile { .. } => "arquivo de mídia",
+            Done::Port { .. } | Done::Broadcast { .. } | Done::Parent(_) => "mensagem",
+            Done::Worker { .. } => "worker",
+            Done::Terminate => "terminate",
         }
     }
 }
@@ -116,17 +143,21 @@ pub(crate) struct ParserScripts {
     modules_started: bool,
 }
 
-type Job = Box<dyn FnOnce() -> Done + Send>;
+pub(crate) type Job = Box<dyn FnOnce() -> Done + Send>;
 
 /// Até 8 threads buscando recursos; o resultado volta por um canal.
-struct Pool {
+pub(crate) struct Pool {
     queue: Arc<Mutex<VecDeque<Job>>>,
     active: Arc<AtomicUsize>,
     tx: mpsc::Sender<Done>,
 }
 
 impl Pool {
-    fn submit(&self, job: Job) {
+    pub(crate) fn new(tx: mpsc::Sender<Done>) -> Pool {
+        Pool { queue: Arc::new(Mutex::new(VecDeque::new())), active: Arc::new(AtomicUsize::new(0)), tx }
+    }
+
+    pub(crate) fn submit(&self, job: Job) {
         self.queue.lock().unwrap().push_back(job);
         if self.active.load(Ordering::SeqCst) >= 8 {
             return;
@@ -287,6 +318,8 @@ pub struct Host {
     pub(crate) page_scroll_request: Option<f32>,
     pub(crate) title_changed: bool,
     no_resources: bool,
+    /// Mensagens com outras realms (portas, canais, workers).
+    pub(crate) mailbox: messaging::Mailbox,
 }
 
 /// Pega o estado do hospedeiro guardado na VM.
@@ -364,6 +397,37 @@ fn now_ms(vm: &Vm) -> f64 {
     vm.now_ms()
 }
 
+/// Tira do global os ganchos que o prelúdio deixou para o Rust
+/// (`__ferroHooks`). Os nomes ficam guardados uma vez só no processo.
+pub(crate) fn take_hooks(vm: &mut Vm) -> HashMap<&'static str, Value> {
+    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let mut out = HashMap::new();
+    let global = Value::Object(vm.realm.global.clone());
+    if let Ok(Value::Object(h)) = vm.get_str(&global, "__ferroHooks") {
+        let keys: Vec<PropKey> = h.borrow().props.ordered_keys();
+        for k in keys {
+            if let PropKey::Str(name) = &k {
+                let name = name.to_rust();
+                let name: &'static str = {
+                    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+                    match names.iter().find(|n| **n == name) {
+                        Some(n) => n,
+                        None => {
+                            let n: &'static str = Box::leak(name.into_boxed_str());
+                            names.push(n);
+                            n
+                        }
+                    }
+                };
+                let v = vm.get_obj(&h, &k).unwrap_or(Value::Undefined);
+                out.insert(name, v);
+            }
+        }
+        vm.delete_prop(&vm.realm.global.clone(), &PropKey::str("__ferroHooks"));
+    }
+    out
+}
+
 pub struct Session {
     pub js: Engine,
     pub host: Rc<RefCell<Host>>,
@@ -433,11 +497,8 @@ impl Session {
             ready_state: "loading",
             navigate: None,
             post: None,
-            pool: Pool {
-                queue: Arc::new(Mutex::new(VecDeque::new())),
-                active: Arc::new(AtomicUsize::new(0)),
-                tx,
-            },
+            mailbox: messaging::Mailbox::new(tx.clone()),
+            pool: Pool::new(tx),
             rx,
             in_flight: 0,
             fetch_seq: 0,
@@ -479,23 +540,12 @@ impl Session {
         js.vm.host = Some(host.clone() as Rc<dyn std::any::Any>);
         dom::install(&mut js.vm);
         web::install(&mut js.vm);
-        let prelude = include_str!("prelude.js");
-        if let Err(e) = js.eval(prelude, "ferro:prelude") {
+        if let Err(e) = js.eval(PRELUDE, "ferro:prelude") {
             eprintln!("[ferro] erro no prelúdio JS: {}", js.error_text(&e));
         }
         // ganchos que o prelúdio deixou para o Rust
-        let global = Value::Object(js.vm.realm.global.clone());
-        if let Ok(Value::Object(h)) = js.vm.get_str(&global, "__ferroHooks") {
-            let keys: Vec<PropKey> = h.borrow().props.ordered_keys();
-            for k in keys {
-                if let PropKey::Str(name) = &k {
-                    let name: &'static str = Box::leak(name.to_rust().into_boxed_str());
-                    let v = js.vm.get_obj(&h, &k).unwrap_or(Value::Undefined);
-                    host.borrow_mut().hooks.insert(name, v);
-                }
-            }
-            js.vm.delete_prop(&js.vm.realm.global.clone(), &PropKey::str("__ferroHooks"));
-        }
+        let hooks = take_hooks(&mut js.vm);
+        host.borrow_mut().hooks = hooks;
         Session {
             js,
             host,
@@ -531,7 +581,7 @@ impl Session {
             // espera o próximo script chegar pela rede
             let got = self.host.borrow().rx.recv_timeout(Duration::from_millis(20));
             if let Ok(done) = got {
-                self.host.borrow_mut().in_flight -= 1;
+                self.received(&done);
                 self.on_done(done);
             }
         }
@@ -817,18 +867,38 @@ impl Session {
         if hb.media.active() {
             take(10.0);
         }
+        // mensagens de outras realms (workers, portas) já esperando
+        if hb.mailbox.inbox.pending() || hb.frames.values().any(|c| c.session.host.borrow().mailbox.inbox.pending()) {
+            take(0.0);
+        }
         best.map(|ms| Duration::from_secs_f64(ms.max(0.0) / 1000.0))
+    }
+
+    /// Acorda o laço da aba quando chega mensagem de outra thread (o laço
+    /// dorme esperando a interface).
+    pub fn set_waker(&mut self, w: Arc<dyn Fn() + Send + Sync>) {
+        self.host.borrow().mailbox.inbox.set_waker(w);
+    }
+
+    /// Algo saiu do canal: conta como resposta da rede ou como mensagem.
+    fn received(&mut self, done: &Done) {
+        let mut hb = self.host.borrow_mut();
+        if done.via_inbox() {
+            hb.mailbox.inbox.done();
+        } else {
+            hb.in_flight -= 1;
+        }
     }
 
     /// Uma volta do laço de eventos: rede, timers vencidos, animação.
     pub fn tick(&mut self) {
         let start = Instant::now();
         let log = std::env::var_os("FERRO_MIDIA_LOG").is_some();
-        // respostas da rede
-        loop {
-            let done = self.host.borrow().rx.try_recv();
-            let Ok(done) = done else { break };
-            self.host.borrow_mut().in_flight -= 1;
+        // respostas da rede e mensagens (só as que já chegaram: uma porta que
+        // manda mensagem para si mesma não prende a volta)
+        let got: Vec<Done> = self.host.borrow().rx.try_iter().collect();
+        for done in got {
+            self.received(&done);
             let kind = if log { done.kind() } else { "" };
             let t0 = Instant::now();
             self.on_done(done);
@@ -890,6 +960,8 @@ impl Session {
         if log && t_frames.elapsed().as_millis() > 100 {
             eprintln!("[mídia] iframes lentos: {:.0} ms", t_frames.elapsed().as_secs_f64() * 1000.0);
         }
+        // threads de workers que já acabaram
+        self.host.borrow_mut().mailbox.reap();
         // coletor de ciclos, entre uma tarefa e outra; com o usuário mexendo
         // na página, só se a memória estiver crescendo muito
         let busy = self.last_input.is_some_and(|t| t.elapsed() < Duration::from_millis(1500));
@@ -916,6 +988,12 @@ impl Session {
 
     fn on_done(&mut self, done: Done) {
         match done {
+            d @ (Done::Port { .. } | Done::Broadcast { .. } | Done::Worker { .. }) => {
+                messaging::deliver(&mut self.js.vm, d);
+                self.js.vm.run_microtasks();
+            }
+            // só fazem sentido dentro de um worker
+            Done::Parent(_) | Done::Terminate => {}
             Done::ParserScript { url, text } => {
                 if let Some(p) = self.host.borrow_mut().parser.as_mut() {
                     p.texts.insert(url, text);

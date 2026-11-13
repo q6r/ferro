@@ -58,6 +58,55 @@ pub struct Net {
     /// Esquema do documento que faz os pedidos (None = o próprio navegador,
     /// que pode tudo). Ver [`Net::for_document`].
     page_scheme: Option<String>,
+    /// Origem do documento (blob: só da mesma origem).
+    page_origin: Option<String>,
+}
+
+/// Um blob URL (`URL.createObjectURL`).
+struct BlobEntry {
+    /// Realm que criou (some junto com ela).
+    owner: u64,
+    mime: String,
+    bytes: Arc<Vec<u8>>,
+}
+
+/// Blob URLs de todas as threads: a página, os quadros e os workers da
+/// mesma origem enxergam os mesmos (como no navegador).
+static BLOBS: std::sync::Mutex<Option<std::collections::HashMap<String, BlobEntry>>> = std::sync::Mutex::new(None);
+
+fn blobs<T>(f: impl FnOnce(&mut std::collections::HashMap<String, BlobEntry>) -> T) -> T {
+    let mut g = BLOBS.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(Default::default))
+}
+
+/// Blob URL sem o fragmento (`blob:...#x` acha o mesmo blob).
+fn blob_key(url: &str) -> &str {
+    url.split('#').next().unwrap_or(url)
+}
+
+pub fn register_blob(url: &str, owner: u64, mime: &str, bytes: Vec<u8>) {
+    blobs(|m| m.insert(url.to_string(), BlobEntry { owner, mime: mime.to_string(), bytes: Arc::new(bytes) }));
+}
+
+pub fn revoke_blob(url: &str) {
+    blobs(|m| m.remove(blob_key(url)));
+}
+
+/// A realm acabou: os blob URLs dela também.
+pub fn revoke_blobs_of(owner: u64) {
+    blobs(|m| m.retain(|_, e| e.owner != owner));
+}
+
+/// (tipo, bytes) de um blob URL; com `origin`, só se for da mesma origem.
+pub fn blob(url: &str, origin: Option<&str>) -> Option<(String, Arc<Vec<u8>>)> {
+    let key = blob_key(url);
+    if let Some(o) = origin
+        && let Ok(u) = Url::parse(key)
+        && u.origin().ascii_serialization() != o
+    {
+        return None;
+    }
+    blobs(|m| m.get(key).map(|e| (e.mime.clone(), e.bytes.clone())))
 }
 
 /// Uma página em `from_scheme` pode abrir ou buscar `to`? Página da web não lê
@@ -92,7 +141,7 @@ impl Net {
             .allow_non_standard_methods(true)
             .user_agent(user_agent())
             .build();
-        Net { agent: config.into(), page_scheme: None }
+        Net { agent: config.into(), page_scheme: None, page_origin: None }
     }
 
     pub fn fetch(&self, url: &Url) -> Result<Response, String> {
@@ -105,6 +154,7 @@ impl Net {
         Net {
             agent: self.agent.clone(),
             page_scheme: Some(page.scheme().to_string()),
+            page_origin: Some(page.origin().ascii_serialization()),
         }
     }
 
@@ -208,6 +258,20 @@ impl Net {
                     content_type: Some(content_type.clone()),
                     body,
                     headers: vec![("content-type".into(), content_type)],
+                })
+            }
+            "blob" => {
+                let (mime, bytes) = blob(url.as_str(), self.page_origin.as_deref()).ok_or_else(|| format!("blob inexistente: {url}"))?;
+                let mut headers = vec![("content-length".to_string(), bytes.len().to_string())];
+                if !mime.is_empty() {
+                    headers.push(("content-type".into(), mime.clone()));
+                }
+                Ok(Response {
+                    url: url.clone(),
+                    status: 200,
+                    content_type: (!mime.is_empty()).then_some(mime),
+                    body: bytes.to_vec(),
+                    headers,
                 })
             }
             other => Err(format!("esquema não suportado: {other}")),

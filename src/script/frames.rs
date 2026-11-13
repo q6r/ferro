@@ -128,6 +128,10 @@ impl Session {
         };
         let url = page.url.clone();
         let mut child = Session::new_frame(page, net, fonts, size.0, size.1, depth + 1, origin);
+        // mensagens de workers do quadro também acordam a aba
+        if let Some(w) = self.host.borrow().mailbox.inbox.waker() {
+            child.set_waker(w);
+        }
         // as <style> do documento (o carregamento pela rede já juntou as dele)
         child.host.borrow_mut().styles_dirty = true;
         child.start_scripts();

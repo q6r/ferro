@@ -9,6 +9,7 @@ use ferro_js::value::{CallArgs, Kind, ObjRef, PropKey, TaKind};
 use ferro_js::{Value, Vm};
 use url::Url;
 
+use super::messaging::realm;
 use super::{Done, Host, host, node_of};
 use crate::{cors, net};
 
@@ -79,16 +80,25 @@ fn utf8_decode(vm: &mut Vm, a: &mut CallArgs) -> R {
 
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// Interface do objeto global ("Window" na página, "WorkerGlobalScope" no
+/// worker), para as mensagens de erro.
+pub(crate) fn global_iface(vm: &Vm) -> &'static str {
+    match &vm.host {
+        Some(h) if h.is::<std::cell::RefCell<Host>>() => "Window",
+        _ => "WorkerGlobalScope",
+    }
+}
+
 fn btoa(vm: &mut Vm, a: &mut CallArgs) -> R {
     let text = arg_string(vm, a, 0)?;
     let mut bytes = Vec::with_capacity(text.len());
     for c in text.chars() {
         if c as u32 > 255 {
-            return Err(super::dom::dom_error(
-                vm,
-                "InvalidCharacterError",
-                "Failed to execute 'btoa' on 'Window': The string to be encoded contains characters outside of the Latin1 range.",
-            ));
+            let msg = format!(
+                "Failed to execute 'btoa' on '{}': The string to be encoded contains characters outside of the Latin1 range.",
+                global_iface(vm)
+            );
+            return Err(super::dom::dom_error(vm, "InvalidCharacterError", &msg));
         }
         bytes.push(c as u8);
     }
@@ -116,16 +126,16 @@ fn atob(vm: &mut Vm, a: &mut CallArgs) -> R {
     } else {
         clean
     };
-    let bad = || "Failed to execute 'atob' on 'Window': The string to be decoded is not correctly encoded.";
+    let bad = format!("Failed to execute 'atob' on '{}': The string to be decoded is not correctly encoded.", global_iface(vm));
     if clean.len() % 4 == 1 {
-        return Err(super::dom::dom_error(vm, "InvalidCharacterError", bad()));
+        return Err(super::dom::dom_error(vm, "InvalidCharacterError", &bad));
     }
     let mut out = String::with_capacity(clean.len() * 3 / 4);
     let (mut acc, mut bits) = (0u32, 0);
     for &c in &clean {
         let v = match B64.iter().position(|&x| x == c) {
             Some(v) => v as u32,
-            None => return Err(super::dom::dom_error(vm, "InvalidCharacterError", bad())),
+            None => return Err(super::dom::dom_error(vm, "InvalidCharacterError", &bad)),
         };
         acc = (acc << 6) | v;
         bits += 6;
@@ -183,7 +193,7 @@ pub(crate) fn page_origin(h: &Host) -> String {
 fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<cors::PageRequest, Value> {
     let method = arg_string(vm, a, 0)?;
     let url_s = arg_string(vm, a, 1)?;
-    let base = read(vm, |h| h.page.base.clone());
+    let base = realm(vm, |r| r.base());
     let url = base
         .join(&url_s)
         .map_err(|_| vm.type_error(format!("Failed to fetch: invalid URL '{url_s}'")))?;
@@ -215,7 +225,7 @@ fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<cors::PageRequest, Val
     };
     // Referer (política padrão: endereço inteiro no mesmo site, só a origem
     // para outro site, nada de https para http) e Origin
-    let (page, origin) = read(vm, |h| (h.page.url.clone(), page_origin(h)));
+    let (page, origin) = realm(vm, |r| (r.url(), r.origin()));
     if matches!(page.scheme(), "http" | "https") {
         let mut r = page.clone();
         r.set_fragment(None);
@@ -269,21 +279,24 @@ fn request_from_args(vm: &mut Vm, a: &CallArgs) -> Result<cors::PageRequest, Val
 fn fetch(vm: &mut Vm, a: &mut CallArgs) -> R {
     let req = request_from_args(vm, a)?;
     let cb = a.arg(5);
-    write(vm, |h| {
-        h.fetch_seq += 1;
-        let id = h.fetch_seq;
-        h.fetch_waiters.insert(id, cb);
-        let net = h.net.clone();
-        h.in_flight += 1;
-        h.pool.submit(Box::new(move || Done::Fetch { id, res: cors::fetch(&net, req) }));
-    });
+    realm(vm, |r| r.start_fetch(cb, req));
     Ok(Value::Undefined)
+}
+
+/// Começa um fetch numa thread do conjunto; a resposta volta como `Done::Fetch`.
+pub(crate) fn start_fetch(h: &mut Host, cb: Value, req: cors::PageRequest) {
+    h.fetch_seq += 1;
+    let id = h.fetch_seq;
+    h.fetch_waiters.insert(id, cb);
+    let net = h.net.clone();
+    h.in_flight += 1;
+    h.pool.submit(Box::new(move || Done::Fetch { id, res: cors::fetch(&net, req) }));
 }
 
 /// XMLHttpRequest síncrono (ainda usado por sites antigos).
 fn fetch_sync(vm: &mut Vm, a: &mut CallArgs) -> R {
     let req = request_from_args(vm, a)?;
-    let net = read(vm, |h| h.net.clone());
+    let net = realm(vm, |r| r.net());
     let res = cors::fetch(&net, req);
     Ok(response_value(vm, res))
 }
@@ -953,11 +966,36 @@ fn prompt(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Null)
 }
 
-pub(crate) fn install(vm: &mut Vm) {
+/// O que vale em qualquer realm (página ou worker): `atob`/`btoa` no global
+/// e as funções nativas que o `comum.js` usa.
+pub(crate) fn install_common(vm: &mut Vm, n: &ObjRef) {
     let r = &vm.realm;
     let g = r.global.clone();
     r.method(&g, "atob", 1, atob);
     r.method(&g, "btoa", 1, btoa);
+    for (name, len, f) in [
+        ("utf8Encode", 1, utf8_encode as ferro_js::value::NativeFn),
+        ("utf8Decode", 1, utf8_decode),
+        ("fetch", 8, fetch),
+        ("fetchSync", 8, fetch_sync),
+        ("urlParse", 2, url_parse),
+        ("urlSet", 3, url_set),
+        ("formDecode", 1, form_decode),
+        ("formEncode", 1, form_encode),
+        ("now", 0, now),
+        ("reportError", 1, report_error),
+        ("log", 1, log),
+        ("userAgent", 0, user_agent),
+    ] {
+        r.method(n, name, len, f);
+    }
+    super::crypto::install(vm, n);
+    super::messaging::install(vm, n);
+}
+
+pub(crate) fn install(vm: &mut Vm) {
+    let r = &vm.realm;
+    let g = r.global.clone();
     r.method(&g, "requestAnimationFrame", 1, request_animation_frame);
     r.method(&g, "cancelAnimationFrame", 1, cancel_animation_frame);
     r.method(&g, "alert", 0, alert);
@@ -985,17 +1023,10 @@ pub(crate) fn install(vm: &mut Vm) {
     }
 
     let n = vm.new_object();
+    install_common(vm, &n);
     let r = &vm.realm;
     for (name, len, f) in [
-        ("utf8Encode", 1, utf8_encode as ferro_js::value::NativeFn),
-        ("utf8Decode", 1, utf8_decode),
-        ("fetch", 8, fetch),
-        ("fetchSync", 8, fetch_sync),
-        ("urlParse", 2, url_parse),
-        ("urlSet", 3, url_set),
-        ("formDecode", 1, form_decode),
-        ("formEncode", 1, form_encode),
-        ("href", 0, location_href),
+        ("href", 0, location_href as ferro_js::value::NativeFn),
         ("navigate", 1, navigate),
         ("navigatePost", 3, navigate_post),
         ("setUrl", 1, set_url),
@@ -1008,9 +1039,6 @@ pub(crate) fn install(vm: &mut Vm) {
         ("storageClear", 1, storage_clear),
         ("storageKeys", 1, storage_keys),
         ("matchMedia", 1, match_media),
-        ("now", 0, now),
-        ("reportError", 1, report_error),
-        ("log", 1, log),
         ("defineCustom", 2, define_custom),
         ("computedStyle", 1, computed_style),
         ("scrollTo", 1, scroll_to),
@@ -1023,7 +1051,6 @@ pub(crate) fn install(vm: &mut Vm) {
     super::media::install(vm, &n);
     super::module::install(vm, &n);
     super::canvas::install(vm, &n);
-    super::crypto::install(vm, &n);
     for (name, len, f) in [
         ("requestFullscreen", 1, request_fullscreen as ferro_js::value::NativeFn),
         ("framePost", 3, frame_post),
@@ -1031,7 +1058,6 @@ pub(crate) fn install(vm: &mut Vm) {
         ("frameUrl", 1, frame_url),
         ("parentPost", 2, parent_post),
         ("frameParentOrigin", 0, frame_parent_origin),
-        ("userAgent", 0, user_agent),
         ("popoverSet", 2, popover_set),
         ("exitFullscreen", 0, exit_fullscreen),
         ("fullscreenElement", 0, fullscreen_element),

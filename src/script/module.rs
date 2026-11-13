@@ -1,9 +1,10 @@
-//! Módulos ES na página: `<script type=module>` e `import()`.
+//! Módulos ES na página e nos workers: `<script type=module>`, workers de
+//! módulo (`new Worker(url, { type: 'module' })`) e `import()`.
 //!
 //! O motor JS transforma cada módulo numa função (ver `ferro_js::module`);
 //! aqui ficam o resto: baixar o grafo de dependências pela rede, criar o
 //! namespace de cada módulo, e chamar as funções na ordem (dependências
-//! antes). Cada URL vira um módulo só por documento.
+//! antes). Cada URL vira um módulo só por realm.
 
 use std::collections::{HashMap, HashSet};
 
@@ -11,6 +12,7 @@ use ferro_js::value::{CallArgs, ObjRef};
 use ferro_js::{Value, Vm};
 use url::Url;
 
+use super::messaging::{call_hook, realm};
 use super::{Done, Host, host, wrap};
 use crate::dom::NodeId;
 
@@ -43,6 +45,8 @@ pub(crate) enum Waiter {
     Script(NodeId),
     /// `import()`: resolve ou rejeita a promessa.
     Import { res: Value, rej: Value },
+    /// O script principal de um worker de módulo.
+    Worker,
 }
 
 #[derive(Default)]
@@ -52,28 +56,11 @@ pub(crate) struct Modules {
     inline: usize,
 }
 
-fn read<T>(vm: &Vm, f: impl FnOnce(&Host) -> T) -> T {
-    let h = host(vm);
-    let b = h.borrow();
-    f(&b)
-}
-
-fn write<T>(vm: &Vm, f: impl FnOnce(&mut Host) -> T) -> T {
+/// Leitura do estado da página (só para o que é dela: `<script>`, import map).
+fn page<T>(vm: &Vm, f: impl FnOnce(&mut Host) -> T) -> T {
     let h = host(vm);
     let mut b = h.borrow_mut();
     f(&mut b)
-}
-
-fn hook(vm: &mut Vm, name: &str, args: Vec<Value>) -> Value {
-    let f = read(vm, |h| h.hooks.get(name).cloned());
-    match f.map(|f| vm.call(&f, Value::Undefined, args)) {
-        Some(Ok(v)) => v,
-        Some(Err(e)) => {
-            vm.report_uncaught(&e);
-            Value::Undefined
-        }
-        None => Value::Undefined,
-    }
 }
 
 /// Resolve um especificador (`./a.js`, `/x.js`, `https://...`) contra a URL
@@ -87,8 +74,8 @@ pub(crate) fn resolve(vm: &Vm, spec: &str, referrer: &Url) -> Option<Url> {
         return Some(u);
     }
     // import map: { "imports": { "nome": "url", "prefixo/": "url/" } }
-    read(vm, |h| {
-        let map = &h.import_map;
+    realm(vm, |r| {
+        let map = r.import_map()?;
         if let Some(u) = map.get(spec) {
             return Some(u.clone());
         }
@@ -101,11 +88,11 @@ pub(crate) fn resolve(vm: &Vm, spec: &str, referrer: &Url) -> Option<Url> {
 
 /// Lê um `<script type=importmap>` (só a parte "imports").
 pub(crate) fn add_import_map(vm: &mut Vm, text: &str) {
-    let base = read(vm, |h| h.page.base.clone());
+    let base = page(vm, |h| h.page.base.clone());
     let code = format!("(function(){{ try {{ const m = JSON.parse({}); return Object.entries(m.imports || {{}}).map(e => e[0] + '\\u0000' + e[1]).join('\\u0001'); }} catch (e) {{ return ''; }} }})()", js_string(text));
     let Ok(Value::String(list)) = vm.eval_script(&code, "importmap") else { return };
     let list = list.to_rust();
-    write(vm, |h| {
+    page(vm, |h| {
         for pair in list.split('\u{1}') {
             if let Some((k, v)) = pair.split_once('\u{0}')
                 && let Ok(u) = base.join(v)
@@ -135,16 +122,15 @@ fn js_string(s: &str) -> String {
 
 /// Garante que o módulo dessa URL existe (pede à rede se for novo).
 pub(crate) fn request(vm: &mut Vm, url: &Url) {
-    if read(vm, |h| h.modules.recs.contains_key(url)) {
+    if realm(vm, |r| r.modules().recs.contains_key(url)) {
         return;
     }
-    let ns = hook(vm, "newNamespace", Vec::new());
-    write(vm, |h| {
-        h.modules.recs.insert(url.clone(), Rec { state: State::Fetching, ns });
-        let net = h.net.clone();
+    let ns = call_hook(vm, "newNamespace", Vec::new());
+    realm(vm, |r| {
+        r.modules().recs.insert(url.clone(), Rec { state: State::Fetching, ns });
+        let net = r.net();
         let u = url.clone();
-        h.in_flight += 1;
-        h.pool.submit(Box::new(move || {
+        r.submit(Box::new(move || {
             let text = match net.fetch(&u) {
                 Ok(r) if r.status < 400 => Some(crate::net::decode_text(&r.body, r.content_type.as_deref(), false)),
                 _ => None,
@@ -157,14 +143,14 @@ pub(crate) fn request(vm: &mut Vm, url: &Url) {
 /// Um módulo inline (`<script type=module>texto</script>`): ganha uma URL
 /// própria (a do documento com um fragmento) e é compilado na hora.
 pub(crate) fn add_inline(vm: &mut Vm, text: &str) -> Url {
-    let (mut url, n) = write(vm, |h| {
+    let (mut url, n) = page(vm, |h| {
         h.modules.inline += 1;
         (h.page.url.clone(), h.modules.inline)
     });
     url.set_fragment(Some(&format!("modulo-{n}")));
-    let ns = hook(vm, "newNamespace", Vec::new());
-    write(vm, |h| {
-        h.modules.recs.insert(url.clone(), Rec { state: State::Fetching, ns });
+    let ns = call_hook(vm, "newNamespace", Vec::new());
+    realm(vm, |r| {
+        r.modules().recs.insert(url.clone(), Rec { state: State::Fetching, ns });
     });
     arrived(vm, url.clone(), Some(text.to_string()));
     url
@@ -201,16 +187,16 @@ pub(crate) fn arrived(vm: &mut Vm, url: Url, text: Option<String>) {
 }
 
 fn set_state(vm: &Vm, url: &Url, st: State) {
-    write(vm, |h| {
-        if let Some(r) = h.modules.recs.get_mut(url) {
-            r.state = st;
+    realm(vm, |r| {
+        if let Some(rec) = r.modules().recs.get_mut(url) {
+            rec.state = st;
         }
     });
 }
 
 /// O grafo a partir de `root` está pronto? None = ainda baixando;
 /// Some(Err) = alguma parte falhou.
-fn graph_ready(h: &Host, root: &Url) -> Option<Result<(), ()>> {
+fn graph_ready(m: &Modules, root: &Url) -> Option<Result<(), ()>> {
     let mut seen = HashSet::new();
     let mut stack = vec![root.clone()];
     let mut failed = false;
@@ -218,7 +204,7 @@ fn graph_ready(h: &Host, root: &Url) -> Option<Result<(), ()>> {
         if !seen.insert(u.clone()) {
             continue;
         }
-        match h.modules.recs.get(&u).map(|r| &r.state) {
+        match m.recs.get(&u).map(|r| &r.state) {
             None | Some(State::Fetching) => return None,
             Some(State::Failed(_)) | Some(State::Errored(_)) => failed = true,
             Some(State::Ready { deps, .. }) => stack.extend(deps.iter().cloned()),
@@ -229,11 +215,14 @@ fn graph_ready(h: &Host, root: &Url) -> Option<Result<(), ()>> {
 }
 
 /// Roda o módulo (e antes as dependências). Devolve a promessa do módulo.
-fn evaluate(vm: &mut Vm, url: &Url) -> R {
-    let st = write(vm, |h| {
-        let r = h.modules.recs.get_mut(url)?;
-        Some(match &r.state {
-            State::Ready { .. } => std::mem::replace(&mut r.state, State::Evaluating),
+/// `root`: o módulo principal de um worker (a promessa vai ao gancho
+/// `moduleRan` antes das microtarefas, para um erro nele não virar
+/// "Uncaught (in promise)").
+fn evaluate(vm: &mut Vm, url: &Url, root: bool) -> R {
+    let st = realm(vm, |r| {
+        let rec = r.modules().recs.get_mut(url)?;
+        Some(match &rec.state {
+            State::Ready { .. } => std::mem::replace(&mut rec.state, State::Evaluating),
             State::Evaluated(p) => State::Evaluated(p.clone()),
             State::Errored(e) => State::Errored(e.clone()),
             State::Failed(m) => State::Failed(m.clone()),
@@ -249,18 +238,22 @@ fn evaluate(vm: &mut Vm, url: &Url) -> R {
         Some(State::Evaluating) => return Ok(Value::Undefined),
         _ => return Err(vm.type_error(format!("módulo não carregado: {url}"))),
     };
-    let mut args = vec![read(vm, |h| h.modules.recs[url].ns.clone())];
+    let ns_of = |vm: &Vm, u: &Url| realm(vm, |r| r.modules().recs.get(u).map(|x| x.ns.clone()).unwrap_or(Value::Undefined));
+    let mut args = vec![ns_of(vm, url)];
     for d in &deps {
-        if let Err(e) = evaluate(vm, d) {
+        if let Err(e) = evaluate(vm, d, false) {
             set_state(vm, url, State::Errored(e.clone()));
             return Err(e);
         }
-        args.push(read(vm, |h| h.modules.recs[d].ns.clone()));
+        args.push(ns_of(vm, d));
     }
-    let meta = hook(vm, "importMeta", vec![Value::str(url.as_str())]);
+    let meta = call_hook(vm, "importMeta", vec![Value::str(url.as_str())]);
     args.push(meta);
     match vm.call(&func, Value::Undefined, args) {
         Ok(p) => {
+            if root {
+                call_hook(vm, "moduleRan", vec![p.clone()]);
+            }
             vm.run_microtasks();
             set_state(vm, url, State::Evaluated(p.clone()));
             Ok(p)
@@ -272,14 +265,20 @@ fn evaluate(vm: &mut Vm, url: &Url) -> R {
     }
 }
 
+/// O módulo dessa URL não chegou pela rede (ou um especificador falhou)?
+fn fetch_failed(vm: &Vm, url: &Url) -> bool {
+    realm(vm, |r| matches!(r.modules().recs.get(url).map(|x| &x.state), Some(State::Failed(_))))
+}
+
 /// Atende quem estava esperando um grafo que ficou pronto. Devolve se rodou algo.
 pub(crate) fn drive(vm: &mut Vm) -> bool {
-    let ready: Vec<(Url, Waiter)> = write(vm, |h| {
+    let ready: Vec<(Url, Waiter)> = realm(vm, |r| {
+        let m = r.modules();
         let mut out = Vec::new();
         let mut i = 0;
-        while i < h.modules.waiting.len() {
-            if graph_ready(h, &h.modules.waiting[i].0).is_some() {
-                out.push(h.modules.waiting.remove(i));
+        while i < m.waiting.len() {
+            if graph_ready(m, &m.waiting[i].0).is_some() {
+                out.push(m.waiting.remove(i));
             } else {
                 i += 1;
             }
@@ -288,25 +287,22 @@ pub(crate) fn drive(vm: &mut Vm) -> bool {
     });
     let any = !ready.is_empty();
     for (url, w) in ready {
-        let result = evaluate(vm, &url);
-        let ns = read(vm, |h| h.modules.recs.get(&url).map(|r| r.ns.clone()));
+        let result = evaluate(vm, &url, matches!(w, Waiter::Worker));
+        let ns = realm(vm, |r| r.modules().recs.get(&url).map(|x| x.ns.clone()));
         match w {
             Waiter::Script(n) => {
                 let el = wrap(vm, n);
                 match &result {
                     Ok(p) => {
                         // erro dentro do módulo (assíncrono) aparece como Uncaught
-                        hook(vm, "moduleRan", vec![p.clone()]);
-                        if read(vm, |h| h.page.doc.element(n).and_then(|e| e.attr("src")).is_some()) {
-                            hook(vm, "fire", vec![el, Value::str("load")]);
+                        call_hook(vm, "moduleRan", vec![p.clone()]);
+                        if page(vm, |h| h.page.doc.element(n).and_then(|e| e.attr("src")).is_some()) {
+                            call_hook(vm, "fire", vec![el, Value::str("load")]);
                         }
                     }
                     Err(e) => {
-                        let fetch_failed = read(vm, |h| {
-                            matches!(h.modules.recs.get(&url).map(|r| &r.state), Some(State::Failed(_)))
-                        });
-                        if fetch_failed {
-                            hook(vm, "fire", vec![el, Value::str("error")]);
+                        if fetch_failed(vm, &url) {
+                            call_hook(vm, "fire", vec![el, Value::str("error")]);
                         } else {
                             vm.report_uncaught(e);
                         }
@@ -315,7 +311,7 @@ pub(crate) fn drive(vm: &mut Vm) -> bool {
             }
             Waiter::Import { res, rej } => match result {
                 Ok(p) => {
-                    let done = hook(vm, "moduleDone", vec![p, ns.unwrap_or(Value::Undefined)]);
+                    let done = call_hook(vm, "moduleDone", vec![p, ns.unwrap_or(Value::Undefined)]);
                     if let Err(e) = vm.call(&res, Value::Undefined, vec![done]) {
                         vm.report_uncaught(&e);
                     }
@@ -326,6 +322,10 @@ pub(crate) fn drive(vm: &mut Vm) -> bool {
                     }
                 }
             },
+            Waiter::Worker => {
+                let failed = result.is_err() && fetch_failed(vm, &url);
+                super::worker::main_module_done(vm, result, failed);
+            }
         }
         vm.run_microtasks();
     }
@@ -336,14 +336,28 @@ pub(crate) fn drive(vm: &mut Vm) -> bool {
 pub(crate) fn start_script(vm: &mut Vm, n: NodeId, src: Option<String>, text: &str) -> Option<Url> {
     let url = match src {
         Some(src) => {
-            let u = read(vm, |h| h.page.base.join(src.trim()).ok())?;
+            let u = page(vm, |h| h.page.base.join(src.trim()).ok())?;
             request(vm, &u);
             u
         }
         None => add_inline(vm, text),
     };
-    write(vm, |h| h.modules.waiting.push((url.clone(), Waiter::Script(n))));
+    page(vm, |h| h.modules.waiting.push((url.clone(), Waiter::Script(n))));
     Some(url)
+}
+
+/// Começa o módulo principal de um worker (`text`: já veio, como no blob:).
+pub(crate) fn start_worker(vm: &mut Vm, url: &Url, text: Option<String>) {
+    match text {
+        Some(t) => {
+            let ns = call_hook(vm, "newNamespace", Vec::new());
+            realm(vm, |r| r.modules().recs.insert(url.clone(), Rec { state: State::Fetching, ns }));
+            arrived(vm, url.clone(), Some(t));
+        }
+        None => request(vm, url),
+    }
+    realm(vm, |r| r.modules().waiting.push((url.clone(), Waiter::Worker)));
+    drive(vm);
 }
 
 /// O grafo desse `<script type=module>` já rodou (ou falhou)?
@@ -356,7 +370,7 @@ fn import_module(vm: &mut Vm, a: &mut CallArgs) -> R {
     let spec = vm.to_string(&a.arg(0))?.to_rust();
     let referrer = vm.to_string(&a.arg(1))?.to_rust();
     let (res, rej) = (a.arg(2), a.arg(3));
-    let base = read(vm, |h| h.page.base.clone());
+    let base = realm(vm, |r| r.base());
     let from = Url::parse(&referrer).ok().filter(|u| matches!(u.scheme(), "http" | "https" | "file")).unwrap_or(base);
     let Some(url) = resolve(vm, &spec, &from) else {
         let e = vm.type_error(format!("Failed to resolve module specifier \"{spec}\""));
@@ -364,7 +378,7 @@ fn import_module(vm: &mut Vm, a: &mut CallArgs) -> R {
         return Ok(Value::Undefined);
     };
     request(vm, &url);
-    write(vm, |h| h.modules.waiting.push((url, Waiter::Import { res, rej })));
+    realm(vm, |r| r.modules().waiting.push((url, Waiter::Import { res, rej })));
     // já estava tudo carregado: resolve logo
     drive(vm);
     Ok(Value::Undefined)

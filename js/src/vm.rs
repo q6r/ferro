@@ -59,6 +59,9 @@ pub struct TzInfo {
     pub long: String,
 }
 
+/// Valor da exceção que sai de uma execução interrompida (ver `Vm::interrupt`).
+pub const INTERRUPTED: &str = "ferro: execução interrompida";
+
 /// Função do hospedeiro: fuso (None = local) num instante UTC em ms.
 pub type TzFn = Box<dyn Fn(Option<&str>, f64) -> Option<TzInfo>>;
 
@@ -133,6 +136,13 @@ pub struct Vm {
     pub(crate) vpool: Vec<Vec<Value>>,
     pub cur_pc: usize,
     pub max_depth: usize,
+    /// Pedido de parada vindo de outra thread (`Worker.terminate()`): checado
+    /// nas chamadas e nos pulos para trás; enquanto valer, nenhum `catch` ou
+    /// `finally` segura a exceção que sai daí.
+    pub interrupt: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Exceção não tratada: o hospedeiro decide o que fazer (true = tratou,
+    /// não imprime "Uncaught ...").
+    pub on_uncaught: Option<fn(&mut Vm, &Value) -> bool>,
     pub output: Box<dyn FnMut(Out, &str)>,
     pub symbol_registry: HashMap<JsStr, Sym>,
     pub rng: u64,
@@ -189,6 +199,8 @@ impl Vm {
             trace: Vec::new(),
             cur_pc: 0,
             max_depth: 2000,
+            interrupt: None,
+            on_uncaught: None,
             output: Box::new(|kind, text| match kind {
                 Out::Log => println!("{text}"),
                 Out::Error => eprintln!("{text}"),
@@ -254,9 +266,18 @@ impl Vm {
             .unwrap_or(0.0)
     }
 
+    /// Alguém pediu para parar a execução (ver [`Vm::interrupt`])?
+    #[inline]
+    pub fn interrupted(&self) -> bool {
+        self.interrupt.as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     pub fn run_frame(&mut self, f: &mut Frame) -> Result<Value, Value> {
         if self.trace.len() >= self.max_depth {
             return Err(self.range_error("Maximum call stack size exceeded"));
+        }
+        if self.interrupted() {
+            return Err(Value::str(INTERRUPTED));
         }
         if let Some(t) = self.trace.last_mut() {
             t.pc = self.cur_pc;
@@ -268,6 +289,8 @@ impl Vm {
         let result = loop {
             match self.exec(f) {
                 Ok(v) => break Ok(v),
+                // parada pedida: nenhum catch/finally segura
+                Err(e) if self.interrupted() => break Err(e),
                 Err(e) => match f.handlers.pop() {
                     Some(h) => {
                         f.stack.truncate(h.stack);
@@ -1468,7 +1491,13 @@ impl Vm {
                     let v = self.new_regexp(code.const_str(p), code.const_str(fl))?;
                     f.stack.push(v);
                 }
-                Op::Jump(t) => f.pc = t as usize,
+                Op::Jump(t) => {
+                    // pulo para trás (laço): ponto de parada do terminate()
+                    if (t as usize) < f.pc && self.interrupted() {
+                        return Err(Value::str(INTERRUPTED));
+                    }
+                    f.pc = t as usize
+                }
                 Op::JumpIfFalse(t) => {
                     if !truthy(&pop!()) {
                         f.pc = t as usize;
@@ -1476,6 +1505,10 @@ impl Vm {
                 }
                 Op::JumpIfTrue(t) => {
                     if truthy(&pop!()) {
+                        // do-while
+                        if (t as usize) < f.pc && self.interrupted() {
+                            return Err(Value::str(INTERRUPTED));
+                        }
                         f.pc = t as usize;
                     }
                 }
