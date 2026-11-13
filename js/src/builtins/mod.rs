@@ -24,6 +24,7 @@ pub mod reflect;
 pub mod regexp;
 pub mod strings;
 pub mod symbol;
+pub mod temporal;
 pub mod timers;
 pub mod typed;
 
@@ -121,6 +122,8 @@ pub struct Realm {
     pub sym_split: Sym,
     pub sym_dispose: Sym,
     pub sym_async_dispose: Sym,
+    /// Protótipos do Temporal (PlainDate, Duration...).
+    pub temporal: temporal::Protos,
 }
 
 fn plain(proto: Option<&ObjRef>) -> ObjRef {
@@ -160,6 +163,7 @@ impl Realm {
         let array_ctor = native_fn(&function_proto, "Array", 1, array::array_ctor, true);
         let array_species = mk_native("get [Symbol.species]", 0, array::species);
         let eval_fn = mk_native("eval", 1, global::eval);
+        let temporal = temporal::Protos::new(&object_proto);
         let realm = Realm {
             global: plain(p),
             array_proto: ObjRef::new(Object::new(Some(object_proto.clone()), Kind::Array(Vec::new()))),
@@ -227,6 +231,7 @@ impl Realm {
             sym_split: sym("Symbol.split"),
             sym_dispose: sym("Symbol.dispose"),
             sym_async_dispose: sym("Symbol.asyncDispose"),
+            temporal,
             error_proto,
             iterator_proto,
             object_proto,
@@ -256,6 +261,7 @@ impl Realm {
         typed::install(&realm);
         proxy::install(&realm);
         intl::install(&realm);
+        temporal::install(&realm);
         realm
     }
 
@@ -263,10 +269,11 @@ impl Realm {
         native_fn(&self.function_proto, name, len, f, false)
     }
 
-    /// Método não enumerável.
+    /// Método não enumerável (a chave e o `name` dividem a mesma string).
     pub fn method(&self, target: &ObjRef, name: &str, len: u32, f: NativeFn) -> ObjRef {
-        let fo = self.native(name, len, f);
-        target.borrow_mut().props.insert(PropKey::str(name), Property::hidden(Value::Object(fo.clone())));
+        let s = JsStr::new(name);
+        let fo = native_fn_named(&self.function_proto, s.clone(), len, f, false);
+        target.borrow_mut().props.insert(PropKey::Str(s), Property::hidden(Value::Object(fo.clone())));
         fo
     }
 
@@ -376,6 +383,16 @@ impl Default for Realm {
 }
 
 pub fn native_fn(function_proto: &ObjRef, name: &str, len: u32, f: NativeFn, ctor: bool) -> ObjRef {
+    native_fn_named(function_proto, JsStr::new(name), len, f, ctor)
+}
+
+thread_local! {
+    /// Chaves "length" e "name" prontas: toda função nativa tem as duas, e o
+    /// Realm cria milhares delas a cada página.
+    static FN_KEYS: (PropKey, PropKey) = (PropKey::str("length"), PropKey::str("name"));
+}
+
+fn native_fn_named(function_proto: &ObjRef, name: JsStr, len: u32, f: NativeFn, ctor: bool) -> ObjRef {
     let o = ObjRef::new(Object::new(
         Some(function_proto.clone()),
         Kind::Function(Func::Native(Native {
@@ -385,9 +402,10 @@ pub fn native_fn(function_proto: &ObjRef, name: &str, len: u32, f: NativeFn, cto
         })),
     ));
     {
+        let (key_len, key_name) = FN_KEYS.with(|k| k.clone());
         let mut b = o.borrow_mut();
-        b.props.insert(PropKey::str("length"), crate::ops::readonly(Value::Number(len as f64)));
-        b.props.insert(PropKey::str("name"), crate::ops::readonly(Value::str(name)));
+        b.props.insert(key_len, crate::ops::readonly(Value::Number(len as f64)));
+        b.props.insert(key_name, crate::ops::readonly(Value::String(name)));
     }
     o
 }

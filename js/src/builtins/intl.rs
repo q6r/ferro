@@ -501,8 +501,18 @@ pub struct DateOpts {
     frac: Option<usize>,
     tz_name: Option<String>,
     hour12: Option<bool>,
+    /// hourCycle pedido (opção ou -u-hc- do idioma); hour12 tem precedência.
+    hour_cycle: Option<String>,
+    day_period: Option<String>,
     date_style: Option<String>,
     time_style: Option<String>,
+    /// As opções como vieram (antes dos padrões): os formatos de cada tipo
+    /// do Temporal saem delas.
+    raw: Option<Box<DateOpts>>,
+    /// Calendário ("gregory", ou "iso8601" pedido com -u-ca-).
+    calendar: String,
+    /// Data e hora "sem fuso" do Temporal: formata em UTC e sem nome de fuso.
+    plain: bool,
 }
 
 pub enum IntlObj {
@@ -549,6 +559,8 @@ pub fn install(r: &Realm) {
     let df = mk("DateTimeFormat", date_format_ctor, 0);
     r.getter(&df, "format", df_format_getter);
     r.method(&df, "formatToParts", 1, df_format_to_parts);
+    r.method(&df, "formatRange", 2, df_format_range);
+    r.method(&df, "formatRangeToParts", 2, df_format_range_to_parts);
     r.method(&df, "resolvedOptions", 0, resolved_options);
     let pr = mk("PluralRules", plural_ctor, 0);
     r.method(&pr, "select", 1, plural_select);
@@ -710,24 +722,33 @@ fn resolved_options(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
                     ("numberingSystem".into(), s("latn")),
                     ("timeZone".into(), s(o.time_zone.as_deref().unwrap_or("UTC"))),
                 ];
+                let hc = hour_cycle(o);
+                let twelve = matches!(hc, "h11" | "h12");
                 if o.hour.is_some() || o.time_style.is_some() {
-                    let h12 = o.hour12.unwrap_or_else(|| data_for(&o.locale).hour12);
-                    v.push(("hourCycle".into(), s(if h12 { "h12" } else { "h23" })));
-                    v.push(("hour12".into(), Value::Bool(h12)));
+                    v.push(("hourCycle".into(), s(hc)));
+                    v.push(("hour12".into(), Value::Bool(twelve)));
                 }
+                // dayPeriod só aparece no padrão sem hora ou com relógio de 12 horas
+                let period = o.day_period.as_ref().filter(|_| o.hour.is_none() || twelve);
                 for (k, val) in [
                     ("weekday", &o.weekday),
                     ("era", &o.era),
                     ("year", &o.year),
                     ("month", &o.month),
                     ("day", &o.day),
+                    ("dayPeriod", &period.cloned()),
                     ("hour", &o.hour),
                     ("minute", &o.minute),
                     ("second", &o.second),
-                    ("timeZoneName", &o.tz_name),
-                    ("dateStyle", &o.date_style),
-                    ("timeStyle", &o.time_style),
                 ] {
+                    if let Some(x) = val {
+                        v.push((k.into(), s(x)));
+                    }
+                }
+                if let Some(n) = o.frac {
+                    v.push(("fractionalSecondDigits".into(), Value::Number(n as f64)));
+                }
+                for (k, val) in [("timeZoneName", &o.tz_name), ("dateStyle", &o.date_style), ("timeStyle", &o.time_style)] {
                     if let Some(x) = val {
                         v.push((k.into(), s(x)));
                     }
@@ -1192,12 +1213,151 @@ fn date_format_ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 
 /// `required`: "date", "time" ou "any"; `defaults`: o que mostrar se nada foi pedido.
 pub fn make_date_opts(vm: &mut Vm, locale: String, o: &Value, required: &str, defaults: &str) -> Result<DateOpts, Value> {
+    make_date_opts_tz(vm, locale, o, required, defaults, None)
+}
+
+/// Calendário pedido no idioma (-u-ca-); só o gregoriano e o ISO são formatados.
+fn locale_calendar(locale: &str) -> String {
+    let l = locale.to_ascii_lowercase();
+    if let Some(u) = l.find("-u-") {
+        let mut it = l[u + 3..].split('-');
+        while let Some(k) = it.next() {
+            if k == "ca" {
+                if let Some(v) = it.next()
+                    && v == "iso8601"
+                {
+                    return v.into();
+                }
+                break;
+            }
+        }
+    }
+    "gregory".into()
+}
+
+/// Valor de uma chave da extensão -u- do idioma ("hc" em "de-u-hc-h11").
+fn unicode_ext(locale: &str, key: &str) -> Option<String> {
+    let l = locale.to_ascii_lowercase();
+    let start = l.find("-u-")? + 3;
+    let mut it = l[start..].split('-').take_while(|t| t.len() > 1);
+    while let Some(t) = it.next() {
+        if t == key {
+            return Some(it.next().filter(|v| v.len() > 2).unwrap_or("true").to_string());
+        }
+    }
+    None
+}
+
+/// Ciclo de horas efetivo: hour12 manda; depois hourCycle (opção ou -u-hc-);
+/// senão o padrão do idioma.
+fn hour_cycle(o: &DateOpts) -> &'static str {
+    match (o.hour12, o.hour_cycle.as_deref()) {
+        (Some(true), _) => "h12",
+        (Some(false), _) => "h23",
+        (None, Some("h11")) => "h11",
+        (None, Some("h12")) => "h12",
+        (None, Some("h23")) => "h23",
+        (None, Some("h24")) => "h24",
+        _ if data_for(&o.locale).hour12 => "h12",
+        _ => "h23",
+    }
+}
+
+type Periods = &'static [(i64, [&'static str; 3])];
+
+/// Períodos do dia (opção dayPeriod, padrão "B" do ICU): (hora inicial,
+/// [narrow, short, long]) e o nome do meio-dia em ponto.
+fn day_periods(lang: &str) -> (Periods, [&'static str; 3]) {
+    const EN: Periods = &[(0, ["in the morning"; 3]), (12, ["in the afternoon"; 3]), (18, ["in the evening"; 3]), (21, ["at night"; 3])];
+    const PT: Periods = &[(0, ["da madrugada"; 3]), (6, ["da manhã"; 3]), (12, ["da tarde"; 3]), (19, ["da noite"; 3])];
+    const ES: Periods = &[(0, ["de la madrugada"; 3]), (6, ["de la mañana"; 3]), (12, ["de la tarde"; 3]), (20, ["de la noche"; 3])];
+    const FR: Periods = &[
+        (0, ["matin", "matin", "du matin"]),
+        (4, ["mat.", "matin", "du matin"]),
+        (12, ["ap.m.", "après-midi", "de l’après-midi"]),
+        (18, ["soir", "soir", "du soir"]),
+    ];
+    const DE: Periods = &[
+        (0, ["nachts"; 3]),
+        (5, ["morgens"; 3]),
+        (10, ["vorm.", "vorm.", "vormittags"]),
+        (12, ["mittags"; 3]),
+        (13, ["nachm.", "nachm.", "nachmittags"]),
+        (18, ["abends"; 3]),
+    ];
+    const IT: Periods = &[(0, ["di notte"; 3]), (6, ["di mattina"; 3]), (12, ["di pomeriggio", "di pomeriggio", "del pomeriggio"]), (18, ["di sera"; 3])];
+    match lang {
+        "pt" => (PT, ["meio-dia"; 3]),
+        "es" => (ES, ["del mediodía"; 3]),
+        "fr" => (FR, ["midi"; 3]),
+        "de" => (DE, ["mittags"; 3]),
+        "it" => (IT, ["mezzogiorno"; 3]),
+        _ => (EN, ["n", "noon", "noon"]),
+    }
+}
+
+/// Nome do período do dia; `noon`: meio-dia em ponto (nos campos mostrados).
+fn day_period_text(lang: &str, width: &str, hour: i64, noon: bool) -> &'static str {
+    let (table, noon_name) = day_periods(lang);
+    let w = match width {
+        "narrow" => 0,
+        "short" => 1,
+        _ => 2,
+    };
+    if noon {
+        return noon_name[w];
+    }
+    table.iter().rev().find(|(h, _)| hour >= *h).map_or("", |(_, t)| t[w])
+}
+
+/// CreateDateTimeFormat; `zone`: o fuso de um ZonedDateTime (toLocaleString),
+/// que não aceita a opção timeZone.
+fn make_date_opts_tz(vm: &mut Vm, locale: String, o: &Value, required: &str, defaults: &str, zone: Option<&str>) -> Result<DateOpts, Value> {
+    // CoerceOptionsToObject
+    let o = &match o {
+        Value::Undefined => Value::Undefined,
+        _ => Value::Object(vm.to_object(o)?),
+    };
     let mut d = DateOpts {
+        calendar: locale_calendar(&locale),
+        hour_cycle: unicode_ext(&locale, "hc").filter(|v| matches!(v.as_str(), "h11" | "h12" | "h23" | "h24")),
         locale,
         ..Default::default()
     };
+    opt_str(vm, o, "localeMatcher", &["lookup", "best fit"])?;
+    // calendar: só o gregoriano e o ISO são formatados (os outros ficam no gregoriano)
+    let type_ok = |c: &str| !c.is_empty() && c.split('-').all(|p| (3..=8).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_alphanumeric()));
+    if let Some(c) = opt_str(vm, o, "calendar", &[])? {
+        if !type_ok(&c) {
+            return Err(vm.range_error(format!("Invalid calendar : {c}")));
+        }
+        let c = c.to_ascii_lowercase();
+        if c == "iso8601" || c == "gregory" {
+            d.calendar = c;
+        }
+    }
+    // numberingSystem: só "latn" é formatado
+    if let Some(n) = opt_str(vm, o, "numberingSystem", &[])?
+        && !type_ok(&n)
+    {
+        return Err(vm.range_error(format!("Invalid numberingSystem : {n}")));
+    }
+    d.hour12 = opt_bool(vm, o, "hour12")?;
+    let hc = opt_str(vm, o, "hourCycle", &["h11", "h12", "h23", "h24"])?;
+    if hc.is_some() {
+        d.hour_cycle = hc;
+    }
     let tz = opt_str(vm, o, "timeZone", &[])?;
+    if let Some(z) = zone {
+        if tz.is_some() {
+            return Err(vm.type_error("Temporal.ZonedDateTime.prototype.toLocaleString does not accept a timeZone option"));
+        }
+        if (vm.tz)(Some(z), 0.0).is_none() {
+            return Err(vm.range_error(format!("Invalid time zone specified: {z}")));
+        }
+    }
     d.time_zone = match tz {
+        _ if zone.is_some() => zone.map(str::to_string),
         Some(z) => {
             let canon = if z.eq_ignore_ascii_case("utc") || z.eq_ignore_ascii_case("etc/utc") || z.eq_ignore_ascii_case("gmt") { "UTC".to_string() } else { z };
             if (vm.tz)(Some(&canon), 0.0).is_none() {
@@ -1214,25 +1374,28 @@ pub fn make_date_opts(vm: &mut Vm, locale: String, o: &Value, required: &str, de
     d.year = opt_str(vm, o, "year", &num)?;
     d.month = opt_str(vm, o, "month", &["numeric", "2-digit", "narrow", "short", "long"])?;
     d.day = opt_str(vm, o, "day", &num)?;
+    d.day_period = opt_str(vm, o, "dayPeriod", &text)?;
     d.hour = opt_str(vm, o, "hour", &num)?;
     d.minute = opt_str(vm, o, "minute", &num)?;
     d.second = opt_str(vm, o, "second", &num)?;
     d.frac = opt_num(vm, o, "fractionalSecondDigits", 1.0, 3.0)?;
     d.tz_name = opt_str(vm, o, "timeZoneName", &["short", "long", "shortOffset", "longOffset", "shortGeneric", "longGeneric"])?;
-    d.hour12 = opt_bool(vm, o, "hour12")?;
-    if d.hour12.is_none()
-        && let Some(hc) = opt_str(vm, o, "hourCycle", &["h11", "h12", "h23", "h24"])?
-    {
-        d.hour12 = Some(hc == "h11" || hc == "h12");
-    }
+    opt_str(vm, o, "formatMatcher", &["basic", "best fit"])?;
     let styles = ["full", "long", "medium", "short"];
     d.date_style = opt_str(vm, o, "dateStyle", &styles)?;
     d.time_style = opt_str(vm, o, "timeStyle", &styles)?;
     let has_date = d.weekday.is_some() || d.year.is_some() || d.month.is_some() || d.day.is_some();
-    let has_time = d.hour.is_some() || d.minute.is_some() || d.second.is_some() || d.frac.is_some();
-    if (d.date_style.is_some() || d.time_style.is_some()) && (has_date || has_time) {
+    let has_time = d.day_period.is_some() || d.hour.is_some() || d.minute.is_some() || d.second.is_some() || d.frac.is_some();
+    if (d.date_style.is_some() || d.time_style.is_some()) && (has_date || has_time || d.era.is_some() || d.tz_name.is_some()) {
         return Err(vm.type_error("Can't set option dateStyle or timeStyle when other date/time options are set"));
     }
+    if required == "date" && d.time_style.is_some() {
+        return Err(vm.type_error("Invalid option : timeStyle"));
+    }
+    if required == "time" && d.date_style.is_some() {
+        return Err(vm.type_error("Invalid option : dateStyle"));
+    }
+    d.raw = Some(Box::new(d.clone()));
     let need_defaults = d.date_style.is_none()
         && d.time_style.is_none()
         && match required {
@@ -1275,7 +1438,8 @@ pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'sta
     if t.is_nan() {
         return Err(vm.range_error("Invalid time value"));
     }
-    let tz: TzInfo = (vm.tz)(o.time_zone.as_deref(), t).unwrap_or(TzInfo {
+    let zone = if o.plain { Some("UTC") } else { o.time_zone.as_deref() };
+    let tz: TzInfo = (vm.tz)(zone, t).unwrap_or(TzInfo {
         offset_min: 0.0,
         short: "UTC".into(),
         long: "Coordinated Universal Time".into(),
@@ -1332,6 +1496,9 @@ pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'sta
         if ts == "full" || ts == "long" {
             tz_name = Some(if ts == "full" { "long" } else { "short" }.into());
         }
+    }
+    if o.plain {
+        tz_name = None;
     }
     // parte da data
     let has_date = year.is_some() || month.is_some() || day.is_some() || weekday.is_some();
@@ -1442,8 +1609,9 @@ pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'sta
             }
         }
     }
-    // parte da hora
-    let has_time = hour.is_some() || minute.is_some() || second.is_some();
+    // parte da hora (dayPeriod sem hora sai sozinho)
+    let lone_period = o.day_period.is_some() && hour.is_none();
+    let has_time = hour.is_some() || minute.is_some() || second.is_some() || lone_period;
     if has_time {
         if has_date {
             let sep = match o.date_style.as_deref() {
@@ -1453,13 +1621,15 @@ pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'sta
             };
             out.push(("literal", sep.into()));
         }
-        let h12 = o.hour12.unwrap_or(d.hour12);
+        let hc = hour_cycle(o);
+        let h12 = matches!(hc, "h11" | "h12");
         if let Some(h) = &hour {
-            let hv = if h12 {
-                let x = f.hour % 12;
-                if x == 0 { 12 } else { x }
-            } else {
-                f.hour
+            let hv = match hc {
+                "h11" => f.hour % 12,
+                "h12" if f.hour % 12 == 0 => 12,
+                "h12" => f.hour % 12,
+                "h24" if f.hour == 0 => 24,
+                _ => f.hour,
             };
             let text = if h == "2-digit" || (!h12 && (minute.is_some() || d.lang != "en")) { pad2(hv) } else { hv.to_string() };
             out.push(("hour", text));
@@ -1480,9 +1650,21 @@ pub fn format_date_parts(vm: &mut Vm, o: &DateOpts, t: f64) -> Result<Vec<(&'sta
             out.push(("literal", ".".into()));
             out.push(("fractionalSecond", format!("{:03}", f.ms)[..n].to_string()));
         }
+        // meio-dia só em ponto nos campos mostrados
+        let noon = f.hour == 12 && (minute.is_none() || f.minute == 0) && (second.is_none() || f.second == 0);
         if h12 && hour.is_some() {
             out.push(("literal", " ".into()));
-            out.push(("dayPeriod", if f.hour < 12 { d.am } else { d.pm }.into()));
+            let text = match &o.day_period {
+                Some(w) => day_period_text(d.lang, w, f.hour, noon),
+                None if f.hour < 12 => d.am,
+                None => d.pm,
+            };
+            out.push(("dayPeriod", text.into()));
+        } else if lone_period && let Some(w) = &o.day_period {
+            if minute.is_some() || second.is_some() {
+                out.push(("literal", " ".into()));
+            }
+            out.push(("dayPeriod", day_period_text(d.lang, w, f.hour, noon).into()));
         }
     }
     if let Some(n) = &tz_name {
@@ -1549,7 +1731,10 @@ fn df_bound_format(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         IntlObj::DateTimeFormat(o) => Some(o.clone()),
         _ => None,
     })?;
-    let t = date_arg(vm, &a.arg(0))?;
+    let (o, t) = match temporal_value(vm, &o, &a.arg(0))? {
+        Some(r) => r,
+        None => (o, date_arg(vm, &a.arg(0))?),
+    };
     Ok(Value::str(&format_date(vm, &o, t)?))
 }
 
@@ -1558,11 +1743,15 @@ fn df_format_to_parts(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         IntlObj::DateTimeFormat(o) => Some(o.clone()),
         _ => None,
     })?;
-    let t = date_arg(vm, &a.arg(0))?;
+    let (o, t) = match temporal_value(vm, &o, &a.arg(0))? {
+        Some(r) => r,
+        None => (o, date_arg(vm, &a.arg(0))?),
+    };
     let mut parts = format_date_parts(vm, &o, t)?;
     // como o V8: em formatToParts o espaço antes de AM/PM é o estreito (U+202F)
+    let d = data_for(&o.locale);
     for i in 1..parts.len() {
-        if parts[i].0 == "dayPeriod" && parts[i - 1].0 == "literal" && parts[i - 1].1 == " " {
+        if parts[i].0 == "dayPeriod" && (parts[i].1 == d.am || parts[i].1 == d.pm) && parts[i - 1].0 == "literal" && parts[i - 1].1 == " " {
             parts[i - 1].1 = "\u{202f}".into();
         }
     }
@@ -1570,6 +1759,318 @@ fn df_format_to_parts(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 /// Date.prototype.toLocale{,Date,Time}String.
+/// ToDateTimeFormattable: objeto do Temporal formatável ou Number.
+fn formattable(vm: &mut Vm, v: &Value) -> Result<Value, Value> {
+    if let Some(d) = super::temporal::data(v)
+        && !matches!(d, super::temporal::TemporalData::Duration(_))
+    {
+        return Ok(v.clone());
+    }
+    Ok(Value::Number(vm.to_number(v)?))
+}
+
+/// PartitionDateTimeRangePattern (simplificado): datas iguais saem uma vez
+/// ("shared"); senão início – fim.
+fn format_range_parts(vm: &mut Vm, a: &CallArgs) -> Result<Vec<(&'static str, String, &'static str)>, Value> {
+    let o = with_intl(vm, &a.this, |x| match x {
+        IntlObj::DateTimeFormat(o) => Some(o.clone()),
+        _ => None,
+    })?;
+    let (start, end) = (a.arg(0), a.arg(1));
+    if start.is_undefined() || end.is_undefined() {
+        return Err(vm.type_error("startDate and endDate are required"));
+    }
+    let x = formattable(vm, &start)?;
+    let y = formattable(vm, &end)?;
+    let kind = |v: &Value| super::temporal::data(v).map(|d| std::mem::discriminant(&d));
+    let (kx, ky) = (kind(&x), kind(&y));
+    if (kx.is_some() || ky.is_some()) && kx != ky {
+        return Err(vm.type_error("formatRange arguments must be of the same type"));
+    }
+    let one = |vm: &mut Vm, v: &Value| -> Result<Vec<(&'static str, String)>, Value> {
+        let (o2, t) = match temporal_value(vm, &o, v)? {
+            Some(r) => r,
+            None => {
+                let t = super::date::time_clip(vm.to_number(v)?);
+                if t.is_nan() {
+                    return Err(vm.range_error("Invalid time value"));
+                }
+                (o.clone(), t)
+            }
+        };
+        format_date_parts(vm, &o2, t)
+    };
+    let px = one(vm, &x)?;
+    let py = one(vm, &y)?;
+    if px == py {
+        return Ok(px.into_iter().map(|(t, v)| (t, v, "shared")).collect());
+    }
+    let mut out: Vec<_> = px.into_iter().map(|(t, v)| (t, v, "startRange")).collect();
+    out.push(("literal", " \u{2013} ".into(), "shared"));
+    out.extend(py.into_iter().map(|(t, v)| (t, v, "endRange")));
+    Ok(out)
+}
+
+fn df_format_range(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let parts = format_range_parts(vm, a)?;
+    Ok(Value::str(&parts.into_iter().map(|(_, v, _)| v).collect::<String>()))
+}
+
+fn df_format_range_to_parts(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+    let parts = format_range_parts(vm, a)?;
+    let mut out = Vec::new();
+    for (t, v, src) in parts {
+        let p = vm.new_object();
+        vm.define_data(&p, PropKey::str("type"), Value::str(t));
+        vm.define_data(&p, PropKey::str("value"), Value::str(&v));
+        vm.define_data(&p, PropKey::str("source"), Value::str(src));
+        out.push(Value::Object(p));
+    }
+    Ok(vm.array_value(out))
+}
+
+// ------------------------------------------------- objetos do Temporal
+
+/// Tipo de valor do Temporal a formatar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TKind {
+    Date,
+    YearMonth,
+    MonthDay,
+    Time,
+    DateTime,
+    Instant,
+    Zoned,
+}
+
+/// O formato de um tipo do Temporal (GetDateTimeFormat e
+/// AdjustDateTimeStyleFormat): só os campos que fazem sentido para ele.
+fn temporal_opts(vm: &mut Vm, o: &DateOpts, kind: TKind) -> Result<DateOpts, Value> {
+    let raw = o.raw.as_deref().cloned().unwrap_or_else(|| o.clone());
+    let zoned = matches!(kind, TKind::Instant | TKind::Zoned);
+    let mut r = if zoned {
+        raw.clone()
+    } else {
+        DateOpts {
+            locale: raw.locale.clone(),
+            time_zone: raw.time_zone.clone(),
+            calendar: raw.calendar.clone(),
+            hour12: raw.hour12,
+            hour_cycle: raw.hour_cycle.clone(),
+            plain: true,
+            ..Default::default()
+        }
+    };
+    r.raw = None;
+    let none = |vm: &mut Vm| Err(vm.type_error("Invalid option combination for this Temporal type"));
+    if raw.date_style.is_some() || raw.time_style.is_some() {
+        match kind {
+            TKind::Date => {
+                if raw.date_style.is_none() {
+                    return none(vm);
+                }
+                r.date_style = raw.date_style.clone();
+            }
+            TKind::YearMonth | TKind::MonthDay => {
+                let Some(ds) = raw.date_style.as_deref() else { return none(vm) };
+                let d = data_for(&o.locale);
+                let (year, month, day) = match ds {
+                    "full" | "long" => ("numeric", "long", "numeric"),
+                    "medium" => (
+                        "numeric",
+                        if d.medium_numeric { "2-digit" } else { "short" },
+                        if d.medium_numeric { "2-digit" } else { "numeric" },
+                    ),
+                    _ => (if d.short_year2 { "2-digit" } else { "numeric" }, "numeric", "numeric"),
+                };
+                r.month = Some(month.into());
+                if kind == TKind::YearMonth {
+                    r.year = Some(year.into());
+                } else {
+                    r.day = Some(day.into());
+                }
+            }
+            TKind::Time => {
+                if raw.time_style.is_none() {
+                    return none(vm);
+                }
+                r.time_style = raw.time_style.clone();
+            }
+            _ => {
+                r.date_style = raw.date_style.clone();
+                r.time_style = raw.time_style.clone();
+            }
+        }
+        return Ok(r);
+    }
+    let any_present = raw.weekday.is_some()
+        || raw.year.is_some()
+        || raw.month.is_some()
+        || raw.day.is_some()
+        || raw.day_period.is_some()
+        || raw.hour.is_some()
+        || raw.minute.is_some()
+        || raw.second.is_some()
+        || raw.frac.is_some();
+    let mut need_defaults = true;
+    let date_req = |r: &mut DateOpts, w: bool, y: bool, m: bool, d: bool| {
+        let mut found = false;
+        if w && raw.weekday.is_some() {
+            r.weekday = raw.weekday.clone();
+            found = true;
+        }
+        if y && raw.year.is_some() {
+            r.year = raw.year.clone();
+            found = true;
+        }
+        if m && raw.month.is_some() {
+            r.month = raw.month.clone();
+            found = true;
+        }
+        if d && raw.day.is_some() {
+            r.day = raw.day.clone();
+            found = true;
+        }
+        found
+    };
+    let time_req = |r: &mut DateOpts| {
+        let mut found = false;
+        for (dst, src) in [(&mut r.day_period, &raw.day_period), (&mut r.hour, &raw.hour), (&mut r.minute, &raw.minute), (&mut r.second, &raw.second)] {
+            if src.is_some() {
+                *dst = src.clone();
+                found = true;
+            }
+        }
+        if raw.frac.is_some() {
+            r.frac = raw.frac;
+            found = true;
+        }
+        found
+    };
+    let (date_defaults, time_defaults) = match kind {
+        TKind::Date => {
+            r.era = raw.era.clone();
+            need_defaults &= !date_req(&mut r, true, true, true, true);
+            (true, false)
+        }
+        TKind::YearMonth => {
+            r.era = raw.era.clone();
+            need_defaults &= !date_req(&mut r, false, true, true, false);
+            (true, false)
+        }
+        TKind::MonthDay => {
+            need_defaults &= !date_req(&mut r, false, false, true, true);
+            (true, false)
+        }
+        TKind::Time => {
+            need_defaults &= !time_req(&mut r);
+            (false, true)
+        }
+        _ => {
+            if !zoned {
+                r.era = raw.era.clone();
+            }
+            let d = date_req(&mut r, true, true, true, true);
+            let t = time_req(&mut r);
+            need_defaults &= !(d || t);
+            (true, true)
+        }
+    };
+    if need_defaults {
+        if any_present && !zoned {
+            return none(vm);
+        }
+        let n = || Some(String::from("numeric"));
+        if date_defaults {
+            if kind != TKind::MonthDay {
+                r.year = n();
+            }
+            r.month = n();
+            if kind != TKind::YearMonth {
+                r.day = n();
+            }
+        }
+        if time_defaults {
+            r.hour = n();
+            r.minute = n();
+            r.second = n();
+        }
+        if kind == TKind::Zoned && r.tz_name.is_none() {
+            r.tz_name = Some("short".into());
+        }
+    }
+    Ok(r)
+}
+
+/// HandleDateTimeValue para objetos do Temporal: (formato, instante em ms).
+/// None: não é um objeto do Temporal formatável.
+fn temporal_value(vm: &mut Vm, o: &DateOpts, v: &Value) -> Result<Option<(DateOpts, f64)>, Value> {
+    use super::temporal::{Cal, TemporalData as T, iso};
+    let Some(td) = super::temporal::data(v) else { return Ok(None) };
+    let dtf_cal = if o.calendar.is_empty() { "gregory" } else { o.calendar.as_str() };
+    let check = |vm: &mut Vm, cal: Cal, iso_ok: bool| -> Result<(), Value> {
+        if cal.id() == dtf_cal || (iso_ok && cal == Cal::Iso) {
+            return Ok(());
+        }
+        Err(vm.range_error(format!("Calendar {} does not match the DateTimeFormat calendar {dtf_cal}", cal.id())))
+    };
+    let noon = |d: &iso::IsoDate| iso::epoch_ns(&d.at(iso::NOON));
+    let (kind, ns) = match td {
+        T::Duration(_) => return Ok(None),
+        T::Zoned(..) => return Err(vm.type_error("Temporal.ZonedDateTime is not supported in DateTimeFormat; use toLocaleString")),
+        T::Instant(ns) => (TKind::Instant, ns),
+        T::Date(d, c) => {
+            check(vm, c, true)?;
+            (TKind::Date, noon(&d))
+        }
+        T::YearMonth(d, c) => {
+            check(vm, c, false)?;
+            (TKind::YearMonth, noon(&d))
+        }
+        T::MonthDay(d, c) => {
+            check(vm, c, false)?;
+            (TKind::MonthDay, noon(&d))
+        }
+        T::Time(t) => (TKind::Time, iso::epoch_ns(&iso::IsoDate::new(1970, 1, 1).at(t))),
+        T::DateTime(dt, c) => {
+            check(vm, c, true)?;
+            (TKind::DateTime, iso::epoch_ns(&dt))
+        }
+    };
+    let r = temporal_opts(vm, o, kind)?;
+    Ok(Some((r, ns.div_euclid(1_000_000) as f64)))
+}
+
+/// toLocaleString dos objetos do Temporal: CreateDateTimeFormat com
+/// `required`/`defaults` do tipo e FormatDateTime. `zone`: o fuso de um
+/// ZonedDateTime (o valor formatado é o instante dele).
+pub fn temporal_to_locale(
+    vm: &mut Vm,
+    v: &Value,
+    locales: &Value,
+    options: &Value,
+    required: &str,
+    defaults: &str,
+    zone: Option<String>,
+) -> Result<String, Value> {
+    let locale = resolve_locale(vm, locales)?;
+    let o = make_date_opts_tz(vm, locale, options, required, defaults, zone.as_deref())?;
+    let (opts, t) = match super::temporal::data(v) {
+        Some(super::temporal::TemporalData::Zoned(ns, _, cal)) => {
+            let dtf_cal = if o.calendar.is_empty() { "gregory" } else { o.calendar.as_str() };
+            if cal != super::temporal::Cal::Iso && cal.id() != dtf_cal {
+                return Err(vm.range_error(format!("Calendar {} does not match the DateTimeFormat calendar {dtf_cal}", cal.id())));
+            }
+            (temporal_opts(vm, &o, TKind::Zoned)?, ns.div_euclid(1_000_000) as f64)
+        }
+        _ => match temporal_value(vm, &o, v)? {
+            Some(r) => r,
+            None => return Err(vm.type_error("Value is not a Temporal object")),
+        },
+    };
+    format_date(vm, &opts, t)
+}
+
 pub fn date_to_locale(vm: &mut Vm, t: f64, locales: &Value, options: &Value, required: &str, defaults: &str) -> Result<String, Value> {
     if t.is_nan() {
         return Ok("Invalid Date".into());

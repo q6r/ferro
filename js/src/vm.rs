@@ -62,6 +62,57 @@ pub struct TzInfo {
 /// Função do hospedeiro: fuso (None = local) num instante UTC em ms.
 pub type TzFn = Box<dyn Fn(Option<&str>, f64) -> Option<TzInfo>>;
 
+/// Fusos horários do Temporal: o hospedeiro fornece a base IANA (sozinho, o
+/// motor só conhece UTC). Instantes em ns desde 1970-01-01T00:00Z.
+pub trait TzHost {
+    /// Fuso pelo nome, sem diferenciar maiúsculas: (identificador na grafia
+    /// da base, identificador primário). None: fuso desconhecido.
+    fn resolve(&self, name: &str) -> Option<(String, String)>;
+    /// Deslocamento do fuso no instante, em ns (local = UTC + deslocamento).
+    fn offset_ns(&self, id: &str, epoch_ns: i128) -> i64;
+    /// Instantes em que o relógio local marca `local_ns` (data e hora locais
+    /// contadas como se fossem UTC), em ordem: nenhum quando a hora é pulada,
+    /// dois quando ela se repete.
+    fn possible(&self, id: &str, local_ns: i128) -> Vec<i128> {
+        const DAY: i128 = 86_400_000_000_000;
+        let before = self.offset_ns(id, local_ns - DAY) as i128;
+        let after = self.offset_ns(id, local_ns + DAY) as i128;
+        let mut out: Vec<i128> = [before, after]
+            .iter()
+            .take(if before == after { 1 } else { 2 })
+            .map(|off| local_ns - off)
+            .filter(|&t| self.offset_ns(id, t) as i128 == local_ns - t)
+            .collect();
+        out.sort();
+        out
+    }
+    /// Primeira transição depois do instante (`next`) ou última antes dele.
+    fn transition(&self, id: &str, epoch_ns: i128, next: bool) -> Option<i128>;
+    /// Fuso do sistema: identificador primário ou deslocamento ("+05:30").
+    fn system(&self) -> String;
+}
+
+/// Sem hospedeiro: só o fuso UTC.
+pub struct UtcOnly;
+
+impl TzHost for UtcOnly {
+    fn resolve(&self, name: &str) -> Option<(String, String)> {
+        name.eq_ignore_ascii_case("UTC").then(|| ("UTC".into(), "UTC".into()))
+    }
+
+    fn offset_ns(&self, _: &str, _: i128) -> i64 {
+        0
+    }
+
+    fn transition(&self, _: &str, _: i128, _: bool) -> Option<i128> {
+        None
+    }
+
+    fn system(&self) -> String {
+        "UTC".into()
+    }
+}
+
 pub struct LexBinding {
     pub value: Value,
     pub is_const: bool,
@@ -102,6 +153,8 @@ pub struct Vm {
     pub locale: String,
     /// Fusos horários (o hospedeiro define; o padrão só conhece UTC).
     pub tz: TzFn,
+    /// Fusos do Temporal (o hospedeiro define; o padrão só conhece UTC).
+    pub zones: Box<dyn TzHost>,
     /// Estado do hospedeiro (o navegador guarda aqui o DOM da página).
     pub host: Option<Rc<dyn std::any::Any>>,
     /// Último recurso para um nome global que não existe (no navegador:
@@ -162,6 +215,7 @@ impl Vm {
                 }),
                 _ => None,
             }),
+            zones: Box::new(UtcOnly),
             host: None,
             global_miss: None,
         }
