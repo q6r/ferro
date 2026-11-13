@@ -75,6 +75,15 @@ pub fn setup(engine: &mut ferro_js::Engine) {
     let local = jiff::tz::TimeZone::system();
     engine.vm.zones = Box::new(JiffZones::new(local.clone()));
     engine.vm.tz = Box::new(move |zone, t| {
+        if let Some(m) = zone.and_then(offset_zone) {
+            let sign = if m < 0 { '-' } else { '+' };
+            let name = format!("{sign}{:02}:{:02}", m.abs() / 60, m.abs() % 60);
+            return Some(TzInfo {
+                offset_min: m as f64,
+                long: format!("GMT{name}"),
+                short: name,
+            });
+        }
         let tz = match zone {
             None => local.clone(),
             Some(z) => jiff::tz::TimeZone::get(z).ok()?,
@@ -87,6 +96,23 @@ pub fn setup(engine: &mut ferro_js::Engine) {
         let long = long_name(tz.iana_name().unwrap_or(""), info.dst().is_dst(), offset_min, pt);
         Some(TzInfo { offset_min, short, long })
     });
+}
+
+/// Fuso de deslocamento fixo ("+05:30", "-0300", "+01"): minutos.
+fn offset_zone(z: &str) -> Option<i32> {
+    let b = z.as_bytes();
+    let sign = match b.first()? {
+        b'+' => 1,
+        b'-' => -1,
+        _ => return None,
+    };
+    let digits: String = z[1..].chars().filter(|c| *c != ':').collect();
+    if !digits.bytes().all(|c| c.is_ascii_digit()) || !(digits.len() == 2 || digits.len() == 4) || (z.len() == 6 && b[3] != b':') {
+        return None;
+    }
+    let h: i32 = digits[..2].parse().ok()?;
+    let m: i32 = if digits.len() == 4 { digits[2..].parse().ok()? } else { 0 };
+    (h < 24 && m < 60).then_some(sign * (h * 60 + m))
 }
 
 /// Fusos do Temporal com a base IANA do `jiff`.
