@@ -452,6 +452,8 @@ pub struct ComputedStyle {
     /// justify-items / justify-self (no grid; stretch = normal).
     pub justify_items: Align,
     pub justify_self: Option<Align>,
+    /// align-content (no grid); None = normal/stretch.
+    pub align_content: Option<Justify>,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub flex_basis: FlexBasis,
@@ -637,6 +639,7 @@ impl ComputedStyle {
             align_self: None,
             justify_items: Align::Stretch,
             justify_self: None,
+            align_content: None,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             flex_basis: FlexBasis::Auto,
@@ -2963,6 +2966,12 @@ impl Cascade<'_> {
             "justify-content" => {
                 if let Some(j) = parse_justify(v) {
                     s.justify_content = j
+                }
+            }
+            "align-content" => {
+                s.align_content = match v.trim() {
+                    "normal" | "stretch" => None,
+                    t => parse_justify(t),
                 }
             }
             "align-items" => {

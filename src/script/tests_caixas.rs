@@ -201,3 +201,44 @@ fn letter_spacing_e_word_spacing() {
         assert_eq!(diff(&mut s, "d"), 14.0);
     });
 }
+
+#[test]
+fn sticky_desloca_so_o_necessario() {
+    with_stack(|| {
+        // janela de 800×600 (a sessão de teste), sem rolagem: o menu logo
+        // abaixo do cabeçalho não desce; os outros respeitam a caixa do pai
+        let mut s = session(
+            r#"<style>body { margin: 0 } i { display: block; height: 30px }</style>
+               <header style="height:80px"></header>
+               <nav id="a" style="position:sticky;top:80px;height:40px"></nav>
+               <div style="height:200px"><i id="b" style="position:sticky;top:300px"></i></div>
+               <div style="height:60px"><i id="c" style="position:sticky;top:400px"></i></div>
+               <div style="height:500px"></div>
+               <div style="height:300px"><div style="height:200px"></div><i id="d" style="position:sticky;bottom:0"></i></div>"#,
+        );
+        assert_eq!(
+            eval(&mut s, "['a','b','c','d'].map(i => i + ':' + Math.round(document.getElementById(i).getBoundingClientRect().y)).join(' ')"),
+            "a:80 b:290 c:350 d:880"
+        );
+    });
+}
+
+#[test]
+fn grid_align_content_e_filho_com_altura_em_porcentagem() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<style>body { margin: 0; width: 800px } i { display: block; height: 20px } .g { display: grid; height: 100px }</style>
+               <div class="g" style="align-content:center"><i id="a1"></i><i id="a2"></i></div>
+               <div class="g" style="align-content:space-evenly"><i id="c1"></i><i id="c2"></i></div>
+               <div style="display:grid;grid-template-columns:300px 300px">
+                 <div id="item"><div id="inner" style="display:grid;align-content:center;height:100%"><div><i id="d1" style="height:50px"></i></div></div></div>
+                 <i style="height:300px"></i>
+               </div>"#,
+        );
+        // o item esticado na linha de 300px dá altura definida ao filho com 100%
+        assert_eq!(
+            eval(&mut s, "['a1','a2','c1','c2','item','inner','d1'].map(i => { const r = document.getElementById(i).getBoundingClientRect(); return i + ':' + Math.round(r.y) + '+' + Math.round(r.height); }).join(' ')"),
+            "a1:30+20 a2:50+20 c1:120+20 c2:160+20 item:200+300 inner:200+300 d1:325+50"
+        );
+    });
+}

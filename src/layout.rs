@@ -617,6 +617,7 @@ struct FloatBox {
 #[derive(Clone)]
 struct Mark {
     items: usize,
+    sticky: usize,
     links: usize,
     fixed_links: usize,
     scrollers: usize,
@@ -717,7 +718,9 @@ pub fn layout<'a>(
         floats: Vec::new(),
         bfc_starts: vec![0],
         intrinsic_cache: HashMap::new(),
+        pct_cache: HashMap::new(),
         missing: Vec::new(),
+        sticky: Vec::new(),
     };
     let bm = cx.box_model(&root.style, viewport_w);
     let y = bm.margin[TOP];
@@ -893,8 +896,24 @@ struct Ctx<'a> {
     bfc_starts: Vec<usize>,
     /// (min-content, max-content) por caixa.
     intrinsic_cache: HashMap<usize, (f32, f32)>,
+    /// A caixa tem descendente com altura em % que dependa dela (ver `has_pct_height`).
+    pct_cache: HashMap<usize, bool>,
     /// URLs de fundo que faltam baixar.
     missing: Vec<String>,
+    /// Elementos sticky esperando a caixa do bloco que os contém para saber
+    /// até onde podem se deslocar.
+    sticky: Vec<StickyPending>,
+}
+
+/// Um elemento sticky já montado: o trecho dele e o deslocamento que ele
+/// quer (para baixo pelo `top`, para cima pelo `bottom`) com a janela no topo.
+struct StickyPending {
+    start: Mark,
+    end: Mark,
+    top: f32,
+    bottom: f32,
+    down: f32,
+    up: f32,
 }
 
 fn collapse_margins(prev: Option<f32>, next: f32) -> f32 {
@@ -1106,11 +1125,28 @@ fn table_grid<'a>(doc: &Document, b: &'a LayoutBox) -> TableGrid<'a> {
     g
 }
 
+/// align-content de um grid com `free` de sobra na altura e `n` linhas: onde
+/// a primeira começa e quanto entra a mais entre elas.
+fn content_offset(j: Justify, free: f32, n: usize) -> (f32, f32) {
+    if free <= 0.0 || n == 0 {
+        return (0.0, 0.0);
+    }
+    let n = n as f32;
+    match j {
+        Justify::Center => (free / 2.0, 0.0),
+        Justify::End => (free, 0.0),
+        Justify::SpaceBetween if n > 1.0 => (0.0, free / (n - 1.0)),
+        Justify::SpaceAround => (free / n / 2.0, free / n),
+        Justify::SpaceEvenly => (free / (n + 1.0), free / (n + 1.0)),
+        _ => (0.0, 0.0),
+    }
+}
+
 /// Linhas de um grid com altura `target` (definida ou min-height), medidas
 /// antes pelo conteúdo: a sobra vai para as linhas fr (na proporção, sem
 /// ficar menor que o conteúdo) ou, sem fr, estica as auto por igual. None se
 /// não há o que mudar.
-fn grid_fill_rows(natural: &[f32], tracks: &[TrackSize], target: f32, rgap: f32) -> Option<Vec<f32>> {
+fn grid_fill_rows(natural: &[f32], tracks: &[TrackSize], target: f32, rgap: f32, stretch: bool) -> Option<Vec<f32>> {
     let n = natural.len();
     let gaps = rgap * n.saturating_sub(1) as f32;
     let free = target - natural.iter().sum::<f32>() - gaps;
@@ -1130,7 +1166,7 @@ fn grid_fill_rows(natural: &[f32], tracks: &[TrackSize], target: f32, rgap: f32)
         }
     } else {
         let autos: Vec<usize> = (0..n).filter(|&r| tracks[r].max == Track::Auto).collect();
-        if autos.is_empty() {
+        if autos.is_empty() || !stretch {
             return None;
         }
         let each = free / autos.len() as f32;
@@ -1295,6 +1331,7 @@ impl<'a> Ctx<'a> {
     fn mark(&self) -> Mark {
         Mark {
             items: self.items.len(),
+            sticky: self.sticky.len(),
             links: self.links.len(),
             fixed_links: self.fixed_links.len(),
             scrollers: self.scrollers.len(),
@@ -1309,6 +1346,7 @@ impl<'a> Ctx<'a> {
     /// Desfaz tudo o que foi emitido desde a marca (para montar de novo).
     fn rollback(&mut self, m: &Mark) {
         self.items.truncate(m.items);
+        self.sticky.truncate(m.sticky);
         self.links.truncate(m.links);
         self.fixed_links.truncate(m.fixed_links);
         self.scrollers.truncate(m.scrollers);
@@ -1953,6 +1991,7 @@ impl<'a> Ctx<'a> {
         self.cb_heights.push(if anon { definite_h.or(parent_h) } else { definite_h });
 
         let w = bm.content_w;
+        let sticky_base = self.sticky.len();
         let (mut content_h, mut first_baseline) = match s.display {
             _ if anon => {
                 if has_inflow_blocks(b) {
@@ -2002,6 +2041,22 @@ impl<'a> Ctx<'a> {
         }
         if let Some(min) = fixed(s.min_height) {
             h = h.max(min);
+        }
+        // filhos sticky: o deslocamento que querem, sem sair da caixa de
+        // conteúdo deste bloco
+        if self.sticky.len() > sticky_base {
+            let (top, bottom) = (content_y, content_y + h);
+            let list: Vec<StickyPending> = self.sticky.drain(sticky_base..).collect();
+            for sp in list {
+                let dy = if sp.down > 0.0 {
+                    sp.down.min((bottom - sp.bottom).max(0.0))
+                } else {
+                    sp.up.max((top - sp.top).min(0.0))
+                };
+                if dy != 0.0 {
+                    self.shift_between(&sp.start, Some(&sp.end), 0.0, dy);
+                }
+            }
         }
         // <button> mais alto que o conteúdo: o conteúdo fica no meio (como no Chrome)
         if h > content_h + 0.5
@@ -2190,7 +2245,24 @@ impl<'a> Ctx<'a> {
         }
 
         if let Some(m) = mark {
-            if matches!(s.position, Position::Relative | Position::Sticky) {
+            // sticky: com a janela no topo, desce até o `top` (ou sobe até o
+            // `bottom`); o bloco que o contém limita, quando terminar
+            if s.position == Position::Sticky {
+                let vh = self.viewport.h;
+                let down = match s.top {
+                    Len::Auto => 0.0,
+                    t => (t.resolve(vh).unwrap_or(0.0) - y).max(0.0),
+                };
+                let up = match (s.top, s.bottom) {
+                    (Len::Auto, b) if b != Len::Auto => ((vh - b.resolve(vh).unwrap_or(0.0)) - (y + border_box.h)).min(0.0),
+                    _ => 0.0,
+                };
+                if down > 0.0 || up < 0.0 {
+                    let end = self.mark();
+                    self.sticky.push(StickyPending { start: m.clone(), end, top: y, bottom: y + border_box.h, down, up });
+                }
+            }
+            if s.position == Position::Relative {
                 let dx = match (s.left, s.right) {
                     (Len::Px(l), _) => l,
                     (_, Len::Px(r)) => -r,
@@ -2544,6 +2616,33 @@ impl<'a> Ctx<'a> {
         }
         self.intrinsic_cache.insert(key, r);
         r
+    }
+
+    /// Algum descendente tem altura em % que se resolve contra esta caixa
+    /// (para quando ela ganha altura definida depois, esticada no grid)? Para
+    /// nos descendentes com altura fixa, que viram a base deles.
+    fn has_pct_height(&mut self, b: &LayoutBox) -> bool {
+        let key = b as *const LayoutBox as usize;
+        if let Some(&v) = self.pct_cache.get(&key) {
+            return v;
+        }
+        let mut found = false;
+        for c in &b.children {
+            let st = &c.style;
+            if matches!(st.height, Len::Percent(_) | Len::Calc(..)) || matches!(st.min_height, Len::Percent(_)) {
+                found = true;
+                break;
+            }
+            if matches!(st.height, Len::Px(_)) {
+                continue;
+            }
+            if self.has_pct_height(c) {
+                found = true;
+                break;
+            }
+        }
+        self.pct_cache.insert(key, found);
+        found
     }
 
     /// Estilo que vale para o alinhamento de um item de grid: o do elemento
@@ -3606,9 +3705,14 @@ impl<'a> Ctx<'a> {
         let mut measured = false;
         loop {
             if let Some(heights) = known.take() {
-                let mut row_y = vec![y; all_rows + 1];
+                let used = heights.iter().sum::<f32>() + rgap * all_rows.saturating_sub(1) as f32;
+                let (top, extra) = match (s.align_content, definite_h.or(min_h)) {
+                    (Some(j), Some(target)) => content_offset(j, target - used, all_rows),
+                    _ => (0.0, 0.0),
+                };
+                let mut row_y = vec![y + top; all_rows + 1];
                 for r in 0..all_rows {
-                    row_y[r + 1] = row_y[r] + heights[r] + rgap;
+                    row_y[r + 1] = row_y[r] + heights[r] + rgap + extra;
                 }
                 let mut first_baseline = None;
                 for it in &items {
@@ -3649,6 +3753,7 @@ impl<'a> Ctx<'a> {
 
             let start = self.mark();
             let mut rows_h: Vec<f32> = Vec::with_capacity(all_rows);
+            let mut relayout_pct = false;
             // linhas: altura pelo conteúdo, item a item; um item de várias linhas
             // faz a última linha que ele ocupa crescer o que faltar
             let nrows = all_rows;
@@ -3697,6 +3802,9 @@ impl<'a> Ctx<'a> {
                     match align {
                         Align::Stretch if it.b.style.height == Len::Auto && it.rspan == 1 => {
                             let h = row_h - (outer - p.1.height);
+                            if h > p.1.height + 0.5 && !relayout_pct && self.has_pct_height(it.b) {
+                                relayout_pct = true;
+                            }
                             self.stretch(p.1.deco, h);
                             // o retângulo do item (getBoundingClientRect) estica junto
                             if let Some(n) = it.b.node()
@@ -3724,12 +3832,42 @@ impl<'a> Ctx<'a> {
             // estica as auto; monta de novo com as alturas que ficaram
             if !measured
                 && let Some(target) = definite_h.or(min_h)
-                && let Some(hs) = grid_fill_rows(&rows_h, &(0..rows_h.len()).map(row_track).collect::<Vec<_>>(), target, rgap)
+                && let Some(hs) = grid_fill_rows(
+                    &rows_h,
+                    &(0..rows_h.len()).map(row_track).collect::<Vec<_>>(),
+                    target,
+                    rgap,
+                    s.align_content.is_none(),
+                )
             {
                 self.rollback(&start);
                 known = Some(hs);
                 measured = true;
                 continue;
+            }
+            // item esticado com descendente de altura em %: monta de novo com a
+            // altura da linha definida (o height: 100% dele passa a valer)
+            if !measured && relayout_pct {
+                self.rollback(&start);
+                known = Some(rows_h);
+                measured = true;
+                continue;
+            }
+            // align-content: a sobra da altura antes, no meio ou depois das
+            // linhas; com espaço entre elas, monta de novo pelas alturas
+            if let (Some(j), Some(target)) = (s.align_content, definite_h.or(min_h)) {
+                let used = (row_y - y - rgap).max(0.0);
+                let (dy, extra) = content_offset(j, target - used, rows_h.len());
+                if extra > 0.0 && !measured {
+                    self.rollback(&start);
+                    known = Some(rows_h);
+                    measured = true;
+                    continue;
+                }
+                if dy > 0.0 {
+                    self.shift_between(&start, None, 0.0, dy);
+                    first_baseline = first_baseline.map(|b| b + dy);
+                }
             }
             return ((row_y - y - rgap).max(0.0), first_baseline);
         }
