@@ -214,8 +214,6 @@ pub(crate) trait RealmHost {
     fn net(&self) -> Net;
     /// Começa um fetch/XHR; `cb` recebe a resposta.
     fn start_fetch(&mut self, cb: Value, req: crate::cors::PageRequest);
-    /// Módulos ES desta realm.
-    fn modules(&mut self) -> &mut super::module::Modules;
     /// Import map (`<script type=importmap>`; o worker não tem).
     fn import_map(&self) -> Option<&HashMap<String, Url>>;
     /// Trabalho de rede numa thread do conjunto (conta em `in_flight`).
@@ -225,9 +223,6 @@ pub(crate) trait RealmHost {
 impl RealmHost for Host {
     fn start_fetch(&mut self, cb: Value, req: crate::cors::PageRequest) {
         super::web::start_fetch(self, cb, req);
-    }
-    fn modules(&mut self) -> &mut super::module::Modules {
-        &mut self.modules
     }
     fn import_map(&self) -> Option<&HashMap<String, Url>> {
         Some(&self.import_map)

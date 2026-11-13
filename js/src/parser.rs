@@ -135,6 +135,10 @@ pub fn parse_program_strict(src: &str, strict: bool) -> PResult<Program> {
 /// `await` no topo).
 pub fn parse_module(src: &str) -> PResult<Vec<ModuleItem>> {
     let mut p = Parser::new(src)?;
+    // sem comentários HTML: o primeiro token é lido de novo
+    p.lx.module = true;
+    p.lx.reset(0, 1, true);
+    p.tok = p.lx.next_token()?;
     p.strict = true;
     p.module = true;
     p.ctx.in_async = true;
@@ -200,41 +204,47 @@ impl Parser {
         }
     }
 
-    /// Nome num `import {}`/`export {}`: identificador (até reservado) ou string.
+    /// Nome num `import {}`/`export {}`: identificador (até reservado) ou
+    /// string (que precisa ser Unicode bem formado).
     fn module_export_name(&mut self) -> PResult<String> {
-        if matches!(self.tok.tok, Tok::Str(_)) {
+        if let Tok::Str(s) = &self.tok.tok {
+            if char::decode_utf16(s.iter().copied()).any(|c| c.is_err()) {
+                return self.err("Invalid module export name: contains unpaired surrogate");
+            }
             self.string_literal()
         } else {
             Ok(self.ident_name()?.to_string())
         }
     }
 
-    /// `with { type: "json" }` / `assert {...}` depois do especificador: ignorado.
-    fn skip_import_attributes(&mut self) -> PResult<()> {
-        if (self.is_kw("with") || (self.is_kw("assert") && !self.tok.nl_before)) && matches!(self.peek()?.tok, Tok::Punct("{")) {
-            self.advance()?;
-            self.expect("{")?;
-            let mut depth = 1;
-            while depth > 0 {
-                if self.tok.tok == Tok::Eof {
-                    return self.unexpected();
-                }
-                if self.is("{") {
-                    depth += 1;
-                } else if self.is("}") {
-                    depth -= 1;
-                }
-                self.advance()?;
+    /// `with { type: "json" }` (ou o antigo `assert {...}`) depois do especificador.
+    fn import_attributes(&mut self) -> PResult<ImportAttrs> {
+        let mut attrs: ImportAttrs = Vec::new();
+        if !((self.is_kw("with") || (self.is_kw("assert") && !self.tok.nl_before)) && matches!(self.peek()?.tok, Tok::Punct("{"))) {
+            return Ok(attrs);
+        }
+        self.advance()?;
+        self.expect("{")?;
+        while !self.eat("}")? {
+            let key = if matches!(self.tok.tok, Tok::Str(_)) { self.string_literal()? } else { self.ident_name()?.to_string() };
+            self.expect(":")?;
+            let value = self.string_literal()?;
+            if attrs.iter().any(|(k, _)| *k == key) {
+                return self.err(format!("Import attribute has duplicate key '{key}'"));
+            }
+            attrs.push((key, value));
+            if !self.is("}") {
+                self.expect(",")?;
             }
         }
-        Ok(())
+        Ok(attrs)
     }
 
-    fn from_clause(&mut self) -> PResult<String> {
+    fn from_clause(&mut self) -> PResult<(String, ImportAttrs)> {
         self.expect_kw("from")?;
         let spec = self.string_literal()?;
-        self.skip_import_attributes()?;
-        Ok(spec)
+        let attrs = self.import_attributes()?;
+        Ok((spec, attrs))
     }
 
     fn parse_import(&mut self) -> PResult<ImportDecl> {
@@ -243,9 +253,42 @@ impl Parser {
         // import "x";
         if matches!(self.tok.tok, Tok::Str(_)) {
             let specifier = self.string_literal()?;
-            self.skip_import_attributes()?;
+            let attrs = self.import_attributes()?;
             self.semicolon()?;
-            return Ok(ImportDecl { specifier, bindings });
+            return Ok(ImportDecl { specifier, attrs, phase: ImportPhase::Evaluation, bindings });
+        }
+        // import defer * as ns from "x"; import source x from "x"
+        let contextual = |p: &Parser, k: &str| matches!(&p.tok.tok, Tok::Ident(n) if &**n == k) && !p.tok.escaped;
+        if contextual(self, "defer") && matches!(self.peek()?.tok, Tok::Punct("*")) {
+            self.advance()?;
+            self.expect("*")?;
+            self.expect_kw("as")?;
+            let local = self.binding_ident()?;
+            bindings.push((ImportName::Namespace, local));
+            let (specifier, attrs) = self.from_clause()?;
+            self.semicolon()?;
+            return Ok(ImportDecl { specifier, attrs, phase: ImportPhase::Defer, bindings });
+        }
+        if contextual(self, "source") {
+            let next = self.peek()?;
+            let binding_next = matches!(&next.tok, Tok::Ident(n) if &**n != "from");
+            // `import source from from "x"`: a ligação se chama `from`
+            let from_from = matches!(&next.tok, Tok::Ident(n) if &**n == "from") && {
+                let s = self.save();
+                self.advance()?;
+                self.advance()?;
+                let r = matches!(&self.tok.tok, Tok::Ident(n) if &**n == "from");
+                self.restore(s);
+                r
+            };
+            if binding_next || from_from {
+                self.advance()?;
+                let local = self.binding_ident()?;
+                bindings.push((ImportName::Default, local));
+                let (specifier, attrs) = self.from_clause()?;
+                self.semicolon()?;
+                return Ok(ImportDecl { specifier, attrs, phase: ImportPhase::Source, bindings });
+            }
         }
         let mut need_more = true;
         if let Tok::Ident(_) = &self.tok.tok
@@ -263,10 +306,14 @@ impl Parser {
                 bindings.push((ImportName::Namespace, local));
             } else if self.eat("{")? {
                 while !self.eat("}")? {
+                    let is_str = matches!(self.tok.tok, Tok::Str(_));
                     let imported = self.module_export_name()?;
                     let local = if self.eat_kw("as")? {
                         self.binding_ident()?
+                    } else if is_str {
+                        return self.unexpected();
                     } else {
+                        self.check_binding_name(&imported)?;
                         Name::from(imported.as_str())
                     };
                     let name = if imported == "default" { ImportName::Default } else { ImportName::Named(imported) };
@@ -279,22 +326,39 @@ impl Parser {
                 return self.unexpected();
             }
         }
-        let specifier = self.from_clause()?;
+        let (specifier, attrs) = self.from_clause()?;
         self.semicolon()?;
-        Ok(ImportDecl { specifier, bindings })
+        Ok(ImportDecl { specifier, attrs, phase: ImportPhase::Evaluation, bindings })
+    }
+
+    /// `import { x }` sem `as`: `x` precisa servir de nome de ligação.
+    fn check_binding_name(&self, n: &str) -> PResult<()> {
+        if RESERVED.contains(&n) || STRICT_RESERVED.contains(&n) || n == "await" {
+            return self.err(format!("Unexpected reserved word '{n}'"));
+        }
+        self.strict_target(n)
     }
 
     fn parse_export(&mut self) -> PResult<ExportDecl> {
         self.expect_kw("export")?;
         if self.eat("*")? {
             let alias = if self.eat_kw("as")? { Some(self.module_export_name()?) } else { None };
-            let spec = self.from_clause()?;
+            let (spec, attrs) = self.from_clause()?;
             self.semicolon()?;
-            return Ok(ExportDecl::All(spec, alias));
+            return Ok(ExportDecl::All(spec, alias, attrs));
         }
         if self.eat("{")? {
             let mut names = Vec::new();
+            // nomes locais que só valem com `from` (string, palavra reservada)
+            let mut need_from = false;
             while !self.eat("}")? {
+                if let Tok::Str(_) = self.tok.tok {
+                    need_from = true;
+                } else if let Tok::Ident(n) = &self.tok.tok
+                    && (RESERVED.contains(&&**n) || STRICT_RESERVED.contains(&&**n) || &**n == "await")
+                {
+                    need_from = true;
+                }
                 let local = self.module_export_name()?;
                 let exported = if self.eat_kw("as")? { self.module_export_name()? } else { local.clone() };
                 names.push((local, exported));
@@ -303,9 +367,12 @@ impl Parser {
                 }
             }
             if self.is_kw("from") {
-                let spec = self.from_clause()?;
+                let (spec, attrs) = self.from_clause()?;
                 self.semicolon()?;
-                return Ok(ExportDecl::From(spec, names));
+                return Ok(ExportDecl::From(spec, names, attrs));
+            }
+            if need_from {
+                return self.unexpected();
             }
             self.semicolon()?;
             return Ok(ExportDecl::Names(names.into_iter().map(|(l, e)| (Name::from(l.as_str()), e)).collect()));
@@ -319,10 +386,9 @@ impl Parser {
                     self.advance()?;
                 }
                 let f = self.parse_function(is_async_fn, true)?;
-                return Ok(match f.name.clone() {
-                    Some(n) => ExportDecl::DefaultDecl(Stmt::Function(f), n),
-                    None => ExportDecl::DefaultExpr(Expr::Function(f)),
-                });
+                // sem nome também é declaração (içada); liga `*default*`
+                let n = f.name.clone().unwrap_or_else(|| Name::from("*default*"));
+                return Ok(ExportDecl::DefaultDecl(Stmt::Function(f), n));
             }
             if self.is_kw("class") {
                 let c = self.parse_class()?;
@@ -1325,24 +1391,48 @@ impl Parser {
             } else {
                 return self.unexpected();
             }
+        } else if matches!(&self.tok.tok, Tok::Ident(n) if &**n == "import") && self.tok.escaped {
+            return self.err("Keyword must not contain escaped characters");
         } else if self.is_kw("import") {
             self.advance()?;
+            let mut phase = ImportPhase::Evaluation;
+            let mut meta = false;
             if self.eat(".")? {
-                self.ident_name()?;
+                let escaped = self.tok.escaped;
+                let what = self.ident_name()?;
+                match &*what {
+                    "meta" if !escaped => meta = true,
+                    "defer" if !escaped => phase = ImportPhase::Defer,
+                    "source" if !escaped => phase = ImportPhase::Source,
+                    _ => return self.err(format!("Unexpected identifier '{what}'")),
+                }
+                if !meta && !self.is("(") {
+                    return self.unexpected();
+                }
+            }
+            if meta {
                 if !self.module {
-                    return self.err("import.meta só pode ser usado em módulos");
+                    return self.err("Cannot use 'import.meta' outside a module");
                 }
                 Expr::ImportMeta
             } else {
                 let args = self.parse_args()?;
                 // import(especificador, opções?): no máximo 2, sem `...`
-                if args.len() > 2 || args.iter().any(|a| !matches!(a, ArrayElem::Expr(_))) {
-                    return self.err("import() aceita no máximo 2 argumentos, sem '...'");
+                // (as fases só aceitam o especificador)
+                let max = if phase == ImportPhase::Evaluation { 2 } else { 1 };
+                if args.len() > max || args.iter().any(|a| !matches!(a, ArrayElem::Expr(_))) {
+                    return self.err("Invalid arguments to import()");
                 }
-                match args.into_iter().next() {
-                    Some(ArrayElem::Expr(e)) => Expr::ImportCall(Box::new(e)),
-                    _ => return self.err("import() precisa de um especificador"),
-                }
+                let mut it = args.into_iter();
+                let spec = match it.next() {
+                    Some(ArrayElem::Expr(e)) => e,
+                    _ => return self.err("import() requires a specifier"),
+                };
+                let opts = match it.next() {
+                    Some(ArrayElem::Expr(e)) => Some(Box::new(e)),
+                    _ => None,
+                };
+                Expr::ImportCall(Box::new(spec), opts, phase)
             }
         } else {
             self.parse_primary()?
@@ -1438,7 +1528,20 @@ impl Parser {
             }
             return Ok(Expr::NewTarget);
         }
-        let mut callee = if self.is_kw("new") { self.parse_new()? } else { self.parse_primary()? };
+        let mut callee = if self.is_kw("new") {
+            self.parse_new()?
+        } else if self.is_kw("import") {
+            // `new import.meta` (e nunca `new import(...)`)
+            self.advance()?;
+            self.expect(".")?;
+            if !self.is_kw("meta") || !self.module {
+                return self.unexpected();
+            }
+            self.advance()?;
+            Expr::ImportMeta
+        } else {
+            self.parse_primary()?
+        };
         loop {
             if self.eat(".")? {
                 if let Tok::Private(n) = self.tok.tok.clone() {

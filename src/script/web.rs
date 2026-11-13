@@ -1053,7 +1053,7 @@ pub(crate) fn install(vm: &mut Vm) {
         r.method(&n, name, len, f);
     }
     super::media::install(vm, &n);
-    super::module::install(vm, &n);
+    super::module::install(vm);
     super::canvas::install(vm, &n);
     for (name, len, f) in [
         ("requestFullscreen", 1, request_fullscreen as ferro_js::value::NativeFn),

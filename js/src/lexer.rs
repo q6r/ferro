@@ -55,6 +55,8 @@ pub struct Lexer {
     /// Já saiu algum token? (antes do primeiro, `-->` vale como comentário
     /// mesmo depois de comentários /* */ na mesma linha)
     started: bool,
+    /// Código de módulo: os comentários estilo HTML (`<!--`, `-->`) não valem.
+    pub module: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +110,7 @@ impl Lexer {
             names: Default::default(),
             buf: String::new(),
             started: false,
+            module: false,
         }
     }
 
@@ -183,12 +186,13 @@ impl Lexer {
                     }
                     self.pos += 1;
                 }
-            } else if c == '<' && self.peek_at(1) == '!' && self.peek_at(2) == '-' && self.peek_at(3) == '-' {
+            } else if !self.module && c == '<' && self.peek_at(1) == '!' && self.peek_at(2) == '-' && self.peek_at(3) == '-' {
                 // comentário estilo HTML (legado)
                 while self.pos < self.src.len() && !is_line_term(self.peek()) {
                     self.pos += 1;
                 }
-            } else if c == '-'
+            } else if !self.module
+                && c == '-'
                 && self.peek_at(1) == '-'
                 && self.peek_at(2) == '>'
                 && (nl || !self.started)

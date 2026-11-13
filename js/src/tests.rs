@@ -385,8 +385,55 @@ fn eval_direto_e_indireto() {
     );
 }
 
-/// Módulos: dois módulos ligados à mão (como o navegador faz), com ciclo,
-/// ligação viva, default, namespace, reexportação e await no topo.
+/// Módulos em memória (o hospedeiro só resolve e entrega textos).
+fn texto_do_modulo(url: &str) -> Option<&'static str> {
+    Some(match url {
+        "mem:/a.js" => {
+            r#"import def, { contador, inc as somar } from "./b.js";
+               import * as tudo from "./b.js";
+               export let nome = "a";
+               export function dobro(x) { return x * 2; }
+               export * from "./b.js";
+               console.log("a:", def(), contador, typeof somar, def.name);
+               somar(); somar();
+               console.log("viva:", contador, tudo.contador, Object.keys(tudo).join());
+               const v = await Promise.resolve(42);
+               console.log("await:", v, import.meta.url, Object.getPrototypeOf(import.meta));
+               try { tudo.contador = 1; } catch (e) { console.log(e.name); }
+               const c = await import("./c.js");
+               console.log("dinâmico:", c.default.name, c[Symbol.toStringTag], Object.isExtensible(c), Reflect.ownKeys(c).length);
+               import("./d.js").catch((e) => console.log("erro de ligação:", e.name));
+               import("./e.js").catch((e) => console.log("erro de busca:", e.name));"#
+        }
+        "mem:/b.js" => {
+            r#"import { dobro } from "./a.js";
+               export let contador = 0;
+               export function inc() { contador++; }
+               export default function () { return "padrão:" + dobro(21) + ":" + (function () {}).name; }
+               export { inc as mais };"#
+        }
+        "mem:/c.js" => "export default (function () {}); export const tdz = 1;",
+        "mem:/d.js" => "import { naoExiste } from './c.js';",
+        _ => return None,
+    })
+}
+
+fn mem_resolve(_: &mut crate::Vm, spec: &str, referrer: &str) -> Result<String, String> {
+    let base = referrer.rsplit_once('/').map(|(b, _)| b).unwrap_or("mem:");
+    Ok(format!("{base}/{}", spec.trim_start_matches("./")))
+}
+
+fn mem_fetch(_: &mut crate::Vm, url: &str) -> Option<crate::module::Fetched> {
+    Some(texto_do_modulo(url).map(|t| t.as_bytes().to_vec()).ok_or_else(|| format!("Error reading module from {url}")))
+}
+
+fn mem_meta(vm: &mut crate::Vm, url: &str, meta: &crate::ObjRef) {
+    let _ = vm;
+    meta.borrow_mut().props.insert(crate::value::PropKey::str("url"), crate::value::Property::data(Value::str(url)));
+}
+
+/// Módulos: ciclo, ligação viva, default, namespace, reexportação, await no
+/// topo, import.meta, `import()` e os erros de ligação e de busca.
 #[test]
 fn modulos_es() {
     let out = std::thread::Builder::new()
@@ -396,50 +443,15 @@ fn modulos_es() {
             let mut e = Engine::new();
             let sink = lines.clone();
             e.set_output(move |_, s| sink.borrow_mut().push(s.to_string()));
-            e.eval(
-                r#"globalThis.__ferroExport = (ns, n, get) => Object.defineProperty(ns, n, { get, enumerable: true });
-                   globalThis.__ferroExportAll = (ns, src) => { for (const k of Object.keys(src)) if (k !== 'default' && !(k in ns)) __ferroExport(ns, k, () => src[k]); };"#,
-                "prep",
-            )
-            .ok();
-            let (req_a, fa) = crate::module::module_function(
-                &mut e.vm,
-                r#"import def, { contador, inc as somar } from "./b.js";
-                   import * as tudo from "./b.js";
-                   export let nome = "a";
-                   export function dobro(x) { return x * 2; }
-                   export * from "./b.js";
-                   console.log("a:", def(), contador, typeof somar);
-                   somar(); somar();
-                   console.log("viva:", contador, tudo.contador, Object.keys(tudo).join());
-                   const v = await Promise.resolve(42);
-                   console.log("await:", v, import.meta.url);"#,
-                "https://x/a.js",
-            )
-            .unwrap_or_else(|err| panic!("{}", e.error_text(&err)));
-            let (req_b, fb) = crate::module::module_function(
-                &mut e.vm,
-                r#"import { dobro } from "./a.js";
-                   export let contador = 0;
-                   export function inc() { contador++; }
-                   export default function () { return "padrão:" + dobro(21); }
-                   export { inc as mais };"#,
-                "https://x/b.js",
-            )
-            .unwrap_or_else(|err| panic!("{}", e.error_text(&err)));
-            assert_eq!(req_a, vec!["./b.js"]);
-            assert_eq!(req_b, vec!["./a.js"]);
-            let ns_a = e.vm.eval_script("Object.create(null)", "ns").ok().unwrap();
-            let ns_b = e.vm.eval_script("Object.create(null)", "ns").ok().unwrap();
-            let meta = e.vm.eval_script("({ url: 'https://x/a.js' })", "meta").ok().unwrap();
-            // b primeiro (dependência), depois a; o ciclo a↔b funciona porque
-            // `dobro` só é usado quando a função default roda
-            if let Err(err) = e.vm.call(&fb, Value::Undefined, vec![ns_b.clone(), ns_a.clone(), Value::Undefined]) {
-                panic!("{}", e.error_text(&err));
-            }
-            if let Err(err) = e.vm.call(&fa, Value::Undefined, vec![ns_a.clone(), ns_b.clone(), meta]) {
-                panic!("{}", e.error_text(&err));
-            }
+            e.vm.modules.host = Some(crate::module::ModuleHost {
+                resolve: mem_resolve,
+                fetch: mem_fetch,
+                meta: mem_meta,
+            });
+            let ran = Rc::new(RefCell::new(None));
+            let r2 = ran.clone();
+            e.vm.run_module("mem:/a.js", None, Box::new(move |_, r| *r2.borrow_mut() = Some(r)));
+            assert!(matches!(*ran.borrow(), Some(crate::module::Ran::Started(_))));
             e.run_event_loop();
             let l = lines.borrow().join("\n");
             l
@@ -449,7 +461,8 @@ fn modulos_es() {
         .unwrap();
     assert_eq!(
         out,
-        "a: padrão:42 0 function\nviva: 2 2 contador,inc,default,mais\nawait: 42 https://x/a.js"
+        "a: padrão:42: 0 function default\nviva: 2 2 contador,default,inc,mais\nawait: 42 mem:/a.js null\nTypeError\n\
+         dinâmico: default Module false 3\nerro de busca: TypeError\nerro de ligação: SyntaxError"
     );
 }
 

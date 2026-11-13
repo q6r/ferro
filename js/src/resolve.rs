@@ -500,8 +500,13 @@ impl Resolver {
         match e {
             Expr::Ident(n, _) => self.refer(n),
             Expr::Num(_) | Expr::BigInt(_) | Expr::Str(_) | Expr::Regex(..) | Expr::Null | Expr::Bool(_) | Expr::This | Expr::NewTarget | Expr::Unsupported(_) => {}
-            Expr::ImportCall(e) => self.expr(e),
-            Expr::ImportMeta => self.refer(&Name::from("__meta")),
+            Expr::ImportCall(e, opts, _) => {
+                self.expr(e);
+                if let Some(o) = opts {
+                    self.expr(o);
+                }
+            }
+            Expr::ImportMeta => self.refer(&Name::from(crate::module::META)),
             Expr::SuperMember(_) => {}
             Expr::SuperIndex(i) => self.expr(i),
             Expr::SuperCall(args) => self.elems(args),

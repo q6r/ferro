@@ -409,7 +409,6 @@ pub(crate) fn start_script(vm: &mut Vm, n: NodeId) {
         }
         if ty == "module" {
             super::module::start_script(vm, n, src, &text);
-            super::module::drive(vm);
         } else if src.is_none() {
             super::module::add_import_map(vm, &text);
         }

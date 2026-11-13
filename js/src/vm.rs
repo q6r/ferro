@@ -170,6 +170,8 @@ pub struct Vm {
     /// Último recurso para um nome global que não existe (no navegador:
     /// elementos com `id` viram variáveis globais).
     pub global_miss: Option<fn(&mut Vm, &crate::JsStr) -> Option<Value>>,
+    /// Módulos ES desta realm (o hospedeiro põe os ganchos em `modules.host`).
+    pub modules: crate::module::Modules,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -230,6 +232,7 @@ impl Vm {
             zones: Box::new(UtcOnly),
             host: None,
             global_miss: None,
+            modules: Default::default(),
         }
     }
 
@@ -963,7 +966,17 @@ impl Vm {
                     let key = self.to_property_key(&k)?;
                     if let Some(Value::Object(o)) = f.stack.last() {
                         let o = o.clone();
-                        self.define_data(&o, key, v);
+                        if crate::builtins::proxy::is_proxy(&o) {
+                            // campo de classe num Proxy (construtor que devolve outro
+                            // objeto): CreateDataPropertyOrThrow passa pelas armadilhas
+                            let d = crate::builtins::object::Descriptor::data(v, true);
+                            if !crate::builtins::object::define_own_property(self, &o, key.clone(), d)? {
+                                let k = crate::ops::key_display(&key);
+                                return Err(self.type_error(format!("Cannot define property {k}, object is not extensible")));
+                            }
+                        } else {
+                            self.define_data(&o, key, v);
+                        }
                     }
                 }
                 Op::DefinePropNamed => {
@@ -1256,6 +1269,12 @@ impl Vm {
                     f.suspended = true;
                     f.suspend_await = false;
                     return Ok(Value::Undefined);
+                }
+                Op::ImportCall(phase) => {
+                    let opts = pop!();
+                    let spec = pop!();
+                    let p = crate::module::import_call(self, spec, opts, phase);
+                    f.stack.push(p);
                 }
                 Op::Yield => {
                     let v = pop!();

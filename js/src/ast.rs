@@ -240,8 +240,9 @@ pub enum Expr {
     NewTarget,
     /// Cobertura: `...x` dentro de parênteses (vira parâmetro rest de arrow).
     Spread(Box<Expr>),
-    /// `import(x)`: carrega um módulo (devolve uma Promise).
-    ImportCall(Box<Expr>),
+    /// `import(x, opções)`, `import.defer(x)`, `import.source(x)`: carrega
+    /// um módulo (devolve uma Promise).
+    ImportCall(Box<Expr>, Option<Box<Expr>>, ImportPhase),
     /// `import.meta` (só em módulos).
     ImportMeta,
     /// Recurso que ainda não é suportado.
@@ -326,10 +327,23 @@ pub enum ModuleItem {
     Export(ExportDecl),
 }
 
+/// Atributos de um import (`with { type: "json" }`): (chave, valor).
+pub type ImportAttrs = Vec<(String, String)>;
+
+/// Fase de um import: comum, `import defer * as ns` ou `import source x`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportPhase {
+    Evaluation,
+    Defer,
+    Source,
+}
+
 /// `import ... from "x"`.
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
     pub specifier: String,
+    pub attrs: ImportAttrs,
+    pub phase: ImportPhase,
     /// (o que importa, nome local)
     pub bindings: Vec<(ImportName, Name)>,
 }
@@ -345,14 +359,15 @@ pub enum ImportName {
 pub enum ExportDecl {
     /// `export var/let/const/function/class ...`: exporta os nomes declarados.
     Decl(Stmt),
-    /// `export default function f() {}` / `export default class C {}`.
+    /// `export default function f() {}` / `export default class C {}`. A
+    /// declaração de função sem nome liga `*default*`.
     DefaultDecl(Stmt, Name),
     /// `export default expressão`.
     DefaultExpr(Expr),
     /// `export { a, b as c }` (nome local, nome exportado).
     Names(Vec<(Name, String)>),
     /// `export { a as b } from "x"` (nome lá, nome exportado aqui).
-    From(String, Vec<(String, String)>),
+    From(String, Vec<(String, String)>, ImportAttrs),
     /// `export * from "x"` / `export * as ns from "x"`.
-    All(String, Option<String>),
+    All(String, Option<String>, ImportAttrs),
 }

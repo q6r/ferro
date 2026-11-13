@@ -86,8 +86,8 @@ pub(crate) enum Done {
     Sheet { url: Url, text: Option<String> },
     /// Script externo do HTML (baixado enquanto os anteriores rodam).
     ParserScript { url: Url, text: Option<String> },
-    /// Texto de um módulo ES.
-    Module { url: Url, text: Option<String> },
+    /// Conteúdo de um módulo ES (None: a busca falhou).
+    Module { url: Url, bytes: Option<Vec<u8>> },
     /// Documento de um `<iframe>`.
     Frame { node: NodeId, url: Url, result: Result<Box<Loaded>, String> },
     /// Arquivo de mídia (`<video src>`/`<audio src>`).
@@ -639,7 +639,7 @@ impl Session {
         // os módulos externos já começam a baixar (com as dependências)
         for (_, src, _) in &modules {
             if let Some(u) = src.as_deref().and_then(|s| base.join(s.trim()).ok()) {
-                module::request(&mut self.js.vm, &u);
+                module::prefetch(&mut self.js.vm, &u);
             }
         }
     }
@@ -680,7 +680,6 @@ impl Session {
                 for (m, src, text) in pending {
                     module::start_script(&mut self.js.vm, m, src, &text);
                 }
-                module::drive(&mut self.js.vm);
                 let waiting = {
                     let hb = self.host.borrow();
                     hb.parser.as_ref().unwrap().modules.iter().any(|(m, _, _)| !module::script_done(&hb, *m))
@@ -999,10 +998,7 @@ impl Session {
                     p.texts.insert(url, text);
                 }
             }
-            Done::Module { url, text } => {
-                module::arrived(&mut self.js.vm, url, text);
-                module::drive(&mut self.js.vm);
-            }
+            Done::Module { url, bytes } => module::fetched(&mut self.js.vm, url, bytes),
             Done::MediaFile { node, url, bytes } => {
                 let ok = {
                     let mut hb = self.host.borrow_mut();

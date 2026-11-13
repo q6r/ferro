@@ -613,9 +613,55 @@ fn check_typed_integrity(vm: &mut Vm, o: &ObjRef, what: &str) -> Result<(), Valu
     Ok(())
 }
 
+/// SetIntegrityLevel pelas operações internas (Proxy e namespace de módulo).
+fn set_integrity(vm: &mut Vm, o: &ObjRef, frozen: bool) -> Result<(), Value> {
+    if !vm.prevent_extensions(o)? {
+        return Err(vm.type_error("Cannot prevent extensions"));
+    }
+    for k in vm.own_keys(o)? {
+        let mut d = Descriptor {
+            configurable: Some(false),
+            ..Default::default()
+        };
+        if frozen {
+            match vm.get_own_property(o, &k)? {
+                None => continue,
+                Some(Property { slot: Slot::Accessor { .. }, .. }) => {}
+                Some(_) => d.writable = Some(false),
+            }
+        }
+        if !define_own_property(vm, o, k.clone(), d)? {
+            return Err(vm.type_error(format!("Cannot redefine property: {}", crate::ops::key_display(&k))));
+        }
+    }
+    Ok(())
+}
+
+/// TestIntegrityLevel pelas operações internas (Proxy e namespace de módulo).
+fn test_integrity_generic(vm: &mut Vm, o: &ObjRef, frozen: bool) -> Result<bool, Value> {
+    if vm.is_extensible(o)? {
+        return Ok(false);
+    }
+    for k in vm.own_keys(o)? {
+        if let Some(p) = vm.get_own_property(o, &k)? {
+            if p.configurable {
+                return Ok(false);
+            }
+            if frozen && matches!(p.slot, Slot::Data { writable: true, .. }) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
 fn freeze(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let v = a.arg(0);
     if let Value::Object(o) = &v {
+        if super::proxy::is_proxy(o) {
+            set_integrity(vm, o, true)?;
+            return Ok(v);
+        }
         check_typed_integrity(vm, o, "freeze")?;
         freeze_obj(o, true);
     }
@@ -625,6 +671,10 @@ fn freeze(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 fn seal(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let v = a.arg(0);
     if let Value::Object(o) = &v {
+        if super::proxy::is_proxy(o) {
+            set_integrity(vm, o, false)?;
+            return Ok(v);
+        }
         check_typed_integrity(vm, o, "seal")?;
         freeze_obj(o, false);
     }
@@ -669,15 +719,17 @@ fn test_integrity(o: &ObjRef, frozen: bool) -> bool {
     })
 }
 
-fn is_frozen(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+fn is_frozen(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(match a.arg(0) {
+        Value::Object(o) if super::proxy::is_proxy(&o) => test_integrity_generic(vm, &o, true)?,
         Value::Object(o) => test_integrity(&o, true),
         _ => true,
     }))
 }
 
-fn is_sealed(_vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
+fn is_sealed(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(match a.arg(0) {
+        Value::Object(o) if super::proxy::is_proxy(&o) => test_integrity_generic(vm, &o, false)?,
         Value::Object(o) => test_integrity(&o, false),
         _ => true,
     }))
@@ -791,8 +843,7 @@ fn is_prototype_of(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 fn property_is_enumerable(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     let key = vm.to_property_key(&a.arg(0))?;
     let o = this_obj(vm, a)?;
-    let r = o.borrow().is_enumerable(&key);
-    Ok(Value::Bool(r))
+    Ok(Value::Bool(vm.is_enumerable_own(&o, &key)?))
 }
 
 /// Object.prototype.toString: "[object Tipo]".
