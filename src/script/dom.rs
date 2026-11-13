@@ -1896,6 +1896,26 @@ fn attach_shadow(vm: &mut Vm, a: &mut CallArgs) -> R {
         }
         _ => false,
     };
+    // raiz declarativa (do HTML): o attachShadow devolve ela mesma, vazia
+    let declarative = write(vm, |h| {
+        let doc = &mut h.page.doc;
+        let root = *doc.shadow_roots.get(&n)?;
+        if !doc.declarative_shadows.remove(&root) {
+            return None;
+        }
+        doc.remove_children(root);
+        doc.closed_hosts.remove(&n);
+        if closed {
+            h.closed_shadows.insert(n);
+        } else {
+            h.closed_shadows.remove(&n);
+        }
+        h.dirty = true;
+        Some(root)
+    });
+    if let Some(root) = declarative {
+        return Ok(wrap(vm, root));
+    }
     if read(vm, |h| h.page.doc.shadow_roots.contains_key(&n)) {
         return Err(dom_error(
             vm,
@@ -1916,7 +1936,11 @@ fn attach_shadow(vm: &mut Vm, a: &mut CallArgs) -> R {
 fn shadow_root(vm: &mut Vm, a: &mut CallArgs) -> R {
     let n = this(vm, a)?;
     let r = read(vm, |h| {
-        if h.closed_shadows.contains(&n) { None } else { h.page.doc.shadow_roots.get(&n).copied() }
+        if h.closed_shadows.contains(&n) || h.page.doc.closed_hosts.contains(&n) {
+            None
+        } else {
+            h.page.doc.shadow_roots.get(&n).copied()
+        }
     });
     Ok(wrap_opt(vm, r))
 }

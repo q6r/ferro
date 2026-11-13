@@ -276,7 +276,8 @@ fn page_from_response(net: &Net, res: net::Response) -> Loaded {
     } else {
         net::decode_text(&res.body, res.content_type.as_deref(), true)
     };
-    let doc = html::parse(&text);
+    let mut doc = html::parse(&text);
+    html::attach_declarative_shadow_roots(&mut doc);
     let base = base_url(&doc, &res.url);
     let title = doc
         .find_first("title")

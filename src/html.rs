@@ -362,6 +362,62 @@ const SCOPE_BOUNDARY: &[&str] = &[
     "html", "table", "td", "th", "caption", "marquee", "object", "applet", "template", "button",
 ];
 
+/// Elementos que podem hospedar uma raiz de sombra (além dos personalizados).
+const SHADOW_HOSTS: &[&str] = &[
+    "article", "aside", "blockquote", "body", "div", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "main",
+    "nav", "p", "section", "span",
+];
+
+/// Declarative Shadow DOM: `<template shadowrootmode="open|closed">` vira a
+/// raiz de sombra do elemento pai (o conteúdo vai para ela e o template
+/// sai da árvore). Só no documento da página (innerHTML e DOMParser não).
+pub fn attach_declarative_shadow_roots(doc: &mut Document) {
+    // templates dentro de raízes recém-criadas aparecem na volta seguinte
+    for _ in 0..64 {
+        let mut found = Vec::new();
+        for n in doc.shadow_including_descendants(Document::ROOT) {
+            let Some(el) = doc.element(n) else { continue };
+            if el.tag != "template" {
+                continue;
+            }
+            let mode = el.attr("shadowrootmode").unwrap_or("").to_ascii_lowercase();
+            if mode != "open" && mode != "closed" {
+                continue;
+            }
+            let Some(host) = doc.node(n).parent else { continue };
+            let Some(h) = doc.element(host) else { continue };
+            let ok = (h.tag.contains('-') || SHADOW_HOSTS.contains(&h.tag.as_str())) && !doc.shadow_roots.contains_key(&host);
+            if ok {
+                found.push((n, host, mode == "closed"));
+            }
+        }
+        if found.is_empty() {
+            return;
+        }
+        let mut changed = false;
+        for (tpl, host, closed) in found {
+            if doc.shadow_roots.contains_key(&host) {
+                continue;
+            }
+            let root = doc.attach_shadow(host);
+            doc.declarative_shadows.insert(root);
+            if closed {
+                doc.closed_hosts.insert(host);
+            }
+            let kids = std::mem::take(&mut doc.nodes[tpl].children);
+            for k in kids {
+                doc.nodes[k].parent = None;
+                doc.append(root, k);
+            }
+            doc.detach(tpl);
+            changed = true;
+        }
+        if !changed {
+            return;
+        }
+    }
+}
+
 /// Analisa `input` como o conteúdo de um elemento `<context>` (innerHTML) e
 /// cria os nós (soltos) em `doc`. Devolve os nós de primeiro nível.
 pub fn parse_fragment(input: &str, context: &str, doc: &mut Document) -> Vec<NodeId> {

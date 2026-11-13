@@ -74,6 +74,11 @@ pub struct Document {
     pub shadow_hosts: std::collections::HashMap<NodeId, NodeId>,
     /// Mudanças desde o último cálculo de estilo (para recalcular só o que mudou).
     pub changes: Vec<Change>,
+    /// Raízes de sombra criadas pelo HTML (Declarative Shadow DOM): um
+    /// attachShadow depois devolve a mesma raiz, esvaziada.
+    pub declarative_shadows: std::collections::HashSet<NodeId>,
+    /// Hospedeiros de raízes declarativas fechadas (shadowRoot dá null).
+    pub closed_hosts: std::collections::HashSet<NodeId>,
 }
 
 /// Uma mudança no DOM que pode afetar o estilo.
@@ -113,6 +118,8 @@ impl Document {
             shadow_roots: Default::default(),
             shadow_hosts: Default::default(),
             changes: Vec::new(),
+            declarative_shadows: Default::default(),
+            closed_hosts: Default::default(),
         }
     }
 

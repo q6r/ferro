@@ -42,7 +42,8 @@ pub(crate) type Message = (String, String, String);
 /// O documento vazio de `about:blank` ou o de `srcdoc`.
 fn inline_page(base: &Url, html: &str) -> Loaded {
     let url = Url::parse("about:blank").unwrap();
-    let doc = crate::html::parse(html);
+    let mut doc = crate::html::parse(html);
+    crate::html::attach_declarative_shadow_roots(&mut doc);
     Loaded {
         url,
         base: base.clone(),
