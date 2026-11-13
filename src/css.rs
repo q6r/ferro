@@ -85,6 +85,12 @@ pub struct Selector {
     pub combinators: Vec<Combinator>,
     /// `::before` / `::after` no fim do seletor.
     pub pseudo_element: Option<PseudoElement>,
+    /// `::slotted(X)`: os compostos casam com o `<slot>`, X com o elemento
+    /// do hospedeiro posto nele (o estilo vai para esse elemento).
+    pub slotted: Option<Box<Compound>>,
+    /// `::part(a b)`: os compostos casam com o hospedeiro; o estilo vai para
+    /// os elementos da sombra dele com esses nomes em `part`.
+    pub part: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -154,6 +160,11 @@ pub enum Pseudo {
     Fullscreen,
     /// :popover-open (popover aberto com showPopover).
     PopoverOpen,
+    /// :host e :host(X): o hospedeiro, visto de dentro da sombra dele.
+    Host(Option<Box<Compound>>),
+    /// :host-context(X): o hospedeiro, se ele ou um ancestral (passando
+    /// pelos hospedeiros de fora) casa com X.
+    HostContext(Box<Compound>),
     /// Pseudo-classe que não sabemos avaliar: nunca casa.
     Never,
 }
@@ -199,12 +210,26 @@ pub type Specificity = (u32, u32, u32);
 
 impl Selector {
     pub fn specificity(&self) -> Specificity {
-        let mut s = (0, 0, self.pseudo_element.is_some() as u32);
-        for c in &self.compounds {
+        // ::slotted(X) e ::part() valem um pseudo-elemento (+ X)
+        let elements = self.pseudo_element.is_some() as u32 + self.slotted.is_some() as u32 + self.part.is_some() as u32;
+        let mut s = (0, 0, elements);
+        for c in self.compounds.iter().chain(self.slotted.as_deref()) {
             let cs = c.specificity();
             s = (s.0 + cs.0, s.1 + cs.1, s.2 + cs.2);
         }
         s
+    }
+
+    /// Só casa com o hospedeiro visto de dentro (`:host`, `:host(...)`...)?
+    pub fn host_only(&self) -> bool {
+        self.compounds.last().is_some_and(Compound::has_host)
+    }
+
+    /// Pode casar com o hospedeiro visto de dentro da sombra? (`:host`,
+    /// `:is(:host)`, `:host::before`...; sem combinadores: lá dentro ele não
+    /// tem pai nem irmãos.)
+    pub fn may_match_host(&self) -> bool {
+        self.compounds.len() == 1 && self.slotted.is_none() && self.part.is_none() && self.compounds[0].may_match_host()
     }
 }
 
@@ -222,11 +247,39 @@ impl Compound {
                     b += m.1;
                     c += m.2;
                 }
+                // :host(X) e :host-context(X): uma pseudo-classe + X
+                Pseudo::Host(Some(x)) | Pseudo::HostContext(x) => {
+                    let m = x.specificity();
+                    a += m.0;
+                    b += m.1 + 1;
+                    c += m.2;
+                }
                 Pseudo::Never => b += 1,
                 _ => b += 1,
             }
         }
         (a, b, c)
+    }
+
+    /// Tem `:host`, `:host()` ou `:host-context()` (fora de `:is()`...)?
+    fn has_host(&self) -> bool {
+        self.pseudos.iter().any(|p| matches!(p, Pseudo::Host(_) | Pseudo::HostContext(_)))
+    }
+
+    /// Pode casar com o hospedeiro sem características (ver `match_featureless`).
+    fn may_match_host(&self) -> bool {
+        self.tag.is_none()
+            && self.id.is_none()
+            && self.classes.is_empty()
+            && self.attrs.is_empty()
+            && !self.pseudos.is_empty()
+            && self.pseudos.iter().all(|p| match p {
+                Pseudo::Host(_) | Pseudo::HostContext(_) => true,
+                Pseudo::Is(list) | Pseudo::Where(list) => {
+                    list.iter().any(|s| s.pseudo_element.is_none() && s.may_match_host())
+                }
+                _ => false,
+            })
     }
 }
 
@@ -251,9 +304,15 @@ fn parse_selector(src: &str) -> Option<Selector> {
     let mut has_current = false;
     let mut pending_comb: Option<Combinator> = None;
     let mut pseudo_element: Option<PseudoElement> = None;
+    let mut slotted: Option<Box<Compound>> = None;
+    let mut part: Option<Vec<String>> = None;
 
     while i < chars.len() {
         let c = chars[i];
+        // depois de ::slotted() e ::part() só pode vir outro pseudo-elemento
+        if (slotted.is_some() || part.is_some()) && !(c == ':' && chars.get(i + 1) == Some(&':')) {
+            return None;
+        }
         if c.is_whitespace() || matches!(c, '>' | '+' | '~') {
             // combinador
             let mut comb = Combinator::Descendant;
@@ -325,6 +384,20 @@ fn parse_selector(src: &str) -> Option<Selector> {
                     "placeholder" | "-webkit-input-placeholder" | "-moz-placeholder" if element && arg.is_none() => {
                         pseudo_element = Some(PseudoElement::Placeholder)
                     }
+                    "slotted" | "part" if element && pseudo_element.is_none() => {
+                        if slotted.is_some() || part.is_some() {
+                            return None;
+                        }
+                        if name == "slotted" {
+                            slotted = Some(Box::new(arg.as_deref().and_then(parse_compound)?));
+                        } else {
+                            let names: Vec<String> = arg?.split_ascii_whitespace().map(str::to_string).collect();
+                            if names.is_empty() {
+                                return None;
+                            }
+                            part = Some(names);
+                        }
+                    }
                     _ if element || matches!(name.as_str(), "first-line" | "first-letter") => {
                         current.pseudos.push(Pseudo::Never)
                     }
@@ -348,7 +421,19 @@ fn parse_selector(src: &str) -> Option<Selector> {
         compounds,
         combinators,
         pseudo_element,
+        slotted,
+        part,
     })
+}
+
+/// Argumento de `:host()`, `:host-context()` e `::slotted()`: um seletor
+/// composto (sem combinadores nem pseudo-elementos).
+fn parse_compound(src: &str) -> Option<Compound> {
+    let mut s = parse_selector(src.trim())?;
+    if s.compounds.len() != 1 || s.pseudo_element.is_some() || s.slotted.is_some() || s.part.is_some() {
+        return None;
+    }
+    s.compounds.pop()
 }
 
 fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
@@ -380,6 +465,9 @@ fn parse_pseudo(name: &str, arg: Option<&str>) -> Pseudo {
         ("placeholder-shown", None) => Pseudo::PlaceholderShown,
         ("fullscreen" | "-webkit-full-screen" | "modal", None) => Pseudo::Fullscreen,
         ("popover-open", None) => Pseudo::PopoverOpen,
+        ("host", None) => Pseudo::Host(None),
+        ("host", Some(a)) => parse_compound(a).map_or(Pseudo::Never, |c| Pseudo::Host(Some(Box::new(c)))),
+        ("host-context", Some(a)) => parse_compound(a).map_or(Pseudo::Never, |c| Pseudo::HostContext(Box::new(c))),
         // :visited, :has(), :first-line...
         _ => Pseudo::Never,
     }
@@ -515,8 +603,48 @@ fn read_ident(chars: &[char], i: &mut usize) -> Option<String> {
 
 // ------------------------------------------------------------------ matching
 
+/// O elemento casa com o seletor, avaliado na árvore dele (documento ou
+/// sombra). `::slotted()` e `::part()` só valem na cascata.
 pub fn matches(doc: &Document, node: NodeId, sel: &Selector) -> bool {
-    match_from(doc, node, sel, sel.compounds.len() - 1)
+    sel.slotted.is_none() && sel.part.is_none() && match_from(doc, node, sel, sel.compounds.len() - 1)
+}
+
+/// O hospedeiro casa com uma regra da própria sombra (`:host`, `:host(...)`,
+/// `:host-context(...)`)? Lá dentro ele não tem pai nem irmãos.
+pub fn matches_host(doc: &Document, host: NodeId, sel: &Selector) -> bool {
+    sel.may_match_host() && match_featureless(doc, host, &sel.compounds[0])
+}
+
+/// `el`, filho do hospedeiro posto em `slot`, casa com `... ::slotted(X)`?
+pub fn matches_slotted(doc: &Document, el: NodeId, slot: NodeId, sel: &Selector) -> bool {
+    let Some(arg) = &sel.slotted else { return false };
+    match_compound(doc, el, arg) && match_from(doc, slot, sel, sel.compounds.len() - 1)
+}
+
+/// `el`, na sombra de `host`, casa com `... ::part(nomes)`?
+pub fn matches_part(doc: &Document, el: NodeId, host: NodeId, sel: &Selector) -> bool {
+    let Some(names) = &sel.part else { return false };
+    let Some(parts) = doc.element(el).and_then(|e| e.attr("part")) else { return false };
+    names.iter().all(|n| parts.split_ascii_whitespace().any(|p| p == n))
+        && match_from(doc, host, sel, sel.compounds.len() - 1)
+}
+
+/// Pai de um elemento para os combinadores.
+enum Up {
+    El(NodeId),
+    /// No topo de uma sombra: o hospedeiro, que lá dentro não tem características.
+    Host(NodeId),
+}
+
+fn up(doc: &Document, node: NodeId) -> Option<Up> {
+    let p = doc.node(node).parent?;
+    let el = doc.element(p)?;
+    if el.tag == crate::dom::FRAGMENT_TAG
+        && let Some(&h) = doc.shadow_hosts.get(&p)
+    {
+        return Some(Up::Host(h));
+    }
+    Some(Up::El(p))
 }
 
 fn match_from(doc: &Document, node: NodeId, sel: &Selector, idx: usize) -> bool {
@@ -526,17 +654,26 @@ fn match_from(doc: &Document, node: NodeId, sel: &Selector, idx: usize) -> bool 
     if idx == 0 {
         return true;
     }
+    // o hospedeiro só pode ser o primeiro composto (não há nada acima dele)
+    let host_matches = |h| idx == 1 && match_featureless(doc, h, &sel.compounds[0]);
     match sel.combinators[idx - 1] {
-        Combinator::Child => doc
-            .parent_element(node)
-            .is_some_and(|p| match_from(doc, p, sel, idx - 1)),
+        Combinator::Child => match up(doc, node) {
+            Some(Up::El(p)) => match_from(doc, p, sel, idx - 1),
+            Some(Up::Host(h)) => host_matches(h),
+            None => false,
+        },
         Combinator::Descendant => {
-            let mut cur = doc.parent_element(node);
-            while let Some(p) = cur {
-                if match_from(doc, p, sel, idx - 1) {
-                    return true;
+            let mut cur = up(doc, node);
+            while let Some(u) = cur {
+                match u {
+                    Up::El(p) => {
+                        if match_from(doc, p, sel, idx - 1) {
+                            return true;
+                        }
+                        cur = up(doc, p);
+                    }
+                    Up::Host(h) => return host_matches(h),
                 }
-                cur = doc.parent_element(p);
             }
             false
         }
@@ -545,6 +682,35 @@ fn match_from(doc: &Document, node: NodeId, sel: &Selector, idx: usize) -> bool 
         }
         Combinator::SubsequentSibling => prev_elements(doc, node).any(|p| match_from(doc, p, sel, idx - 1)),
     }
+}
+
+/// O hospedeiro visto de dentro da sombra não tem tag, id, classes nem
+/// atributos: só `:host`, `:host()` e `:host-context()` casam com ele (e,
+/// como no Chrome, `:is()`/`:where()` com eles dentro; `*` e `:not()` não).
+fn match_featureless(doc: &Document, host: NodeId, c: &Compound) -> bool {
+    if !c.may_match_host() {
+        return false;
+    }
+    c.pseudos.iter().all(|p| match p {
+        Pseudo::Host(arg) => arg.as_deref().is_none_or(|a| match_compound(doc, host, a)),
+        Pseudo::HostContext(arg) => {
+            // o próprio hospedeiro ou um ancestral, saindo das sombras pelos hospedeiros
+            let mut cur = Some(host);
+            while let Some(n) = cur {
+                if match_compound(doc, n, arg) {
+                    return true;
+                }
+                cur = up(doc, n).map(|u| match u {
+                    Up::El(p) | Up::Host(p) => p,
+                });
+            }
+            false
+        }
+        Pseudo::Is(list) | Pseudo::Where(list) => list.iter().any(|s| {
+            s.pseudo_element.is_none() && s.may_match_host() && match_featureless(doc, host, &s.compounds[0])
+        }),
+        _ => false,
+    })
 }
 
 /// Irmãos elementos antes do nó, do mais próximo para o mais distante.
@@ -625,7 +791,8 @@ fn match_compound(doc: &Document, node: NodeId, c: &Compound) -> bool {
     }
     for p in &c.pseudos {
         let ok = match p {
-            Pseudo::Never => false,
+            // só o hospedeiro visto de dentro da sombra (match_featureless)
+            Pseudo::Never | Pseudo::Host(_) | Pseudo::HostContext(_) => false,
             Pseudo::Hover => dyn_state(|d| d.hover.contains(&node)),
             Pseudo::Active => dyn_state(|d| d.active.contains(&node)),
             Pseudo::Focus => dyn_state(|d| d.focus == Some(node)),
@@ -1310,5 +1477,73 @@ mod tests {
     fn escapes_em_classes() {
         let s = &parse_selector_list(r".md\:flex").unwrap()[0];
         assert_eq!(s.compounds[0].classes[0], "md:flex");
+    }
+
+    /// Elemento novo dentro de `parent`, com atributos "nome=valor".
+    fn add(doc: &mut Document, parent: NodeId, tag: &str, attrs: &[&str]) -> NodeId {
+        let n = doc.create_element(tag);
+        for a in attrs {
+            let (k, v) = a.split_once('=').unwrap_or((a, ""));
+            doc.set_attr(n, k, v);
+        }
+        doc.append(parent, n);
+        n
+    }
+
+    #[test]
+    fn host_slotted_e_part() {
+        // <body class=tema><div id=h class=escuro><span class=s slot=a>…</span><i>…</i></div>
+        // sombra de h: <div class=topo><p class=fundo part="rotulo x"></p><slot name=a><slot></div>
+        let mut doc = html::parse(r#"<body class="tema"><div id="h" class="escuro"><span class="s" slot="a">s</span><i>i</i></div></body>"#);
+        let h = doc.find_first("div").unwrap();
+        let (span, i) = (doc.find_first("span").unwrap(), doc.find_first("i").unwrap());
+        let root = doc.attach_shadow(h);
+        let topo = add(&mut doc, root, "div", &["class=topo"]);
+        let fundo = add(&mut doc, topo, "p", &["class=fundo", "part=rotulo x"]);
+        let slot_a = add(&mut doc, topo, "slot", &["name=a"]);
+        let slot = add(&mut doc, topo, "slot", &[]);
+        let sel = |s: &str| parse_selector_list(s).unwrap().remove(0);
+        let host = |s: &str| matches_host(&doc, h, &sel(s));
+        let el = |n: NodeId, s: &str| matches(&doc, n, &sel(s));
+
+        // o hospedeiro visto de dentro: só :host e companhia casam com ele
+        assert!(host(":host") && host(":host(.escuro)") && host(":host(div#h)") && host(":host:host"));
+        assert!(!host(":host(.claro)") && !host(":host.escuro") && !host("*") && !host(":not(.x)"));
+        assert!(host(":host-context(body.tema)") && host(":host-context(.escuro)") && !host(":host-context(.nada)"));
+        assert!(host(":is(:host)") && host(":where(:host(.escuro), .x)") && !host(":host:not(.x)"));
+        assert!(!host(":host .topo") && !host("div :host"));
+        // e de fora ele é um elemento comum
+        assert!(!el(h, ":host") && el(h, "div.escuro") && !el(h, ":host(.escuro)"));
+
+        // :host fora do sujeito; o pai dos elementos de cima é o hospedeiro sem características
+        assert!(el(topo, ":host > .topo") && el(fundo, ":host .fundo") && el(fundo, ":host(.escuro) .topo > p"));
+        assert!(el(fundo, ":host-context(.tema) .fundo") && el(fundo, ":is(:host) .fundo"));
+        assert!(!el(topo, "* > .topo") && !el(topo, "div > .topo") && !el(topo, ":not(.x) > .topo"));
+        assert!(!el(fundo, ":host(.claro) .fundo") && !el(topo, ":host + .topo"));
+        assert!(el(fundo, ".topo > :not(:host)"));
+
+        // ::slotted(): os compostos casam com o slot, o argumento com o elemento posto nele
+        assert!(matches_slotted(&doc, span, slot_a, &sel("::slotted(span)")));
+        assert!(matches_slotted(&doc, span, slot_a, &sel(".topo > slot[name=a]::slotted(.s)")));
+        assert!(!matches_slotted(&doc, span, slot_a, &sel("slot:not([name])::slotted(*)")));
+        assert!(matches_slotted(&doc, i, slot, &sel(":host ::slotted(i)")));
+        assert!(!el(span, "::slotted(span)") && !el(slot_a, "::slotted(span)"));
+        assert!(parse_selector_list("::slotted(.a .b)").is_none() && parse_selector_list("::slotted(a) b").is_none());
+        assert!(parse_selector_list("::slotted(a).x").is_none() && parse_selector_list("::slotted(a)::before").is_some());
+
+        // ::part(): os compostos casam com o hospedeiro (na árvore dele)
+        assert!(matches_part(&doc, fundo, h, &sel("div.escuro::part(rotulo)")));
+        assert!(matches_part(&doc, fundo, h, &sel("#h::part(x rotulo)")));
+        assert!(!matches_part(&doc, fundo, h, &sel("#h::part(outro)")) && !matches_part(&doc, topo, h, &sel("#h::part(rotulo)")));
+
+        // especificidade: :host() e :host-context() somam o argumento; ::slotted() é pseudo-elemento
+        let spec = |s: &str| sel(s).specificity();
+        assert_eq!(spec(":host"), (0, 1, 0));
+        assert_eq!(spec(":host(.a)"), (0, 2, 0));
+        assert_eq!(spec(":host-context(div#x)"), (1, 1, 1));
+        assert_eq!(spec("::slotted(span)"), (0, 0, 2));
+        assert_eq!(spec("slot::slotted(.s)"), (0, 1, 2));
+        assert_eq!(spec("x::part(a)"), (0, 0, 2));
+        assert!(sel(":host").host_only() && !sel(":is(:host, .a)").host_only() && sel(":is(:host, .a)").may_match_host());
     }
 }
