@@ -483,13 +483,27 @@ pub fn render_styled(
     }
     let t_css = ms(t0);
     let t1 = std::time::Instant::now();
-    let styles = style::compute_incremental(&loaded.doc, &sheets, &media, prev, changes);
+    let mut styles = style::compute_incremental(&loaded.doc, &sheets, &media, prev, changes);
     let t_cascade = ms(t1);
     let t2 = std::time::Instant::now();
-    let root = layout::build_box_tree(&loaded.doc, &styles);
+    let mut root = layout::build_box_tree(&loaded.doc, &styles);
     let t_boxes = ms(t2);
     let t3 = std::time::Instant::now();
-    let page = root.as_ref().map(|root| layout::layout(&loaded.doc, root, fonts, images, width, height));
+    let mut page = root.as_ref().map(|root| layout::layout(&loaded.doc, &styles, root, fonts, images, width, height));
+    // container queries: com o tamanho dos contêineres medido, as unidades
+    // cq* e as regras @container dos descendentes podem mudar: refaz o
+    // estilo e o layout (o tamanho de um contêiner não depende do conteúdo)
+    let doc_id = &loaded.doc as *const crate::dom::Document as usize;
+    for _ in 0..2 {
+        let sizes: std::collections::HashMap<_, _> =
+            page.as_ref().map(|p| p.containers.iter().map(|&(n, w, h)| (n, (w, h))).collect()).unwrap_or_default();
+        if !style::set_container_sizes(doc_id, sizes) {
+            break;
+        }
+        styles = style::compute(&loaded.doc, &sheets, &media);
+        root = layout::build_box_tree(&loaded.doc, &styles);
+        page = root.as_ref().map(|root| layout::layout(&loaded.doc, &styles, root, fonts, images, width, height));
+    }
     if timing {
         eprintln!(
             "[ferro] tempos: CSS {t_css:.0} ms · cascata {t_cascade:.0} ms · caixas {t_boxes:.0} ms · layout {:.0} ms",
@@ -511,6 +525,7 @@ pub fn render_styled(
             anchors: Vec::new(),
             missing_urls: Vec::new(),
             missing_fonts: Vec::new(),
+            containers: Vec::new(),
         },
     };
     // fontes web das famílias que a página realmente usa

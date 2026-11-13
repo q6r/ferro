@@ -242,3 +242,33 @@ fn grid_align_content_e_filho_com_altura_em_porcentagem() {
         );
     });
 }
+
+#[test]
+fn container_queries() {
+    with_stack(|| {
+        // unidades cq*, @container com e sem nome, contêineres aninhados e a
+        // contenção de tamanho (o 1fr não cresce com o conteúdo do contêiner)
+        let mut s = session(
+            r#"<style>body { margin: 0; width: 800px } i { display: block; height: 10px }
+                 .c { container-type: inline-size } .a1 { width: 50cqw }
+                 @container (min-width: 300px) { .a2 { width: 77px } }
+                 @container (max-width: 299px) { .a2 { width: 33px } }
+                 .card { container: card / inline-size; width: 150px }
+                 @container card (max-width: 200px) { .b1 { width: 11px } }
+                 @container side (min-width: 1px) { .b2 { width: 22px } }
+                 .inner { container-type: inline-size; width: 100px } .c3 { width: calc(100cqw - 20px) }
+                 .v { container-type: size; width: 100%; aspect-ratio: 16/15 }
+                 .vc { inline-size: min(calc(100cqw - 64px), calc((100cqh - 64px) * 984 / 840)); aspect-ratio: 984/840 }
+                 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; width: 600px }</style>
+               <div class="c" style="width:400px"><i class="a1" id="a1"></i><i class="a2" id="a2"></i></div>
+               <div class="c" style="width:200px"><i class="a2" id="a3"></i></div>
+               <div class="card"><i class="b1" id="b1"></i><i class="b2" id="b2" style="width:5px"></i></div>
+               <div class="c" style="width:500px"><div class="inner"><i class="c3" id="c3"></i></div><i class="c3" id="c4"></i></div>
+               <div class="grid"><div class="v" id="v"><div class="vc" id="vc"></div></div><div></div></div>"#,
+        );
+        assert_eq!(
+            eval(&mut s, "['a1','a2','a3','b1','b2','c3','c4','v','vc'].map(i => { const r = document.getElementById(i).getBoundingClientRect(); return i + ':' + Math.round(r.width) + 'x' + Math.round(r.height); }).join(' ')"),
+            "a1:200x10 a2:77x10 a3:33x10 b1:11x10 b2:5x10 c3:80x10 c4:480x10 v:290x272 vc:226x193"
+        );
+    });
+}

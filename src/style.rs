@@ -425,6 +425,14 @@ pub struct ComputedStyle {
     /// letter-spacing / word-spacing em px (herdados já resolvidos).
     pub letter_spacing: f32,
     pub word_spacing: f32,
+    /// container-type (0 normal, 1 inline-size, 2 size) e container-name.
+    pub container_type: u8,
+    pub container_names: Option<Rc<[Rc<str>]>>,
+    /// Contêineres de consulta acima deste elemento (herdado).
+    pub cq: Option<Rc<CqLink>>,
+    /// Propriedades de pintura de SVG dadas pelo CSS neste elemento (fill,
+    /// stroke...): vão para o SVG em linha por cima dos atributos.
+    pub svg_paint: Option<Rc<Vec<(&'static str, String)>>>,
     /// content-visibility: hidden (a caixa fica, o conteúdo não é desenhado).
     pub content_hidden: bool,
     pub border_box: bool,
@@ -610,6 +618,10 @@ impl ComputedStyle {
             text_shadow: None,
             letter_spacing: 0.0,
             word_spacing: 0.0,
+            container_type: 0,
+            container_names: None,
+            cq: None,
+            svg_paint: None,
             scheme_dark: css::prefers_dark(),
             explicit_inherit: false,
             width_kw: None,
@@ -700,6 +712,7 @@ impl ComputedStyle {
             text_shadow: parent.text_shadow,
             letter_spacing: parent.letter_spacing,
             word_spacing: parent.word_spacing,
+            cq: parent.cq.clone(),
             scheme_dark: parent.scheme_dark,
             ..ComputedStyle::initial()
         }
@@ -928,12 +941,79 @@ struct Units {
     rem: f32,
     vw: f32,
     vh: f32,
+    /// Tamanho do contêiner de consulta mais perto (unidades cq*); sem
+    /// contêiner, o da janela.
+    cqw: f32,
+    cqh: f32,
+}
+
+/// Contêineres de consulta (container-type) acima de um elemento, do mais
+/// perto ao mais longe, com o tamanho da caixa de conteúdo do layout anterior.
+#[derive(Debug, PartialEq)]
+pub struct CqLink {
+    pub names: Option<Rc<[Rc<str>]>>,
+    /// container-type: size (a altura também vale nas consultas).
+    pub size: bool,
+    pub w: f32,
+    pub h: f32,
+    pub up: Option<Rc<CqLink>>,
+}
+
+thread_local! {
+    /// Tamanho (caixa de conteúdo) dos contêineres de consulta medido no
+    /// layout, por documento: (id do documento, nó → largura e altura).
+    static CONTAINER_SIZES: std::cell::RefCell<(usize, HashMap<NodeId, (f32, f32)>)> = Default::default();
+}
+
+/// Guarda os tamanhos dos contêineres para a próxima cascata. Devolve se
+/// mudou alguma coisa (então o estilo precisa ser refeito).
+pub fn set_container_sizes(doc_id: usize, sizes: HashMap<NodeId, (f32, f32)>) -> bool {
+    CONTAINER_SIZES.with(|c| {
+        let mut c = c.borrow_mut();
+        let same = c.0 == doc_id
+            && c.1.len() == sizes.len()
+            && sizes.iter().all(|(k, v)| c.1.get(k).is_some_and(|o| (o.0 - v.0).abs() < 0.5 && (o.1 - v.1).abs() < 0.5));
+        if !same {
+            *c = (doc_id, sizes);
+        }
+        !same
+    })
+}
+
+fn container_size(doc: &Document, node: NodeId) -> Option<(f32, f32)> {
+    let id = doc as *const Document as usize;
+    CONTAINER_SIZES.with(|c| {
+        let c = c.borrow();
+        if c.0 != id { None } else { c.1.get(&node).copied() }
+    })
+}
+
+/// Propriedades lógicas → físicas (escrita horizontal, da esquerda para a direita).
+fn physical_name(name: &str) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    match name {
+        "inline-size" => Cow::Borrowed("width"),
+        "block-size" => Cow::Borrowed("height"),
+        "min-inline-size" => Cow::Borrowed("min-width"),
+        "max-inline-size" => Cow::Borrowed("max-width"),
+        "min-block-size" => Cow::Borrowed("min-height"),
+        "max-block-size" => Cow::Borrowed("max-height"),
+        "inset-inline-start" => Cow::Borrowed("left"),
+        "inset-inline-end" => Cow::Borrowed("right"),
+        "inset-block-start" => Cow::Borrowed("top"),
+        "inset-block-end" => Cow::Borrowed("bottom"),
+        n if n.starts_with("border-inline-start") => Cow::Owned(n.replacen("border-inline-start", "border-left", 1)),
+        n if n.starts_with("border-inline-end") => Cow::Owned(n.replacen("border-inline-end", "border-right", 1)),
+        n if n.starts_with("border-block-start") => Cow::Owned(n.replacen("border-block-start", "border-top", 1)),
+        n if n.starts_with("border-block-end") => Cow::Owned(n.replacen("border-block-end", "border-bottom", 1)),
+        n => Cow::Borrowed(n),
+    }
 }
 
 /// Comprimento de uma media query (`calc(1120px - 1px)`, `40em`): em e
 /// rem valem 16 px; vw/vh, a janela.
 pub(crate) fn media_px(v: &str, width: f32, height: f32) -> Option<f32> {
-    let u = Units { em: 16.0, rem: 16.0, vw: width, vh: height };
+    let u = Units { em: 16.0, rem: 16.0, vw: width, vh: height, cqw: width, cqh: height };
     match parse_len(v, &u)? {
         Len::Px(p) => Some(p),
         Len::Calc(p, pct) if pct == 0.0 => Some(p),
@@ -976,6 +1056,10 @@ fn parse_len(v: &str, u: &Units) -> Option<Len> {
         "vh" | "svh" | "lvh" | "dvh" => n * u.vh / 100.0,
         "vmin" | "svmin" | "dvmin" => n * u.vw.min(u.vh) / 100.0,
         "vmax" | "svmax" | "dvmax" => n * u.vw.max(u.vh) / 100.0,
+        "cqw" | "cqi" => n * u.cqw / 100.0,
+        "cqh" | "cqb" => n * u.cqh / 100.0,
+        "cqmin" => n * u.cqw.min(u.cqh) / 100.0,
+        "cqmax" => n * u.cqw.max(u.cqh) / 100.0,
         _ => return None,
     };
     Some(Len::Px(px))
@@ -2204,7 +2288,32 @@ fn inherited_same(a: &ComputedStyle, b: &ComputedStyle) -> bool {
         && a.font_names == b.font_names
         && a.text_shadow == b.text_shadow
         && a.scheme_dark == b.scheme_dark
+        && a.letter_spacing == b.letter_spacing
+        && a.word_spacing == b.word_spacing
+        && a.cq == b.cq
         && same_vars(&a.custom, &b.custom)
+}
+
+fn container_names(v: &str) -> Option<Rc<[Rc<str>]>> {
+    let names: Vec<Rc<str>> = v.split_whitespace().filter(|n| *n != "none").map(Rc::from).collect();
+    (!names.is_empty()).then(|| names.into())
+}
+
+/// A condição de um @container vale para o contêiner certo acima do elemento
+/// (o mais perto com o nome pedido)?
+fn container_matches(q: &css::ContainerQuery, chain: Option<&CqLink>) -> bool {
+    let mut cur = chain;
+    while let Some(c) = cur {
+        let named = match &q.name {
+            Some(n) => c.names.as_ref().is_some_and(|ns| ns.iter().any(|x| &**x == n.as_str())),
+            None => true,
+        };
+        if named {
+            return q.matches(c.w, c.size.then_some(c.h));
+        }
+        cur = c.up.as_deref();
+    }
+    false
 }
 
 /// Ordem da cascata: (origem e importância, contexto, especificidade, ordem).
@@ -2444,6 +2553,11 @@ impl Cascade<'_> {
             if selector.pseudo_element != pseudo || !css::matches(self.doc, node, selector) {
                 continue;
             }
+            if let Some(q) = &rule.container
+                && !container_matches(q, parent.cq.as_deref())
+            {
+                continue;
+            }
             push_matched(&mut matched, e, rule, own_ctx);
         }
         self.scratch.replace(candidates);
@@ -2551,6 +2665,18 @@ impl Cascade<'_> {
         if pseudo.is_none() {
             let units = self.units(&style);
             presentational_hints(el, &mut style, &units);
+            // contêiner de consulta com tamanho medido: entra na cadeia dos descendentes
+            if style.container_type != 0
+                && let Some((w, h)) = container_size(self.doc, node)
+            {
+                style.cq = Some(Rc::new(CqLink {
+                    names: style.container_names.clone(),
+                    size: style.container_type == 2,
+                    w,
+                    h,
+                    up: style.cq.take(),
+                }));
+            }
         }
         SCHEME_DARK.with(|c| c.set(saved_scheme));
         if pseudo.is_some() && style.display == Display::Block && !matched.iter().any(|(_, d)| d.name == "display") {
@@ -2561,11 +2687,14 @@ impl Cascade<'_> {
     }
 
     fn units(&self, style: &ComputedStyle) -> Units {
+        let (cqw, cqh) = style.cq.as_ref().map_or((self.media.width, self.media.height), |c| (c.w, c.h));
         Units {
             em: style.font_size,
             rem: self.root_font,
             vw: self.media.width,
             vh: self.media.height,
+            cqw,
+            cqh,
         }
     }
 
@@ -2596,11 +2725,14 @@ impl Cascade<'_> {
             }
             _ => {}
         }
+        let (cqw, cqh) = s.cq.as_ref().map_or((self.media.width, self.media.height), |c| (c.w, c.h));
         let u = Units {
             em: if d.name == "font-size" || d.name == "font" { parent.font_size } else { s.font_size },
             rem: self.root_font,
             vw: self.media.width,
             vh: self.media.height,
+            cqw,
+            cqh,
         };
         let v = lower.as_str();
         let len = |v: &str| parse_len(v, &u);
@@ -2615,7 +2747,48 @@ impl Cascade<'_> {
                 other => other,
             })
         };
-        match d.name.as_str() {
+        let prop = physical_name(&d.name);
+        match prop.as_ref() {
+            "container-type" => {
+                s.container_type = match v.trim() {
+                    "size" => 2,
+                    "inline-size" => 1,
+                    _ => 0,
+                }
+            }
+            "container-name" => s.container_names = container_names(v),
+            "fill" | "stroke" | "stroke-width" | "fill-rule" | "fill-opacity" | "stroke-opacity" | "stop-color"
+            | "stop-opacity" => {
+                const NAMES: [&str; 8] = [
+                    "fill",
+                    "stroke",
+                    "stroke-width",
+                    "fill-rule",
+                    "fill-opacity",
+                    "stroke-opacity",
+                    "stop-color",
+                    "stop-opacity",
+                ];
+                if let Some(&name) = NAMES.iter().find(|n| **n == prop.as_ref()) {
+                    let list = Rc::make_mut(s.svg_paint.get_or_insert_with(Default::default));
+                    list.retain(|(n, _)| *n != name);
+                    // o valor como veio (url(#Id) diferencia maiúsculas)
+                    list.push((name, value.trim().to_string()));
+                }
+            }
+            // container: nome [/ tipo]
+            "container" => {
+                let (names, ty) = match v.split_once('/') {
+                    Some((n, t)) => (n, t.trim()),
+                    None => (v, "normal"),
+                };
+                s.container_names = container_names(names);
+                s.container_type = match ty {
+                    "size" => 2,
+                    "inline-size" => 1,
+                    _ => 0,
+                };
+            }
             "display" => {
                 let first = v.split_whitespace().next().unwrap_or("");
                 s.display = match (first, v) {
@@ -3824,7 +3997,9 @@ fn apply_font_shorthand(s: &mut ComputedStyle, parent: &ComputedStyle, v: &str, 
 fn is_inherited(name: &str) -> bool {
     matches!(
         name,
-        "color"
+        "letter-spacing"
+            | "word-spacing"
+            | "color"
             | "font-size"
             | "font-weight"
             | "font-style"
@@ -3845,6 +4020,8 @@ fn is_inherited(name: &str) -> bool {
 /// Copia uma propriedade de `src` (para inherit/initial/unset).
 fn copy_property(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
     match name {
+        "letter-spacing" => dst.letter_spacing = src.letter_spacing,
+        "word-spacing" => dst.word_spacing = src.word_spacing,
         "color" => dst.color = src.color,
         "font-size" => dst.font_size = src.font_size,
         "font-weight" => dst.font_weight = src.font_weight,
@@ -3909,7 +4086,7 @@ fn copy_property(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
 
 /// Substitui var(--x, fallback). Devolve None se alguma variável não existir
 /// e não houver fallback (a declaração vira inválida, como no CSS).
-fn substitute_vars(v: &str, vars: &CustomVars, depth: u32) -> Option<String> {
+pub(crate) fn substitute_vars(v: &str, vars: &CustomVars, depth: u32) -> Option<String> {
     if depth > 16 {
         return None;
     }
@@ -4436,7 +4613,7 @@ mod calc_tests {
 
     #[test]
     fn calc_com_porcentagem_aninhado_e_funcoes() {
-        let u = Units { em: 16.0, rem: 16.0, vw: 1280.0, vh: 800.0 };
+        let u = Units { em: 16.0, rem: 16.0, vw: 1280.0, vh: 800.0, cqw: 1280.0, cqh: 800.0 };
         let l = |s: &str| parse_len(s, &u);
         assert_eq!(l("calc(100% - 20px)"), Some(Len::Calc(-20.0, 100.0)));
         assert_eq!(l("calc(8px + 8px + calc(1rem + 4px))"), Some(Len::Px(36.0)));

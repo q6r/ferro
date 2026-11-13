@@ -48,6 +48,49 @@ pub fn css_url(s: &str) -> Option<String> {
 pub struct Rule {
     pub selectors: Vec<Selector>,
     pub declarations: Vec<Declaration>,
+    /// Dentro de um `@container`: só vale quando o contêiner casa.
+    pub container: Option<std::rc::Rc<ContainerQuery>>,
+}
+
+/// Condição de um `@container`: o nome do contêiner (opcional) e a consulta
+/// de tamanho, na sintaxe das media queries (inline-size vira width).
+#[derive(Debug)]
+pub struct ContainerQuery {
+    pub name: Option<String>,
+    query: String,
+    /// style(), scroll-state()...: nunca casa
+    never: bool,
+}
+
+impl ContainerQuery {
+    pub fn parse(prelude: &str) -> ContainerQuery {
+        let p = prelude.trim();
+        let (name, rest) = match p.split_once(|c: char| c.is_whitespace() || c == '(') {
+            Some((first, _)) if !first.is_empty() && first != "not" && !first.contains('(') => {
+                (Some(first.to_string()), p[first.len()..].trim())
+            }
+            _ => (None, p),
+        };
+        let q = rest.to_ascii_lowercase().replace("inline-size", "width").replace("block-size", "height");
+        let never = q.contains("style(") || q.contains("scroll-state(");
+        ContainerQuery { name, query: q, never }
+    }
+
+    /// Casa com um contêiner de largura `w` e altura `h` (None: o contêiner é
+    /// só inline-size e a altura não conta).
+    pub fn matches(&self, w: f32, h: Option<f32>) -> bool {
+        if self.never {
+            return false;
+        }
+        let q = &self.query;
+        if h.is_none() && (q.contains("height") || q.contains("aspect-ratio") || q.contains("orientation")) {
+            return false;
+        }
+        if q.is_empty() {
+            return true;
+        }
+        media_matches(q, &MediaContext { width: w, height: h.unwrap_or(0.0) })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -959,6 +1002,7 @@ impl Parser<'_> {
                             rules.push(Rule {
                                 selectors,
                                 declarations,
+                                container: None,
                             });
                         }
                     }
@@ -1052,6 +1096,18 @@ impl Parser<'_> {
             return; // @import, @charset, @layer a, b; ...
         }
         self.pos += 1;
+        if name == "container" {
+            // as regras de dentro ficam com a condição (vale por elemento)
+            let q = std::rc::Rc::new(ContainerQuery::parse(&prelude));
+            let start = rules.len();
+            self.parse_rule_list(rules, true);
+            for r in &mut rules[start..] {
+                if r.container.is_none() {
+                    r.container = Some(q.clone());
+                }
+            }
+            return;
+        }
         let include = match name.as_str() {
             "media" => media_matches(&prelude, self.ctx),
             "supports" => supports_matches(&prelude),

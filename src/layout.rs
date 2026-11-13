@@ -486,6 +486,8 @@ pub struct Page {
     pub missing_urls: Vec<String>,
     /// Fontes web que a página usa e ainda não foram baixadas.
     pub missing_fonts: Vec<crate::css::FontFaceRule>,
+    /// Contêineres de consulta (container-type): caixa de conteúdo de cada um.
+    pub containers: Vec<(NodeId, f32, f32)>,
 }
 
 /// Imagens já decodificadas: por elemento <img> e por URL (fundos do CSS).
@@ -666,6 +668,7 @@ impl Opts {
 
 pub fn layout<'a>(
     doc: &'a Document,
+    styles: &'a Styles,
     root: &'a LayoutBox,
     fonts: &'a Fonts,
     images: &'a Images,
@@ -695,6 +698,7 @@ pub fn layout<'a>(
     };
     let mut cx = Ctx {
         doc,
+        styles,
         fonts,
         images,
         items: Vec::new(),
@@ -721,6 +725,7 @@ pub fn layout<'a>(
         pct_cache: HashMap::new(),
         missing: Vec::new(),
         sticky: Vec::new(),
+        containers: Vec::new(),
     };
     let bm = cx.box_model(&root.style, viewport_w);
     let y = bm.margin[TOP];
@@ -778,6 +783,7 @@ pub fn layout<'a>(
         anchors: cx.anchors,
         missing_urls: cx.missing,
         missing_fonts: Vec::new(),
+        containers: cx.containers,
     }
 }
 
@@ -861,6 +867,7 @@ fn split_layers(items: Vec<DisplayItem>, fixed: bool, out: &mut Vec<Layer>) -> V
 
 struct Ctx<'a> {
     doc: &'a Document,
+    styles: &'a Styles,
     fonts: &'a Fonts,
     images: &'a Images,
     items: Vec<DisplayItem>,
@@ -903,6 +910,8 @@ struct Ctx<'a> {
     /// Elementos sticky esperando a caixa do bloco que os contém para saber
     /// até onde podem se deslocar.
     sticky: Vec<StickyPending>,
+    /// Contêineres de consulta montados: (nó, largura e altura do conteúdo).
+    containers: Vec<(NodeId, f32, f32)>,
 }
 
 /// Um elemento sticky já montado: o trecho dele e o deslocamento que ele
@@ -1293,12 +1302,195 @@ thread_local! {
 }
 
 /// Desenha um `<svg>` que está no próprio HTML (ícones, logos).
-fn inline_svg(doc: &Document, n: NodeId, w: f32, h: f32, color: Color) -> Option<Arc<ImageData>> {
+/// Serializa um SVG em linha para o renderizador: as propriedades de pintura
+/// que vieram do CSS da página entram no atributo style (por cima dos
+/// atributos), elementos com display: none saem, e `<use href="#id">` vira
+/// uma cópia do elemento citado (ícones de sprite).
+fn svg_markup(doc: &Document, styles: &Styles, n: NodeId, root: bool, depth: u32, out: &mut String) {
+    fn esc(s: &str, out: &mut String) {
+        for c in s.chars() {
+            match c {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '"' => out.push_str("&quot;"),
+                c => out.push(c),
+            }
+        }
+    }
+    if depth > 64 {
+        return;
+    }
+    match &doc.node(n).data {
+        NodeData::Text(t) => esc(t, out),
+        NodeData::Element(el) => {
+            let st = styles.nodes.get(n).and_then(|s| s.as_ref());
+            if st.is_some_and(|s| s.display == Display::None) {
+                return;
+            }
+            // <use href="#id">: o símbolo (ou elemento) citado, no lugar
+            if el.tag == "use"
+                && let Some(id) = el.attr("href").or(el.attr("xlink:href")).and_then(|h| h.strip_prefix('#'))
+                && let Some(target) = doc.descendants(crate::dom::Document::ROOT).into_iter().find(|&d| {
+                    doc.element(d).and_then(|e| e.attr("id")) == Some(id)
+                })
+                && let Some(te) = doc.element(target)
+            {
+                let num = |e: &crate::dom::ElementData, k: &str| e.attr(k).and_then(|v| v.trim().trim_end_matches("px").parse::<f32>().ok());
+                let (x, y) = (num(el, "x").unwrap_or(0.0), num(el, "y").unwrap_or(0.0));
+                let mut tr = format!("translate({x} {y})");
+                // <symbol viewBox>: ajusta à área do <use> (ou à do <svg> de fora)
+                if te.tag == "symbol"
+                    && let Some(vb) = te.attr("viewbox").map(|v| {
+                        v.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.parse::<f32>().ok()).collect::<Vec<_>>()
+                    })
+                    && vb.len() == 4
+                    && vb[2] > 0.0
+                    && vb[3] > 0.0
+                {
+                    let outer = std::iter::successors(doc.node(n).parent, |&p| doc.node(p).parent)
+                        .find(|&a| doc.tag(a) == Some("svg"))
+                        .and_then(|a| doc.element(a));
+                    let outer_vb: Option<Vec<f32>> = outer.and_then(|o| o.attr("viewbox")).map(|v| {
+                        v.split(|c: char| c == ',' || c.is_whitespace()).filter_map(|t| t.parse::<f32>().ok()).collect()
+                    });
+                    let ow = num(el, "width").or(outer_vb.as_ref().filter(|v| v.len() == 4).map(|v| v[2])).unwrap_or(vb[2]);
+                    let oh = num(el, "height").or(outer_vb.as_ref().filter(|v| v.len() == 4).map(|v| v[3])).unwrap_or(vb[3]);
+                    let k = (ow / vb[2]).min(oh / vb[3]);
+                    let (dx, dy) = ((ow - vb[2] * k) / 2.0, (oh - vb[3] * k) / 2.0);
+                    tr = format!("translate({} {}) scale({k}) translate({} {})", x + dx, y + dy, -vb[0], -vb[1]);
+                }
+                out.push_str("<g transform=\"");
+                out.push_str(&tr);
+                out.push('"');
+                svg_paint_style(st, out);
+                out.push('>');
+                if te.tag == "symbol" {
+                    for &c in &doc.node(target).children {
+                        svg_markup(doc, styles, c, false, depth + 1, out);
+                    }
+                } else {
+                    svg_markup(doc, styles, target, false, depth + 1, out);
+                }
+                out.push_str("</g>");
+                return;
+            }
+            out.push('<');
+            out.push_str(&el.tag);
+            for (k, v) in &el.attrs {
+                if k == "style" {
+                    continue;
+                }
+                out.push(' ');
+                out.push_str(k);
+                out.push_str("=\"");
+                esc(v, out);
+                out.push('"');
+            }
+            if root {
+                // o style do próprio <svg> (as propriedades de pintura, pelo CSS)
+                svg_paint_style(st, out);
+            } else {
+                svg_paint_style_with_opacity(st, out);
+            }
+            out.push('>');
+            for &c in &doc.node(n).children {
+                svg_markup(doc, styles, c, false, depth + 1, out);
+            }
+            out.push_str("</");
+            out.push_str(&el.tag);
+            out.push('>');
+        }
+        _ => {}
+    }
+}
+
+fn svg_paint_style(st: Option<&Rc<ComputedStyle>>, out: &mut String) {
+    if let Some(list) = st.and_then(|s| s.svg_paint.as_ref())
+        && !list.is_empty()
+    {
+        out.push_str(" style=\"");
+        for (k, v) in list.iter() {
+            out.push_str(k);
+            out.push(':');
+            out.push_str(&v.replace('"', "'"));
+            out.push(';');
+        }
+        out.push('"');
+    }
+}
+
+/// Como `svg_paint_style`, mais a opacidade do CSS (nos filhos; a do <svg> o layout aplica).
+fn svg_paint_style_with_opacity(st: Option<&Rc<ComputedStyle>>, out: &mut String) {
+    let Some(s) = st else { return };
+    if s.opacity >= 1.0 {
+        return svg_paint_style(st, out);
+    }
+    out.push_str(" style=\"");
+    if let Some(list) = &s.svg_paint {
+        for (k, v) in list.iter() {
+            out.push_str(k);
+            out.push(':');
+            out.push_str(&v.replace('"', "'"));
+            out.push(';');
+        }
+    }
+    out.push_str(&format!("opacity:{}", s.opacity));
+    out.push('"');
+}
+
+#[allow(clippy::too_many_arguments)]
+fn inline_svg(
+    doc: &Document,
+    styles: &Styles,
+    n: NodeId,
+    w: f32,
+    h: f32,
+    color: Color,
+    vars: &crate::style::CustomVars,
+) -> Option<Arc<ImageData>> {
     use std::hash::Hasher;
     if w < 1.0 || h < 1.0 || w > 4096.0 || h > 4096.0 {
         return None;
     }
-    let src = doc.serialize(n, true);
+    let mut src = String::new();
+    svg_markup(doc, styles, n, true, 0, &mut src);
+    // var(--x) nos atributos (stroke="var(--cor)"): as variáveis CSS do <svg>,
+    // uma a uma (a que não existe fica como está)
+    if src.contains("var(") {
+        let mut out = String::with_capacity(src.len());
+        let mut rest = src.as_str();
+        while let Some(i) = rest.find("var(") {
+            out.push_str(&rest[..i]);
+            let tail = &rest[i..];
+            // fecha o parêntese do var(), contando os de dentro
+            let mut depth = 0;
+            let end = tail.char_indices().find_map(|(k, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(k + 1);
+                        }
+                    }
+                    _ => {}
+                }
+                None
+            });
+            let Some(end) = end else {
+                out.push_str(tail);
+                rest = "";
+                break;
+            };
+            match crate::style::substitute_vars(&tail[..end], vars, 0) {
+                Some(v) => out.push_str(&v),
+                None => out.push_str(&tail[..end]),
+            }
+            rest = &tail[end..];
+        }
+        out.push_str(rest);
+        src = out;
+    }
     let mut hs = ferro_js::fxhash::FxHasher::default();
     hs.write(src.as_bytes());
     // 2× para ficar nítido com zoom e telas de alta densidade
@@ -2022,6 +2214,10 @@ impl<'a> Ctx<'a> {
             self.floats.truncate(start);
         }
 
+        // container-type: size: a altura não vem do conteúdo
+        if s.container_type == 2 && !anon {
+            content_h = 0.0;
+        }
         let mut h = match (definite_h, s.aspect_ratio) {
             (Some(h), _) => h,
             // aspect-ratio: a altura vem da largura (o conteúdo pode aumentar)
@@ -2041,6 +2237,12 @@ impl<'a> Ctx<'a> {
         }
         if let Some(min) = fixed(s.min_height) {
             h = h.max(min);
+        }
+        if s.container_type != 0
+            && !anon
+            && let Some(n) = b.node()
+        {
+            self.containers.push((n, bm.content_w, h));
         }
         // filhos sticky: o deslocamento que querem, sem sair da caixa de
         // conteúdo deste bloco
@@ -2549,6 +2751,8 @@ impl<'a> Ctx<'a> {
         };
         let mut r = match (s.width, anon) {
             (Len::Px(w), false) => (content(w), content(w)),
+            // contêiner de consulta: contenção de tamanho, o conteúdo não conta
+            _ if s.container_type != 0 && !anon => (extra, extra),
             _ => {
                 // altura definida: as % de altura dos filhos (svg, img) contam
                 if !anon {
@@ -4615,7 +4819,7 @@ impl<'a> Ctx<'a> {
                     }
                     (None, None, None) => (300.0, 150.0),
                 };
-                let paint = match inline_svg(self.doc, n, w, h, s.color) {
+                let paint = match inline_svg(self.doc, self.styles, n, w, h, s.color, &s.custom) {
                     Some(img) => AtomicPaint::Image(img),
                     None => AtomicPaint::Invisible,
                 };

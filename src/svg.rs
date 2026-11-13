@@ -1,8 +1,8 @@
 //! Renderizador de SVG próprio. Cobre o subconjunto usado por ícones e
 //! logotipos: <path> (todos os comandos, inclusive arcos), <rect>, <circle>,
 //! <ellipse>, <line>, <polyline>, <polygon>, <g>, `transform`, herança de
-//! fill/stroke, `fill-rule` e antialias. Ainda não: gradientes, clipPath,
-//! máscaras, texto e filtros.
+//! fill/stroke, `fill-rule`, gradientes lineares e radiais e antialias. Ainda
+//! não: padrões (<pattern>), clipPath, máscaras, texto e filtros.
 //!
 //! Preenchimento: varredura por linhas com regra nonzero/evenodd.
 //! Traço: distância de cada pixel aos segmentos (pontas e junções redondas).
@@ -16,8 +16,24 @@ use crate::style::{self, Color};
 enum Paint {
     None,
     Color(Color),
-    /// currentColor (e url(#...) enquanto gradientes não existem)
+    /// currentColor
     Current,
+    /// url(#id): índice em `Svg::refs` e a cor reserva (se o id não for um gradiente)
+    Url(usize, Option<Color>),
+}
+
+/// Um `<linearGradient>` ou `<radialGradient>`.
+#[derive(Clone, Debug, Default)]
+struct Gradient {
+    radial: bool,
+    /// gradientUnits="userSpaceOnUse" (senão, a caixa da forma)
+    user_space: Option<bool>,
+    /// linear: x1 y1 x2 y2; radial: cx cy r (como frações da caixa ou em
+    /// unidades do usuário); None = herdado de `href` ou o padrão
+    coords: [Option<f32>; 4],
+    transform: Option<Matrix>,
+    stops: Vec<(f32, Color)>,
+    href: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -67,6 +83,8 @@ struct Shape {
     stroke_width: f32,
     evenodd: bool,
     opacity: f32,
+    /// Transformação do elemento (para gradientes em userSpaceOnUse).
+    matrix: Matrix,
 }
 
 #[derive(Debug)]
@@ -75,6 +93,9 @@ pub struct Svg {
     pub width: f32,
     pub height: f32,
     shapes: Vec<Shape>,
+    /// ids citados em url(#...)
+    refs: Vec<String>,
+    gradients: std::collections::HashMap<String, Gradient>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,13 +112,32 @@ fn num(s: Option<&str>) -> Option<f32> {
     s?.trim().trim_end_matches("px").parse().ok()
 }
 
-fn parse_paint(v: &str) -> Option<Paint> {
+fn parse_paint(v: &str, refs: &mut Vec<String>) -> Option<Paint> {
     let v = v.trim();
     match v.to_ascii_lowercase().as_str() {
         "none" | "transparent" => Some(Paint::None),
         "currentcolor" => Some(Paint::Current),
-        l if l.starts_with("url(") => Some(Paint::Current),
+        l if l.starts_with("url(") => {
+            // url(#id) [cor reserva]
+            let end = v.find(')')?;
+            let id = v[4..end].trim().trim_matches(|c| c == '"' || c == '\'').trim_start_matches('#').to_string();
+            let fallback = style::parse_color(v[end + 1..].trim(), Color::BLACK);
+            let i = refs.iter().position(|r| *r == id).unwrap_or_else(|| {
+                refs.push(id);
+                refs.len() - 1
+            });
+            Some(Paint::Url(i, fallback))
+        }
         _ => style::parse_color(v, Color::BLACK).map(Paint::Color),
+    }
+}
+
+/// Número de um atributo de gradiente: "50%" vira 0,5.
+fn frac(v: Option<&str>) -> Option<f32> {
+    let v = v?.trim();
+    match v.strip_suffix('%') {
+        Some(p) => p.trim().parse::<f32>().ok().map(|x| x / 100.0),
+        None => v.trim_end_matches("px").parse().ok(),
     }
 }
 
@@ -464,6 +504,10 @@ pub fn parse(src: &str) -> Option<Svg> {
     let mut svg: Option<Svg> = None;
     let mut stack: Vec<State> = Vec::new();
     let mut skip_depth = 0usize; // dentro de <defs>, <clipPath>...
+    let mut refs: Vec<String> = Vec::new();
+    let mut gradients: std::collections::HashMap<String, Gradient> = Default::default();
+    // gradiente aberto (recebe as <stop>)
+    let mut open_grad: Option<String> = None;
     let root = State {
         fill: Paint::Color(Color::BLACK),
         stroke: Paint::None,
@@ -481,6 +525,48 @@ pub fn parse(src: &str) -> Option<Svg> {
                 self_closing,
             } => {
                 let attr = |n: &str| attrs.iter().find(|(k, _)| k == n).map(|(_, v)| v.as_str());
+                // gradientes (em qualquer lugar, normalmente dentro de <defs>)
+                if name == "lineargradient" || name == "radialgradient" {
+                    let radial = name == "radialgradient";
+                    let keys: [&str; 4] = if radial { ["cx", "cy", "r", ""] } else { ["x1", "y1", "x2", "y2"] };
+                    let g = Gradient {
+                        radial,
+                        user_space: attr("gradientunits").map(|u| u.trim().eq_ignore_ascii_case("userSpaceOnUse")),
+                        coords: keys.map(|k| if k.is_empty() { None } else { frac(attr(k)) }),
+                        transform: attr("gradienttransform").map(parse_transform),
+                        stops: Vec::new(),
+                        href: attr("href").or(attr("xlink:href")).map(|h| h.trim().trim_start_matches('#').to_string()),
+                    };
+                    let id = attr("id").unwrap_or("").to_string();
+                    gradients.insert(id.clone(), g);
+                    open_grad = if self_closing { None } else { Some(id) };
+                    if !self_closing {
+                        skip_depth += 1;
+                    }
+                    continue;
+                }
+                if name == "stop" {
+                    if let Some(g) = open_grad.as_ref().and_then(|id| gradients.get_mut(id)) {
+                        let mut props: Vec<(String, String)> = attrs.clone();
+                        if let Some(s) = attr("style") {
+                            for d in css::parse_declarations(s) {
+                                props.push((d.name, d.value));
+                            }
+                        }
+                        let get = |k: &str| props.iter().rev().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+                        let offset = frac(get("offset")).unwrap_or(0.0).clamp(0.0, 1.0);
+                        let mut c = get("stop-color").and_then(|v| style::parse_color(v, Color::BLACK)).unwrap_or(Color::BLACK);
+                        let op = get("stop-opacity").and_then(|v| frac(Some(v))).unwrap_or(1.0).clamp(0.0, 1.0);
+                        c.a = (c.a as f32 * op).round() as u8;
+                        // offsets não diminuem
+                        let offset = g.stops.last().map_or(offset, |l| offset.max(l.0));
+                        g.stops.push((offset, c));
+                    }
+                    if !self_closing {
+                        skip_depth += 1;
+                    }
+                    continue;
+                }
                 if skip_depth > 0 {
                     if !self_closing {
                         skip_depth += 1;
@@ -509,12 +595,12 @@ pub fn parse(src: &str) -> Option<Svg> {
                 for (k, v) in &props {
                     match k.as_str() {
                         "fill" => {
-                            if let Some(p) = parse_paint(v) {
+                            if let Some(p) = parse_paint(v, &mut refs) {
                                 st.fill = p
                             }
                         }
                         "stroke" => {
-                            if let Some(p) = parse_paint(v) {
+                            if let Some(p) = parse_paint(v, &mut refs) {
                                 st.stroke = p
                             }
                         }
@@ -543,6 +629,8 @@ pub fn parse(src: &str) -> Option<Svg> {
                                 width: w,
                                 height: h,
                                 shapes: Vec::new(),
+                                refs: Vec::new(),
+                                gradients: Default::default(),
                             });
                         }
                         None
@@ -602,13 +690,17 @@ pub fn parse(src: &str) -> Option<Svg> {
                         stroke_width: st.stroke_width * m.scale(),
                         evenodd: st.evenodd,
                         opacity: st.opacity,
+                        matrix: m,
                     });
                 }
                 if !self_closing {
                     stack.push(st);
                 }
             }
-            Token::EndTag { .. } => {
+            Token::EndTag { name, .. } => {
+                if name == "lineargradient" || name == "radialgradient" {
+                    open_grad = None;
+                }
                 if skip_depth > 0 {
                     skip_depth -= 1;
                 } else {
@@ -618,7 +710,118 @@ pub fn parse(src: &str) -> Option<Svg> {
             _ => {}
         }
     }
-    svg
+    let mut svg = svg?;
+    svg.refs = refs;
+    svg.gradients = gradients;
+    Some(svg)
+}
+
+impl Matrix {
+    fn invert(&self) -> Option<Matrix> {
+        let [a, b, c, d, e, f] = self.0;
+        let det = a * d - b * c;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+        Some(Matrix([ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)]))
+    }
+}
+
+/// Gradiente pronto para pintar: do pixel para o espaço do gradiente e as paradas.
+struct GradPaint {
+    radial: bool,
+    inv: Matrix,
+    c: [f32; 4],
+    stops: Vec<(f32, Color)>,
+}
+
+impl GradPaint {
+    /// Cor (RGBA de 0 a 1, sem pré-multiplicar) no centro do pixel.
+    fn at(&self, x: f32, y: f32) -> [f32; 4] {
+        let (gx, gy) = self.inv.apply((x, y));
+        let t = if self.radial {
+            let r = self.c[2].max(1e-6);
+            ((gx - self.c[0]).powi(2) + (gy - self.c[1]).powi(2)).sqrt() / r
+        } else {
+            let (dx, dy) = (self.c[2] - self.c[0], self.c[3] - self.c[1]);
+            let len2 = (dx * dx + dy * dy).max(1e-12);
+            ((gx - self.c[0]) * dx + (gy - self.c[1]) * dy) / len2
+        }
+        .clamp(0.0, 1.0);
+        let s = &self.stops;
+        let col = |c: Color| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, c.a as f32 / 255.0];
+        if t <= s[0].0 {
+            return col(s[0].1);
+        }
+        for w in s.windows(2) {
+            if t <= w[1].0 {
+                let span = (w[1].0 - w[0].0).max(1e-6);
+                let k = (t - w[0].0) / span;
+                let (a, b) = (col(w[0].1), col(w[1].1));
+                return [0, 1, 2, 3].map(|i| a[i] + (b[i] - a[i]) * k);
+            }
+        }
+        col(s[s.len() - 1].1)
+    }
+}
+
+impl Svg {
+    /// O gradiente de um url(#id), com os atributos e paradas herdados por
+    /// href e o mapeamento para os pixels da forma.
+    fn gradient(&self, i: usize, segs: &[Seg], shape_m: Matrix, view: Matrix) -> Option<GradPaint> {
+        let id = self.refs.get(i)?;
+        let mut g = self.gradients.get(id)?.clone();
+        // herança por href (até 8 níveis)
+        let mut next = g.href.clone();
+        for _ in 0..8 {
+            let Some(h) = next else { break };
+            let Some(p) = self.gradients.get(&h) else { break };
+            if g.stops.is_empty() {
+                g.stops = p.stops.clone();
+            }
+            if p.radial == g.radial {
+                for k in 0..4 {
+                    g.coords[k] = g.coords[k].or(p.coords[k]);
+                }
+            }
+            g.user_space = g.user_space.or(p.user_space);
+            g.transform = g.transform.or(p.transform);
+            next = p.href.clone();
+        }
+        if g.stops.is_empty() {
+            return None;
+        }
+        let user = g.user_space.unwrap_or(false);
+        let c = if g.radial {
+            [g.coords[0].unwrap_or(0.5), g.coords[1].unwrap_or(0.5), g.coords[2].unwrap_or(0.5), 0.0]
+        } else {
+            [g.coords[0].unwrap_or(0.0), g.coords[1].unwrap_or(0.0), g.coords[2].unwrap_or(1.0), g.coords[3].unwrap_or(0.0)]
+        };
+        // espaço do gradiente → espaço do usuário da raiz → pixels
+        let base = if user {
+            shape_m
+        } else {
+            // a caixa da forma (já no espaço da raiz)
+            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+            for s in segs {
+                let pts: &[(f32, f32)] = match s {
+                    Seg::Move(p) | Seg::Line(p) => std::slice::from_ref(p),
+                    Seg::Cubic(a, b, c) => &[*a, *b, *c],
+                    Seg::Close => &[],
+                };
+                for &(x, y) in pts {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+            if x1 <= x0 || y1 <= y0 {
+                return None;
+            }
+            Matrix([x1 - x0, 0.0, 0.0, y1 - y0, x0, y0])
+        };
+        let m = view.mul(base).mul(g.transform.unwrap_or(Matrix::ID));
+        Some(GradPaint { radial: g.radial, inv: m.invert()?, c, stops: g.stops })
+    }
 }
 
 /// Achata as curvas em polilinhas (já em pixels). Devolve (pontos, fechado).
@@ -778,6 +981,7 @@ impl Svg {
         let tx = (w as f32 - vw * s) / 2.0 - vx * s;
         let ty = (h as f32 - vh * s) / 2.0 - vy * s;
         let map = |(x, y): (f32, f32)| (x * s + tx, y * s + ty);
+        let view = Matrix([s, 0.0, 0.0, s, tx, ty]);
 
         // RGBA pré-multiplicado em f32
         let mut acc = vec![[0.0f32; 4]; wu * hu];
@@ -785,11 +989,23 @@ impl Svg {
         for shape in &self.shapes {
             let polys = flatten(&shape.segs, map);
             for (paint, is_fill) in [(shape.fill, true), (shape.stroke, false)] {
+                // url(#id): gradiente; sem ele, a cor reserva ou nada
+                let mut grad = None;
                 let c = match (paint, color) {
                     (Paint::None, _) => continue,
                     (_, Some(c)) => c,
                     (Paint::Color(c), None) => c,
                     (Paint::Current, None) => current,
+                    (Paint::Url(i, fallback), None) => match self.gradient(i, &shape.segs, shape.matrix, view) {
+                        Some(g) => {
+                            grad = Some(g);
+                            Color::BLACK
+                        }
+                        None => match fallback {
+                            Some(c) => c,
+                            None => continue,
+                        },
+                    },
                 };
                 cov.iter_mut().for_each(|v| *v = 0.0);
                 if is_fill {
@@ -799,7 +1015,17 @@ impl Svg {
                 }
                 let alpha = c.a as f32 / 255.0 * shape.opacity;
                 let col = [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0];
-                for (dst, &cv) in acc.iter_mut().zip(cov.iter()) {
+                for (i, (dst, &cv)) in acc.iter_mut().zip(cov.iter()).enumerate() {
+                    if cv <= 0.0 {
+                        continue;
+                    }
+                    let (col, alpha) = match &grad {
+                        Some(g) => {
+                            let p = g.at((i % wu) as f32 + 0.5, (i / wu) as f32 + 0.5);
+                            ([p[0], p[1], p[2]], p[3] * shape.opacity)
+                        }
+                        None => (col, alpha),
+                    };
                     let a = cv.min(1.0) * alpha;
                     if a <= 0.0 {
                         continue;
@@ -867,4 +1093,25 @@ mod tests {
         assert_eq!(px(7, 5)[2], 255);
         assert_eq!(px(9, 5)[3], 0);
     }
+
+    #[test]
+    fn gradiente_linear_e_url_sem_servidor() {
+        let svg = parse(
+            r##"<svg width="10" height="10" viewBox="0 0 10 10"><defs><linearGradient id="g"><stop offset="0" stop-color="red"/><stop offset="1" stop-color="blue"/></linearGradient></defs><rect width="10" height="5" fill="url(#g)"/><rect y="5" width="5" height="5" fill="url(#nada)"/><rect x="5" y="5" width="5" height="5" fill="url(#nada) #0f0"/></svg>"##,
+        )
+        .unwrap();
+        let img = svg.render(10, 10, None);
+        let px = |x: usize, y: usize| {
+            let i = (y * 10 + x) * 4;
+            (img.rgba[i], img.rgba[i + 1], img.rgba[i + 2], img.rgba[i + 3])
+        };
+        // vermelho à esquerda, azul à direita
+        let (l, r) = (px(0, 2), px(9, 2));
+        assert!(l.0 > 200 && l.2 < 40, "{l:?}");
+        assert!(r.2 > 200 && r.0 < 40, "{r:?}");
+        // url(#nada) sem reserva não pinta; com reserva, pinta a reserva
+        assert_eq!(px(2, 7).3, 0);
+        assert_eq!(px(7, 7), (0, 255, 0, 255));
+    }
+
 }
