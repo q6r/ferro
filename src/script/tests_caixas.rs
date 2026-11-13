@@ -156,3 +156,48 @@ fn grid_alinhamento_e_linhas_que_preenchem() {
         );
     });
 }
+
+#[test]
+fn grid_posiciona_definidos_primeiro() {
+    with_stack(|| {
+        // a estrutura do feed do g1: a imagem e a lista têm posição definida e
+        // vão primeiro; o cabeçalho e o título caem na coluna 2, e os
+        // metadados, presos à coluna 2, descem para depois da lista
+        let mut s = session(
+            r#"<style>body { margin: 0; width: 800px } i { display: block; height: 20px }
+                 .fb { align-items: start; column-gap: 16px; display: grid;
+                       grid-template-columns: repeat(auto-fit, minmax(45%, max-content)); grid-template-rows: repeat(5, auto) }</style>
+               <div class="fb"><i id="hd" style="height:8px"></i><i id="ti" style="height:60px"></i>
+                 <i id="mw" style="grid-column:1;grid-row:1/span 5;height:100px"></i>
+                 <i id="me" style="grid-column:2;margin:6px 0 0"></i><i id="re" style="grid-column:2;grid-row:3;height:40px"></i></div>
+               <div style="display:grid;grid-template-columns:repeat(3,50px)"><i id="a"></i><i id="b" style="grid-row:2"></i><i id="c"></i><i id="d" style="grid-row:2"></i></div>"#,
+        );
+        assert_eq!(
+            caixas(&mut s, &["hd", "ti", "mw", "me", "re", "a", "b", "c", "d"]),
+            "hd:376,0,360x8 ti:376,8,360x60 mw:0,0,360x100 me:376,114,360x20 re:376,68,360x40 \
+             a:0,134,50x20 b:0,154,50x20 c:50,134,50x20 d:50,154,50x20"
+        );
+    });
+}
+
+#[test]
+fn letter_spacing_e_word_spacing() {
+    with_stack(|| {
+        let mut s = session(
+            r#"<body style="margin:0;font-size:20px">
+               <span id="a" style="display:inline-block">Microsoft says</span><br>
+               <span id="b" style="display:inline-block;letter-spacing:2px">Microsoft says</span><br>
+               <span id="c" style="display:inline-block;word-spacing:10px">Microsoft says</span><br>
+               <div style="letter-spacing:0.1em;font-size:10px"><span id="d" style="display:inline-block;font-size:20px">Microsoft says</span></div>
+               </body>"#,
+        );
+        // depois de cada um dos 14 caracteres; word-spacing só no espaço; em
+        // herdado já em px (0,1em de 10px)
+        let w = |s: &mut super::Session, id: &str| eval(s, &format!("{id}.getBoundingClientRect().width"));
+        let base: f64 = w(&mut s, "a").parse().unwrap();
+        let diff = |s: &mut super::Session, id: &str| (w(s, id).parse::<f64>().unwrap() - base).round();
+        assert_eq!(diff(&mut s, "b"), 28.0);
+        assert_eq!(diff(&mut s, "c"), 10.0);
+        assert_eq!(diff(&mut s, "d"), 14.0);
+    });
+}

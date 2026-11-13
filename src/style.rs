@@ -422,6 +422,9 @@ pub struct ComputedStyle {
     pub box_shadow: Option<Rc<Vec<Shadow>>>,
     /// text-shadow (herdada; só a primeira sombra).
     pub text_shadow: Option<Shadow>,
+    /// letter-spacing / word-spacing em px (herdados já resolvidos).
+    pub letter_spacing: f32,
+    pub word_spacing: f32,
     /// content-visibility: hidden (a caixa fica, o conteúdo não é desenhado).
     pub content_hidden: bool,
     pub border_box: bool,
@@ -603,6 +606,8 @@ impl ComputedStyle {
             transform_origin: (Len::Percent(50.0), Len::Percent(50.0)),
             box_shadow: None,
             text_shadow: None,
+            letter_spacing: 0.0,
+            word_spacing: 0.0,
             scheme_dark: css::prefers_dark(),
             explicit_inherit: false,
             width_kw: None,
@@ -690,6 +695,8 @@ impl ComputedStyle {
             border_collapse: parent.border_collapse,
             font_names: parent.font_names.clone(),
             text_shadow: parent.text_shadow,
+            letter_spacing: parent.letter_spacing,
+            word_spacing: parent.word_spacing,
             scheme_dark: parent.scheme_dark,
             ..ComputedStyle::initial()
         }
@@ -2708,6 +2715,22 @@ impl Cascade<'_> {
                 }
             }
             "object-position" => s.object_pos = parse_bg_position(v, &u),
+            "letter-spacing" | "word-spacing" => {
+                let px = match v.trim() {
+                    "normal" => Some(0.0),
+                    t => match parse_len(t, &u) {
+                        Some(Len::Px(x)) => Some(x),
+                        _ => None,
+                    },
+                };
+                if let Some(px) = px {
+                    if d.name == "letter-spacing" {
+                        s.letter_spacing = px;
+                    } else {
+                        s.word_spacing = px;
+                    }
+                }
+            }
             "background-position-x" => s.bg_pos.0 = parse_bg_position(v, &u).0,
             "background-position-y" => s.bg_pos.1 = parse_bg_position(&format!("left {v}"), &u).1,
             "background-repeat" => {

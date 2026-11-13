@@ -2149,6 +2149,7 @@ impl<'a> Ctx<'a> {
                 font,
                 size: s.font_size,
                 color: s.color,
+                spacing: [0.0; 2],
             });
         }
 
@@ -2641,7 +2642,8 @@ impl<'a> Ctx<'a> {
                 Item::Text { text, style, .. } => {
                     let font = self.fonts.for_style(style);
                     let size = style.font_size;
-                    space_w = self.fonts.advance(font, ' ', size);
+                    let (ls, wsp) = (style.letter_spacing, style.word_spacing);
+                    space_w = self.fonts.advance(font, ' ', size) + ls + wsp;
                     let nowrap = matches!(style.white_space, WhiteSpace::NoWrap | WhiteSpace::Pre);
                     let keep_newlines =
                         matches!(style.white_space, WhiteSpace::Pre | WhiteSpace::PreWrap | WhiteSpace::PreLine);
@@ -2659,7 +2661,7 @@ impl<'a> Ctx<'a> {
                             space_breaks = !nowrap;
                         }
                         for (k, word) in seg.split(is_collapsible).filter(|w| !w.is_empty()).enumerate() {
-                            let w = self.fonts.measure(font, size, word);
+                            let w = self.fonts.measure_spaced(font, size, word, ls, wsp);
                             if k > 0 {
                                 space_before = true;
                                 space_breaks = !nowrap;
@@ -3251,88 +3253,102 @@ impl<'a> Ctx<'a> {
         } else {
             ncols
         };
-        let mark_cells = |occupied: &mut Vec<Vec<bool>>, r: usize, c: usize, rs: usize, cs: usize| {
-            let (r, c, rs, cs) = if flow_col { (c, r, cs, rs) } else { (r, c, rs, cs) };
-            while occupied.len() < r + rs {
+        // células ocupadas, em coordenadas (eixo que cresce, eixo fixo)
+        let mark_cells = |occupied: &mut Vec<Vec<bool>>, g: usize, f: usize, gs: usize, fs: usize| {
+            while occupied.len() < g + gs {
                 occupied.push(vec![false; fixed]);
             }
-            for row in occupied.iter_mut().skip(r).take(rs) {
-                for cell in row.iter_mut().skip(c).take(cs) {
+            for line in occupied.iter_mut().skip(g).take(gs) {
+                for cell in line.iter_mut().skip(f).take(fs) {
                     *cell = true;
                 }
             }
         };
-        let mut occupied: Vec<Vec<bool>> = Vec::new();
-        let mut items: Vec<GridItem<'a>> = Vec::new();
-        let mut cursor = (0usize, 0usize);
+        let fits = |occupied: &Vec<Vec<bool>>, g: usize, f: usize, gs: usize, fs: usize| {
+            (0..gs).all(|dg| {
+                (0..fs).all(|df| occupied.get(g + dg).is_none_or(|line| !line.get(f + df).copied().unwrap_or(false)))
+            })
+        };
+        // o que cada item pede: (posição e span no eixo que cresce, e no fixo)
+        let mut wants: Vec<(Option<usize>, usize, Option<usize>, usize)> = Vec::with_capacity(kids.len());
         for &c in kids {
             let cs = &c.style;
             // área nomeada
+            let mut area: Option<(usize, usize, usize, usize)> = None;
             if let (Some(name), Some(areas)) = (&cs.grid_area, &areas) {
-                let mut found: Option<(usize, usize, usize, usize)> = None;
                 for (r, row) in areas.iter().enumerate() {
                     for (col, cell) in row.iter().enumerate() {
                         if cell == name {
-                            found = Some(match found {
+                            area = Some(match area {
                                 None => (r, col, r, col),
                                 Some((r0, c0, r1, c1)) => (r0.min(r), c0.min(col), r1.max(r), c1.max(col)),
                             });
                         }
                     }
                 }
-                if let Some((r0, c0, r1, c1)) = found {
-                    mark_cells(&mut occupied, r0, c0, r1 - r0 + 1, c1 - c0 + 1);
-                    items.push(GridItem {
-                        b: c,
-                        row: r0,
-                        col: c0,
-                        rspan: r1 - r0 + 1,
-                        cspan: c1 - c0 + 1,
-                    });
-                    continue;
-                }
             }
-            let (col, cspan) = col_lines(cs);
-            let (row, rspan) = row_lines(cs);
-            // no eixo que cresce (g) e no fixo (f)
+            let ((row, rspan), (col, cspan)) = match area {
+                Some((r0, c0, r1, c1)) => ((Some(r0), r1 - r0 + 1), (Some(c0), c1 - c0 + 1)),
+                None => (row_lines(cs), col_lines(cs)),
+            };
             let ((g, gspan), (f, fspan)) =
                 if flow_col { ((col, cspan), (row, rspan)) } else { ((row, rspan), (col, cspan)) };
-            let fspan = fspan.min(fixed);
-            let (g, f) = match (g, f) {
-                (Some(g), Some(f)) => (g, f.min(fixed - fspan)),
-                (gp, fp) => {
-                    // posicionamento automático (dense recomeça do início)
-                    let mut pos = match gp {
-                        Some(g) => (g, 0),
-                        None if s.grid_flow_dense => (0, 0),
-                        None => cursor,
-                    };
-                    loop {
-                        // posição explícita além da grade: fica na última que cabe
-                        let f0 = fp.map_or(pos.1, |f| f.min(fixed.saturating_sub(fspan)));
-                        if f0 + fspan > fixed {
-                            pos = (pos.0 + 1, 0);
-                            continue;
-                        }
-                        let free = (0..gspan).all(|dg| {
-                            (0..fspan).all(|df| {
-                                occupied
-                                    .get(pos.0 + dg)
-                                    .is_none_or(|line| !line.get(f0 + df).copied().unwrap_or(false))
-                            })
-                        });
-                        if free {
-                            break (pos.0, f0);
-                        }
-                        pos = if fp.is_some() || pos.1 + 1 >= fixed { (pos.0 + 1, 0) } else { (pos.0, pos.1 + 1) };
-                    }
-                }
-            };
-            let (row, col, rspan, cspan) = if flow_col { (f, g, fspan, gspan) } else { (g, f, gspan, fspan) };
-            mark_cells(&mut occupied, row, col, rspan, cspan);
-            if s.grid_area.is_none() {
-                cursor = (g, f + fspan);
+            wants.push((g, gspan, f, fspan.min(fixed)));
+        }
+        // como o CSS Grid (§8.5): primeiro os de posição definida nos dois
+        // eixos, depois os presos a uma linha, e só então o resto, com o cursor
+        let mut occupied: Vec<Vec<bool>> = Vec::new();
+        let mut placed: Vec<(usize, usize)> = vec![(0, 0); kids.len()];
+        for (i, &(g, gspan, f, fspan)) in wants.iter().enumerate() {
+            if let (Some(g), Some(f)) = (g, f) {
+                let f = f.min(fixed - fspan);
+                mark_cells(&mut occupied, g, f, gspan, fspan);
+                placed[i] = (g, f);
             }
+        }
+        let dense = s.grid_flow_dense;
+        let mut line_cursor: HashMap<usize, usize> = HashMap::new();
+        for (i, &(g, gspan, f, fspan)) in wants.iter().enumerate() {
+            if let (Some(g), None) = (g, f) {
+                let start = if dense { 0 } else { line_cursor.get(&g).copied().unwrap_or(0) };
+                let last = fixed - fspan;
+                let f = (start.min(last)..=last).find(|&f| fits(&occupied, g, f, gspan, fspan)).unwrap_or(start.min(last));
+                mark_cells(&mut occupied, g, f, gspan, fspan);
+                placed[i] = (g, f);
+                line_cursor.insert(g, f + fspan);
+            }
+        }
+        let mut cursor = (0usize, 0usize);
+        for (i, &(g, gspan, fp, fspan)) in wants.iter().enumerate() {
+            if g.is_some() {
+                continue;
+            }
+            let mut pos = if dense { (0, 0) } else { cursor };
+            // posição definida no eixo fixo antes do cursor: passa para a próxima linha
+            if !dense && fp.is_some_and(|f| f < cursor.1) {
+                pos.0 += 1;
+            }
+            let (g, f) = loop {
+                // posição explícita além da grade: fica na última que cabe
+                let f0 = fp.map_or(pos.1, |f| f.min(fixed.saturating_sub(fspan)));
+                if f0 + fspan > fixed {
+                    pos = (pos.0 + 1, 0);
+                    continue;
+                }
+                if fits(&occupied, pos.0, f0, gspan, fspan) {
+                    break (pos.0, f0);
+                }
+                pos = if fp.is_some() || pos.1 + 1 >= fixed { (pos.0 + 1, 0) } else { (pos.0, pos.1 + 1) };
+            };
+            mark_cells(&mut occupied, g, f, gspan, fspan);
+            placed[i] = (g, f);
+            cursor = (g, f + fspan);
+        }
+        let mut items: Vec<GridItem<'a>> = Vec::with_capacity(kids.len());
+        for (k, &c) in kids.iter().enumerate() {
+            let (g, f) = placed[k];
+            let (_, gspan, _, fspan) = wants[k];
+            let (row, col, rspan, cspan) = if flow_col { (f, g, fspan, gspan) } else { (g, f, gspan, fspan) };
             items.push(GridItem {
                 b: c,
                 row,
@@ -4072,6 +4088,7 @@ impl<'a> Ctx<'a> {
                         font: f.font,
                         size: s.font_size,
                         color: c,
+                        spacing: [s.letter_spacing, s.word_spacing],
                     });
                 }
                 self.items.push(DisplayItem::Text {
@@ -4081,6 +4098,7 @@ impl<'a> Ctx<'a> {
                     font: f.font,
                     size: s.font_size,
                     color: s.color,
+                    spacing: [s.letter_spacing, s.word_spacing],
                 });
                 let thick = (s.font_size / 15.0).max(1.0);
                 if f.inh.underline {
@@ -4238,6 +4256,7 @@ impl<'a> Ctx<'a> {
                 font,
                 size: s.font_size,
                 color: *color,
+                spacing: [0.0; 2],
             });
             self.items.push(DisplayItem::PopClip);
         }
@@ -4892,6 +4911,7 @@ impl<'a> LineBuilder<'a> {
     fn push_text(&mut self, text: &str, style: &Rc<ComputedStyle>, inh: &Inherited) {
         let font = self.fonts.for_style(style);
         let size = style.font_size;
+        let (ls, wsp) = (style.letter_spacing, style.word_spacing);
         let ws = style.white_space;
         let preserve = matches!(ws, WhiteSpace::Pre | WhiteSpace::PreWrap);
         let wrap = matches!(ws, WhiteSpace::Normal | WhiteSpace::PreWrap | WhiteSpace::PreLine);
@@ -4906,19 +4926,19 @@ impl<'a> LineBuilder<'a> {
             if preserve {
                 let seg = seg.trim_end_matches('\r').replace('\t', "    ");
                 for tok in split_runs(&seg, |c| c == ' ') {
-                    let w = self.fonts.measure(font, size, tok);
+                    let w = self.fonts.measure_spaced(font, size, tok, ls, wsp);
                     self.place_text(tok, w, style, font, inh, wrap && !tok.starts_with(' '), false);
                 }
             } else {
                 for tok in split_runs(seg, is_collapsible) {
                     if tok.chars().all(is_collapsible) {
                         if !self.cur.is_empty() && !self.after_space {
-                            self.pending_space = self.fonts.advance(font, ' ', size);
+                            self.pending_space = self.fonts.advance(font, ' ', size) + ls + wsp;
                         }
                         self.after_space = true;
                         self.soft_break = wrap;
                     } else {
-                        let w = self.fonts.measure(font, size, tok);
+                        let w = self.fonts.measure_spaced(font, size, tok, ls, wsp);
                         self.place_text(tok, w, style, font, inh, wrap, true);
                     }
                 }
@@ -5054,9 +5074,12 @@ impl<'a> LineBuilder<'a> {
         let cfont = self.fonts.for_style(c);
         let m = self.fonts.line_metrics(cfont, c.font_size);
         let lh = c.line_height_px(m.normal);
-        let half = (lh - (m.ascent + m.descent)) / 2.0;
+        // meia entrelinha: a de cima arredondada para baixo, como no Chrome
+        // (a linha de base cai num pixel inteiro); o resto vai para baixo
+        let lead = lh - (m.ascent + m.descent);
+        let (half_a, half_d) = ((lead / 2.0).floor(), lead - (lead / 2.0).floor());
         let block = self.block_line.take();
-        let (mut above, mut below) = if block.is_some() { (0.0, 0.0) } else { (m.ascent + half, m.descent + half) };
+        let (mut above, mut below) = if block.is_some() { (0.0, 0.0) } else { (m.ascent + half_a, m.descent + half_d) };
         // vertical-align: top/bottom: alinhados pela caixa da linha, que cresce para caber
         let (mut tall_top, mut tall_bottom) = (0.0f32, 0.0f32);
         for f in &frags {
@@ -5079,9 +5102,10 @@ impl<'a> LineBuilder<'a> {
                 FragKind::Text(_) => {
                     let m = self.fonts.line_metrics(f.font, f.style.font_size);
                     let lh = f.style.line_height_px(m.normal);
-                    let half = (lh - (m.ascent + m.descent)) / 2.0;
-                    above = above.max(m.ascent + half);
-                    below = below.max(m.descent + half);
+                    let lead = lh - (m.ascent + m.descent);
+                    let half_a = (lead / 2.0).floor();
+                    above = above.max(m.ascent + half_a);
+                    below = below.max(m.descent + lead - half_a);
                 }
                 FragKind::Box { h, .. } | FragKind::InlineBlock { h, .. } if f.valign == VAlign::Middle => {
                     above = above.max(h / 2.0 + f.mid);

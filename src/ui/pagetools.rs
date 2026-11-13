@@ -64,7 +64,7 @@ pub fn runs_of(items: &[DisplayItem]) -> Vec<Run> {
     items
         .iter()
         .filter_map(|it| match it {
-            DisplayItem::Text { x, baseline, text, font, size, color } if color.a > 0 && !text.trim().is_empty() => Some(Run {
+            DisplayItem::Text { x, baseline, text, font, size, color, .. } if color.a > 0 && !text.trim().is_empty() => Some(Run {
                 x: *x,
                 baseline: *baseline,
                 size: *size,

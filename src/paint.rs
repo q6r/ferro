@@ -40,6 +40,9 @@ pub enum DisplayItem {
         font: FontId,
         size: f32,
         color: Color,
+        /// letter-spacing e word-spacing (px), somados ao avanço de cada
+        /// caractere e de cada espaço.
+        spacing: [f32; 2],
     },
     Image {
         rect: Rect,
@@ -385,13 +388,15 @@ impl Canvas {
                     font,
                     size,
                     color,
+                    spacing,
                 } => {
                     let b = baseline * t.scale + t.dy;
                     let s = size * t.scale;
                     if b + s < clip.y0 as f32 || b - s * 1.5 > clip.y1 as f32 {
                         continue;
                     }
-                    self.text_clip(fonts, x * t.scale + t.dx, b, text, *font, s, *color, clip);
+                    let sp = spacing.map(|v| v * t.scale);
+                    self.text_clip(fonts, x * t.scale + t.dx, b, text, *font, s, *color, clip, sp);
                 }
                 DisplayItem::Image { rect, image, radius, src } => {
                     self.image_part(image, t.rect(*rect), clip, None, radius.scale(t.scale), *src)
@@ -530,8 +535,8 @@ impl Canvas {
                 DisplayItem::Shadow { rect, blur, .. } => {
                     add(Rect { x: rect.x - blur, y: rect.y - blur, w: rect.w + 2.0 * blur, h: rect.h + 2.0 * blur })
                 }
-                DisplayItem::Text { x, baseline, text, font, size, .. } => {
-                    let w = fonts.measure(*font, *size, text);
+                DisplayItem::Text { x, baseline, text, font, size, spacing, .. } => {
+                    let w = fonts.measure_spaced(*font, *size, text, spacing[0], spacing[1]);
                     add(Rect { x: *x, y: baseline - size * 1.1, w: w + 2.0, h: size * 1.5 });
                 }
                 _ => {}
@@ -803,7 +808,7 @@ impl Canvas {
         clip: Option<Rect>,
     ) {
         let c = self.clip(clip);
-        self.text_clip(fonts, x, baseline, text, font, size, color, c);
+        self.text_clip(fonts, x, baseline, text, font, size, color, c, [0.0; 2]);
     }
 
     pub fn draw_image(&mut self, img: &ImageData, r: Rect, clip: Option<Rect>) {
@@ -916,6 +921,7 @@ impl Canvas {
         size: f32,
         color: Color,
         clip: Clip,
+        spacing: [f32; 2],
     ) {
         if color.a == 0 || clip.is_empty() {
             return;
@@ -973,7 +979,7 @@ impl Canvas {
                     }
                 }
             }
-            pen += fonts.advance(font, ch, size);
+            pen += fonts.advance(font, ch, size) + spacing[0] + if ch == ' ' || ch == '\u{a0}' { spacing[1] } else { 0.0 };
         }
     }
 

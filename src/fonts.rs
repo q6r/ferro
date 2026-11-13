@@ -661,6 +661,17 @@ impl Fonts {
         text.chars().map(|c| self.advance(id, c, size)).sum()
     }
 
+    /// Largura com letter-spacing (depois de cada caractere, como no Chrome)
+    /// e word-spacing (em cada espaço).
+    pub fn measure_spaced(&self, id: FontId, size: f32, text: &str, letter: f32, word: f32) -> f32 {
+        if letter == 0.0 && word == 0.0 {
+            return self.measure(id, size, text);
+        }
+        text.chars()
+            .map(|c| self.advance(id, c, size) + letter + if c == ' ' || c == '\u{a0}' { word } else { 0.0 })
+            .sum()
+    }
+
     pub fn line_metrics(&self, id: FontId, size: f32) -> LineMetrics {
         match self.face(id).and_then(|f| f.horizontal_line_metrics(size)) {
             // como o Chrome (Skia): ascendente, descendente e espaço entre
