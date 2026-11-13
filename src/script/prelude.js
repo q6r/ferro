@@ -2401,8 +2401,8 @@ hidden(G, 'history', Object.create(History.prototype));
 
 // ---------------------------------------------------- navigator, screen
 const NAV = {
-  userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1',
-  appVersion: '5.0 (Windows NT 10.0; Win64; x64) Ferro/0.1',
+  userAgent: N.userAgent(),
+  appVersion: N.userAgent().replace(/^Mozilla\//, ''),
   appName: 'Netscape', appCodeName: 'Mozilla', product: 'Gecko', productSub: '20030107', vendor: '', vendorSub: '',
   platform: 'Win32', language: 'pt-BR', languages: Object.freeze(['pt-BR', 'pt', 'en-US', 'en']),
   cookieEnabled: true, onLine: true, hardwareConcurrency: 8, deviceMemory: 8, maxTouchPoints: 0,

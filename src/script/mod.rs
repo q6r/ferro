@@ -726,20 +726,25 @@ impl Session {
     fn exec_script(&mut self, n: NodeId, text: &str, name: &str) {
         exec_script(&mut self.js.vm, n, text, name);
         self.js.vm.run_microtasks();
-        // depuração: FERRO_VIGIA="expressão" avisa quando o valor muda
-        if let Ok(code) = std::env::var("FERRO_VIGIA") {
-            let v = match self.js.vm.eval_script(&code, "vigia") {
-                Ok(v) => self.js.inspect(&v),
-                Err(e) => self.js.error_text(&e),
-            };
-            thread_local!(static LAST: RefCell<String> = const { RefCell::new(String::new()) });
-            LAST.with(|l| {
-                if *l.borrow() != v {
-                    eprintln!("[vigia] depois de {name}: {v}");
-                    *l.borrow_mut() = v;
-                }
-            });
-        }
+        self.watch(name);
+    }
+
+    /// Depuração: FERRO_VIGIA="expressão" avisa quando o valor muda (depois de
+    /// cada script e de cada volta do laço de eventos).
+    fn watch(&mut self, when: &str) {
+        let Ok(code) = std::env::var("FERRO_VIGIA") else { return };
+        let v = match self.js.vm.eval_script(&code, "vigia") {
+            Ok(v) => self.js.inspect(&v),
+            Err(e) => self.js.error_text(&e),
+        };
+        thread_local!(static LAST: RefCell<String> = const { RefCell::new(String::new()) });
+        LAST.with(|l| {
+            if *l.borrow() != v {
+                let ms = self.js.vm.now_ms();
+                eprintln!("[vigia] {ms:.0} ms, depois de {when}: {v}");
+                *l.borrow_mut() = v;
+            }
+        });
     }
 
     /// Estilo + layout do documento atual. Guarda os retângulos (para cliques
@@ -901,6 +906,7 @@ impl Session {
                 start.elapsed().as_secs_f64() * 1000.0
             );
         }
+        self.watch("uma volta do laço");
     }
 
     fn on_done(&mut self, done: Done) {

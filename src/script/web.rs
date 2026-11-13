@@ -858,6 +858,11 @@ fn parent_post(vm: &mut Vm, a: &mut CallArgs) -> R {
     Ok(Value::Undefined)
 }
 
+/// `__native.userAgent()`: o User-Agent que vai nas requisições.
+fn user_agent(_vm: &mut Vm, _a: &mut CallArgs) -> R {
+    Ok(Value::str(crate::net::user_agent()))
+}
+
 /// `__native.frameParentOrigin()`: origem da página-mãe, ou null na página da aba.
 fn frame_parent_origin(vm: &mut Vm, _a: &mut CallArgs) -> R {
     Ok(read(vm, |h| h.parent_origin.clone()).map_or(Value::Null, |o| Value::str(&o)))
@@ -1004,6 +1009,7 @@ pub(crate) fn install(vm: &mut Vm) {
         ("frameUrl", 1, frame_url),
         ("parentPost", 2, parent_post),
         ("frameParentOrigin", 0, frame_parent_origin),
+        ("userAgent", 0, user_agent),
         ("exitFullscreen", 0, exit_fullscreen),
         ("fullscreenElement", 0, fullscreen_element),
     ] {
