@@ -296,6 +296,23 @@ pub struct GridTemplate {
     pub names: Vec<(usize, Rc<str>)>,
 }
 
+/// `width`/`height` com tamanho intrínseco (o `Len` fica `Auto`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SizeKw {
+    MinContent,
+    MaxContent,
+    FitContent,
+}
+
+fn size_kw(v: &str) -> Option<SizeKw> {
+    Some(match v.trim().trim_start_matches("-webkit-").trim_start_matches("-moz-") {
+        "min-content" => SizeKw::MinContent,
+        "max-content" => SizeKw::MaxContent,
+        "fit-content" => SizeKw::FitContent,
+        _ => return None,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridLine {
     Auto,
@@ -453,6 +470,9 @@ pub struct ComputedStyle {
     pub scheme_dark: bool,
     /// Alguma propriedade usou `inherit`/`unset`: depende do pai além do herdado.
     pub explicit_inherit: bool,
+    /// `width`/`height: fit-content | max-content | min-content`.
+    pub width_kw: Option<SizeKw>,
+    pub height_kw: Option<SizeKw>,
 }
 
 thread_local! {
@@ -556,6 +576,8 @@ impl ComputedStyle {
             text_shadow: None,
             scheme_dark: css::prefers_dark(),
             explicit_inherit: false,
+            width_kw: None,
+            height_kw: None,
             content_hidden: false,
             border_box: false,
             underline: false,
@@ -1441,7 +1463,7 @@ impl Invalidation {
                         self.anc_structural.merge(target);
                     }
                 }
-                P::Hover | P::Active | P::Focus | P::FocusVisible | P::FocusWithin | P::Fullscreen => {
+                P::Hover | P::Active | P::Focus | P::FocusVisible | P::FocusWithin | P::Fullscreen | P::PopoverOpen => {
                     self.dynamic = true;
                     if !subject || sib {
                         self.anc_dynamic.merge(target);
@@ -1775,7 +1797,12 @@ pub fn compute_incremental(
     if inv.dynamic && key.dyn_state != dyn_now {
         let (a, b) = (&key.dyn_state, &dyn_now);
         let mut changed: Vec<NodeId> = Vec::new();
-        for (x, y) in [(&a.hover, &b.hover), (&a.active, &b.active), (&a.focus_within, &b.focus_within)] {
+        for (x, y) in [
+            (&a.hover, &b.hover),
+            (&a.active, &b.active),
+            (&a.focus_within, &b.focus_within),
+            (&a.popover_open, &b.popover_open),
+        ] {
             changed.extend(x.iter().filter(|v| !y.contains(v)));
             changed.extend(y.iter().filter(|v| !x.contains(v)));
         }
@@ -2665,13 +2692,21 @@ impl Cascade<'_> {
             }
             "clip-path" => s.clipped = v.starts_with("inset(50%") || v.starts_with("inset(100%"),
             "width" => {
-                if let Some(l) = size(v) {
-                    s.width = l
+                if let Some(kw) = size_kw(v) {
+                    s.width = Len::Auto;
+                    s.width_kw = Some(kw);
+                } else if let Some(l) = size(v) {
+                    s.width = l;
+                    s.width_kw = None;
                 }
             }
             "height" => {
-                if let Some(l) = size(v) {
-                    s.height = l
+                if let Some(kw) = size_kw(v) {
+                    s.height = Len::Auto;
+                    s.height_kw = Some(kw);
+                } else if let Some(l) = size(v) {
+                    s.height = l;
+                    s.height_kw = None;
                 }
             }
             "min-height" => {
@@ -3342,8 +3377,14 @@ fn copy_property(dst: &mut ComputedStyle, src: &ComputedStyle, name: &str) {
         "background" | "background-color" => dst.background = src.background,
         "margin" => dst.margin = src.margin,
         "padding" => dst.padding = src.padding,
-        "width" => dst.width = src.width,
-        "height" => dst.height = src.height,
+        "width" => {
+            dst.width = src.width;
+            dst.width_kw = src.width_kw;
+        }
+        "height" => {
+            dst.height = src.height;
+            dst.height_kw = src.height_kw;
+        }
         "max-width" => dst.max_width = src.max_width,
         "max-height" => dst.max_height = src.max_height,
         "aspect-ratio" => dst.aspect_ratio = src.aspect_ratio,

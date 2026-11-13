@@ -262,6 +262,8 @@ pub struct Host {
     pub(crate) hover: Option<NodeId>,
     /// Elemento em tela cheia (requestFullscreen).
     pub(crate) fullscreen: Option<NodeId>,
+    /// Popovers abertos (`showPopover`), na ordem em que abriram.
+    pub(crate) popovers: Vec<NodeId>,
     /// A tela cheia mudou e a interface ainda não sabe.
     pub(crate) fullscreen_changed: bool,
     /// As folhas de estilo têm `:hover`/`:active`? (None = ainda não olhou.)
@@ -447,6 +449,7 @@ impl Session {
             keyboard_focus: false,
             hover: None,
             fullscreen: None,
+            popovers: Vec::new(),
             fullscreen_changed: false,
             dyn_rules: None,
             hooks: HashMap::new(),
@@ -1122,6 +1125,8 @@ impl Session {
                 r.contains(x, py) && *n < doc.nodes.len() && doc.is_connected(*n)
             })
             .map(|(n, _, _)| *n)
+            // fora de tudo: o <html>, que cobre a janela inteira (como nos navegadores)
+            .or_else(|| doc.node(Document::ROOT).children.iter().copied().find(|&c| doc.element(c).is_some()))
     }
 
     /// O mouse andou sobre a página (coordenadas do documento) ou saiu dela
@@ -1612,6 +1617,13 @@ fn dynamic_state(hb: &Host) -> crate::css::DynState {
         focus_visible: focus.is_some() && (hb.keyboard_focus || text_field),
         focus_within: focus.map(|f| flat_chain(doc, f)).unwrap_or_default(),
         fullscreen: hb.fullscreen.filter(live),
+        // tirado da árvore ou sem o atributo, o popover deixa de valer
+        popover_open: hb
+            .popovers
+            .iter()
+            .copied()
+            .filter(|n| live(n) && doc.element(*n).is_some_and(|e| e.attr("popover").is_some()))
+            .collect(),
     }
 }
 

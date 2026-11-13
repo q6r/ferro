@@ -99,3 +99,11 @@ input[type=image], input[type=file], input[type=color], input[type=range], selec
   z-index: 2147483647 !important; transform: none !important; background: black;
 }
 video:fullscreen { object-fit: contain; }
+
+/* popover: escondido até showPopover(); aberto, fica por cima de tudo */
+[popover] {
+  position: fixed; inset: 0; width: fit-content; height: fit-content; margin: auto;
+  border: solid; padding: 0.25em; overflow: auto; color: CanvasText; background-color: Canvas;
+}
+[popover]:not(:popover-open):not(dialog[open]) { display: none; }
+:popover-open { z-index: 2147483647 !important; }

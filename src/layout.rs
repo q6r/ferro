@@ -17,7 +17,7 @@ use crate::fonts::{FontId, Fonts};
 use crate::paint::{DisplayItem, ImageData};
 use crate::style::{
     Align, BOTTOM, BgImage, BgSize, Clear, Color, ComputedStyle, ContentPart, Display, FlexBasis, Float, GridLine,
-    Justify, LEFT, Len, ListStyle, Position, RIGHT, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
+    Justify, LEFT, Len, ListStyle, Position, RIGHT, SizeKw, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
     WhiteSpace,
 };
 
@@ -1549,7 +1549,11 @@ impl<'a> Ctx<'a> {
         let extra = bm.extra_h();
         let (mn, mx) = self.intrinsic(b);
         let fill = bm.content_w;
-        let w = (mx - extra).min(fill).max((mn - extra).max(0.0));
+        let w = match s.width_kw {
+            Some(SizeKw::MaxContent) => (mx - extra).max(0.0),
+            Some(SizeKw::MinContent) => (mn - extra).max(0.0),
+            _ => (mx - extra).min(fill).max((mn - extra).max(0.0)),
+        };
         bm.content_w = w;
         let ml = s.margin[LEFT].resolve(cb_w);
         let mr = s.margin[RIGHT].resolve(cb_w);
@@ -1978,7 +1982,9 @@ impl<'a> Ctx<'a> {
             }
             let bm = match child.kind {
                 BoxKind::Anonymous => BoxModel::anonymous(w),
-                _ if child.style.display == Display::Table => self.shrink_bm(child, w, true),
+                _ if child.style.display == Display::Table || child.style.width_kw.is_some() => {
+                    self.shrink_bm(child, w, true)
+                }
                 _ => self.box_model(&child.style, w),
             };
             let mut top = cursor + collapse_margins(prev_mb, bm.margin[TOP]);
@@ -2031,14 +2037,20 @@ impl<'a> Ctx<'a> {
         let (mt, mr, mb, ml) = (m(s.margin[TOP]), m(s.margin[RIGHT]), m(s.margin[BOTTOM]), m(s.margin[LEFT]));
         let content = |w: f32| if s.border_box { (w - hx).max(0.0) } else { w };
 
+        // largura esticada entre left e right (só com width auto de verdade)
+        let stretch_w = s.width.resolve(cb.w).is_none() && s.width_kw.is_none() && left.is_some() && right.is_some();
         let mut width = match (s.width.resolve(cb.w), left, right) {
             (Some(w), ..) => content(w),
-            (None, Some(l), Some(r)) => (cb.w - l - r - ml - mr - hx).max(0.0),
+            (None, Some(l), Some(r)) if stretch_w => (cb.w - l - r - ml - mr - hx).max(0.0),
             _ => {
                 // encolhe para caber no conteúdo
                 let avail = (cb.w - left.unwrap_or(0.0) - right.unwrap_or(0.0) - ml - mr - hx).max(0.0);
                 let (mn, mx) = self.intrinsic(b);
-                (mx - hx).min(avail).max(mn - hx).max(0.0)
+                match s.width_kw {
+                    Some(SizeKw::MaxContent) => (mx - hx).max(0.0),
+                    Some(SizeKw::MinContent) => (mn - hx).max(0.0),
+                    _ => (mx - hx).min(avail).max(mn - hx).max(0.0),
+                }
             }
         };
         if let Some(maxw) = s.max_width.resolve(cb.w) {
@@ -2048,14 +2060,29 @@ impl<'a> Ctx<'a> {
             width = width.max(content(minw));
         }
         let bw = width + hx;
+        // left e right fixos com largura que não estica: as margens auto
+        // ficam com a sobra (as duas auto: centraliza)
+        let (auto_l, auto_r) = (s.margin[LEFT] == Len::Auto, s.margin[RIGHT] == Len::Auto);
+        let (ml, mr) = match (left, right) {
+            (Some(l), Some(r)) if !stretch_w && (auto_l || auto_r) => {
+                let free = cb.w - l - r - bw;
+                match (auto_l, auto_r) {
+                    (true, true) => ((free / 2.0).max(0.0), (free / 2.0).max(0.0)),
+                    (true, false) => ((free - mr).max(0.0), mr),
+                    _ => (ml, (free - ml).max(0.0)),
+                }
+            }
+            _ => (ml, mr),
+        };
         let x = match (left, right) {
             (Some(l), _) => cb.x + l,
             (None, Some(r)) => cb.x + cb.w - r - bw - ml - mr,
             _ => p.x,
         };
+        let stretch_h = s.height.resolve(cb.h).is_none() && s.height_kw.is_none() && top.is_some() && bottom.is_some();
         let forced_h = match (s.height.resolve(cb.h), top, bottom) {
             (Some(h), ..) => Some(if s.border_box { (h - vx).max(0.0) } else { h }),
-            (None, Some(t), Some(bo)) => Some((cb.h - t - bo - mt - mb - vx).max(0.0)),
+            (None, Some(t), Some(bo)) if stretch_h => Some((cb.h - t - bo - mt - mb - vx).max(0.0)),
             _ => None,
         };
         let y0 = match top {
@@ -2084,12 +2111,29 @@ impl<'a> Ctx<'a> {
             self.in_fixed -= 1;
         }
         let mut top_final = y0;
+        let (auto_t, auto_b) = (s.margin[TOP] == Len::Auto, s.margin[BOTTOM] == Len::Auto);
         if top.is_none()
             && let Some(bo) = bottom
         {
             let target = cb.y + cb.h - bo - mb - r.height;
             self.shift_between(&mark, None, 0.0, target - y0);
             top_final = target;
+        } else if let (Some(t), Some(bo)) = (top, bottom)
+            && !stretch_h
+            && (auto_t || auto_b)
+        {
+            // top e bottom fixos com altura que não estica: margens auto
+            // dividem a sobra (inset: 0; margin: auto centraliza)
+            let free = cb.h - t - bo - r.height;
+            let target = match (auto_t, auto_b) {
+                (true, true) => cb.y + t + (free / 2.0).max(0.0),
+                (true, false) => cb.y + t + (free - mb).max(0.0),
+                _ => y0,
+            };
+            if target != y0 {
+                self.shift_between(&mark, None, 0.0, target - y0);
+                top_final = target;
+            }
         }
         // absolutos também estendem a página (os fixos não: ficam na janela)
         if s.position != Position::Fixed {

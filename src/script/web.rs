@@ -868,6 +868,21 @@ fn frame_parent_origin(vm: &mut Vm, _a: &mut CallArgs) -> R {
     Ok(read(vm, |h| h.parent_origin.clone()).map_or(Value::Null, |o| Value::str(&o)))
 }
 
+/// `__native.popoverSet(el, aberto)`: abre/fecha o popover (`:popover-open`).
+fn popover_set(vm: &mut Vm, a: &mut CallArgs) -> R {
+    let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::Undefined) };
+    let open = ferro_js::vm::truthy(&a.arg(1));
+    write(vm, |h| {
+        h.popovers.retain(|&p| p != n);
+        if open {
+            h.popovers.push(n);
+        }
+        h.dirty = true;
+        crate::css::set_dynamic_state(super::dynamic_state(h));
+    });
+    Ok(Value::Undefined)
+}
+
 /// `__native.requestFullscreen(el)`: o elemento passa a cobrir a janela.
 fn request_fullscreen(vm: &mut Vm, a: &mut CallArgs) -> R {
     let Some(n) = node_of(&a.arg(0)) else { return Ok(Value::Bool(false)) };
@@ -1010,6 +1025,7 @@ pub(crate) fn install(vm: &mut Vm) {
         ("parentPost", 2, parent_post),
         ("frameParentOrigin", 0, frame_parent_origin),
         ("userAgent", 0, user_agent),
+        ("popoverSet", 2, popover_set),
         ("exitFullscreen", 0, exit_fullscreen),
         ("fullscreenElement", 0, fullscreen_element),
     ] {
