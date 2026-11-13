@@ -2971,6 +2971,31 @@ impl Compiler {
         std::mem::take(&mut self.f().pending_labels)
     }
 
+    /// Código de script/eval: if, laços, switch, try e with começam com valor
+    /// de conclusão undefined (não deixam passar o da instrução anterior).
+    fn reset_completion(&mut self) {
+        if let Some(c) = self.fr().completion {
+            self.emit(Op::Undef);
+            self.emit(Op::SetReg(c));
+        }
+    }
+
+    /// Corpo de um finally. Em código de script/eval o valor de conclusão do
+    /// try/catch passa intacto por ele, salvo se ele sair com break/continue
+    /// (aí vale o do próprio finally, ou undefined).
+    fn finally_block(&mut self, body: &[Stmt]) -> CResult<()> {
+        let Some(c) = self.fr().completion else { return self.block(body) };
+        let saved = self.alloc_reg();
+        self.emit(Op::GetReg(c));
+        self.emit(Op::SetReg(saved));
+        self.reset_completion();
+        self.block(body)?;
+        self.emit(Op::GetReg(saved));
+        self.emit(Op::SetReg(c));
+        self.free_reg(saved);
+        Ok(())
+    }
+
     fn stmt(&mut self, s: &Stmt) -> CResult<()> {
         if !matches!(s, Stmt::Labeled(..) | Stmt::For { .. } | Stmt::ForIn { .. } | Stmt::ForOf { .. } | Stmt::While(..) | Stmt::DoWhile(..)) {
             self.f().pending_labels.clear();
@@ -3018,6 +3043,7 @@ impl Compiler {
                 self.emit_return()?;
             }
             Stmt::If(test, cons, alt) => {
+                self.reset_completion();
                 self.expr(test)?;
                 let j = self.emit(Op::JumpIfFalse(0));
                 self.branch(cons)?;
@@ -3033,6 +3059,7 @@ impl Compiler {
             }
             Stmt::Block(b) => self.block(b)?,
             Stmt::With(obj, body) => {
+                self.reset_completion();
                 self.expr(obj)?;
                 self.emit(Op::ToObject);
                 self.push_scope(ScopeKind::Block, crate::resolve::key_of(&**body));
@@ -3045,16 +3072,24 @@ impl Compiler {
                 r?;
                 self.pop_scope();
             }
-            Stmt::For { init, test, update, body } => self.for_loop(init, test, update, body)?,
-            Stmt::ForIn { left, right, body } => self.for_in(left, right, body)?,
+            Stmt::For { init, test, update, body } => {
+                self.reset_completion();
+                self.for_loop(init, test, update, body)?;
+            }
+            Stmt::ForIn { left, right, body } => {
+                self.reset_completion();
+                self.for_in(left, right, body)?;
+            }
             Stmt::ForOf { left, right, body, is_await } => {
                 if *is_await && !self.fr().is_async {
                     return syntax("for await só pode ser usado dentro de funções async", 0);
                 }
+                self.reset_completion();
                 self.for_of(left, right, body, *is_await)?;
             }
             Stmt::While(test, body) => {
                 let labels = self.take_labels();
+                self.reset_completion();
                 let top = self.here();
                 self.expr(test)?;
                 let exit = self.emit(Op::JumpIfFalse(0));
@@ -3065,6 +3100,7 @@ impl Compiler {
             }
             Stmt::DoWhile(body, test) => {
                 let labels = self.take_labels();
+                self.reset_completion();
                 let top = self.here();
                 self.push_loop(labels, LoopKind::Plain);
                 self.stmt(body)?;
@@ -3085,8 +3121,14 @@ impl Compiler {
                 param,
                 handler,
                 finalizer,
-            } => self.try_stmt(block, param.as_ref(), handler.as_deref(), finalizer.as_deref())?,
-            Stmt::Switch(disc, cases) => self.switch(disc, cases)?,
+            } => {
+                self.reset_completion();
+                self.try_stmt(block, param.as_ref(), handler.as_deref(), finalizer.as_deref())?;
+            }
+            Stmt::Switch(disc, cases) => {
+                self.reset_completion();
+                self.switch(disc, cases)?;
+            }
             Stmt::Labeled(label, body) => {
                 self.f().pending_labels.push(label.clone());
                 match &**body {
@@ -3477,6 +3519,7 @@ impl Compiler {
             } else {
                 self.emit(Op::Pop);
             }
+            self.reset_completion();
             self.block(h)?;
             self.pop_scope();
             if let Some(t) = inner {
@@ -3496,14 +3539,14 @@ impl Compiler {
             }
             let tmp = self.alloc_reg();
             self.emit(Op::SetReg(tmp));
-            self.block(fin)?;
+            self.finally_block(fin)?;
             self.emit(Op::GetReg(tmp));
             self.emit(Op::Throw);
             self.free_reg(tmp);
             for j in to_normal {
                 self.patch(j);
             }
-            self.block(fin)?;
+            self.finally_block(fin)?;
         } else {
             for j in to_normal {
                 self.patch(j);
@@ -3560,7 +3603,7 @@ impl Compiler {
                     // compile_script/compile_standalone/compile_eval, viva até o
                     // fim da compilação.
                     let body: &[Stmt] = unsafe { &*body };
-                    self.block(body)?;
+                    self.finally_block(body)?;
                     self.f().env_depth = saved;
                     self.f().scopes.extend(inner);
                     self.f().ctl.extend(tail);
