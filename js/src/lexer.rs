@@ -52,6 +52,9 @@ pub struct Lexer {
     /// Identificadores já vistos: o mesmo nome reaproveita o mesmo Rc<str>.
     names: crate::fxhash::FxHashMap<Box<str>, Rc<str>>,
     buf: String,
+    /// Já saiu algum token? (antes do primeiro, `-->` vale como comentário
+    /// mesmo depois de comentários /* */ na mesma linha)
+    started: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +107,7 @@ impl Lexer {
             regex_ok: true,
             names: Default::default(),
             buf: String::new(),
+            started: false,
         }
     }
 
@@ -184,6 +188,16 @@ impl Lexer {
                 while self.pos < self.src.len() && !is_line_term(self.peek()) {
                     self.pos += 1;
                 }
+            } else if c == '-'
+                && self.peek_at(1) == '-'
+                && self.peek_at(2) == '>'
+                && (nl || !self.started)
+            {
+                // `-->` no começo de uma linha também comenta o resto dela
+                // (Anexo B, como em <script><!-- ... --></script>)
+                while self.pos < self.src.len() && !is_line_term(self.peek()) {
+                    self.pos += 1;
+                }
             } else if c == '#' && self.peek_at(1) == '!' && self.pos == 0 {
                 while self.pos < self.src.len() && !is_line_term(self.peek()) {
                     self.pos += 1;
@@ -196,6 +210,7 @@ impl Lexer {
 
     pub fn next_token(&mut self) -> Result<Token, LexError> {
         let nl = self.skip_trivia()?;
+        self.started = true;
         let start = self.pos;
         let line = self.line;
         let mut escaped = false;
