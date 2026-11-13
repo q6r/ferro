@@ -161,6 +161,91 @@ fn font_dirs() -> Vec<PathBuf> {
 fn local_index() -> &'static HashMap<String, Vec<LocalFace>> {
     static I: OnceLock<HashMap<String, Vec<LocalFace>>> = OnceLock::new();
     I.get_or_init(|| {
+        // varrer abre centenas de arquivos (lento com o antivírus e o disco
+        // ocupado): o índice fica guardado, valendo enquanto as pastas de
+        // fontes não mudarem
+        let sig = dirs_signature();
+        if let Some(idx) = load_index_cache(&sig) {
+            return idx;
+        }
+        let idx = scan_local_fonts();
+        save_index_cache(&sig, &idx);
+        idx
+    })
+}
+
+/// Assinatura das pastas de fontes: data de modificação e número de arquivos de cada uma.
+fn dirs_signature() -> String {
+    font_dirs()
+        .iter()
+        .map(|d| {
+            let mtime = std::fs::metadata(d)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |t| t.as_secs());
+            let count = std::fs::read_dir(d).map_or(0, |r| r.count());
+            format!("{}|{mtime}|{count}", d.display())
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn index_cache_path() -> Option<PathBuf> {
+    crate::dados::default_dir().map(|d| d.join("fontes.idx"))
+}
+
+fn load_index_cache(sig: &str) -> Option<HashMap<String, Vec<LocalFace>>> {
+    let text = std::fs::read_to_string(index_cache_path()?).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != format!("v1\t{sig}") {
+        return None;
+    }
+    let mut out: HashMap<String, Vec<LocalFace>> = HashMap::new();
+    for line in lines {
+        let f: Vec<&str> = line.split('\t').collect();
+        let [fam, path, index, weight, italic, var] = f.as_slice() else { return None };
+        out.entry(fam.to_string()).or_default().push(LocalFace {
+            path: PathBuf::from(path),
+            index: index.parse().ok()?,
+            weight: weight.parse().ok()?,
+            italic: *italic == "1",
+            var: *var == "1",
+        });
+    }
+    Some(out)
+}
+
+fn save_index_cache(sig: &str, idx: &HashMap<String, Vec<LocalFace>>) {
+    let Some(path) = index_cache_path() else { return };
+    let mut text = format!("v1\t{sig}\n");
+    for (fam, faces) in idx {
+        if fam.contains(['\t', '\n']) {
+            continue;
+        }
+        for f in faces {
+            text.push_str(&format!(
+                "{fam}\t{}\t{}\t{}\t{}\t{}\n",
+                f.path.display(),
+                f.index,
+                f.weight,
+                f.italic as u8,
+                f.var as u8
+            ));
+        }
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // grava num temporário e troca, para outro processo não ler pela metade
+    let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+    if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn scan_local_fonts() -> HashMap<String, Vec<LocalFace>> {
+    {
         let mut out: HashMap<String, Vec<LocalFace>> = HashMap::new();
         let mut stack = font_dirs();
         let mut seen = 0;
@@ -182,7 +267,7 @@ fn local_index() -> &'static HashMap<String, Vec<LocalFace>> {
             }
         }
         out
-    })
+    }
 }
 
 fn scan_font_file(path: &std::path::Path, out: &mut HashMap<String, Vec<LocalFace>>) {
@@ -383,6 +468,8 @@ impl Deref for FontRef<'_> {
 
 struct Face {
     candidates: &'static [&'static str],
+    /// Os bytes do arquivo (lidos uma vez).
+    data: OnceCell<Option<Arc<Vec<u8>>>>,
     font: OnceCell<Option<Font>>,
     /// Camadas coloridas (tabelas COLR/CPAL), para emoji.
     colr: OnceCell<Option<ColorTable>>,
@@ -515,6 +602,8 @@ const FACES: &[&[&str]] = &[
     &["C:/Windows/Fonts/seguihis.ttf", "C:/Windows/Fonts/ebrima.ttf"],
 ];
 const SEMIBOLD: FontId = 16;
+/// Tamanho a partir do qual uma fonte do sistema é lida glifo a glifo.
+const BIG_FONT: usize = 4 * 1024 * 1024;
 const ICONS: FontId = 17;
 const FALLBACK_START: usize = 18;
 /// Segoe UI Emoji / Noto Emoji.
@@ -527,6 +616,7 @@ impl Fonts {
                 .iter()
                 .map(|c| Face {
                     candidates: c,
+                    data: OnceCell::new(),
                     font: OnceCell::new(),
                     colr: OnceCell::new(),
                 })
@@ -551,19 +641,43 @@ impl Fonts {
             let list = web_fonts().read().unwrap();
             return list.get(id - WEB_FONT_BASE).and_then(|w| w.font()).map(FontRef::Web);
         }
-        self.faces
-            .get(id)?
-            .font
+        let face = self.faces.get(id)?;
+        face.font
             .get_or_init(|| {
-                self.faces[id].candidates.iter().find_map(|p| {
-                    let bytes = std::fs::read(PathBuf::from(p)).ok()?;
-                    // emoji: guarda as camadas coloridas, se a fonte tiver
-                    let _ = self.faces[id].colr.set(ColorTable::parse(&bytes));
-                    Font::from_bytes(bytes, FontSettings::default()).ok()
-                })
+                let data = self.face_data(id)?;
+                Font::from_bytes(data.as_slice(), FontSettings::default()).ok()
             })
             .as_ref()
             .map(FontRef::Sys)
+    }
+
+    /// Bytes de uma face do sistema (o primeiro candidato que existe).
+    fn face_data(&self, id: FontId) -> Option<Arc<Vec<u8>>> {
+        let face = self.faces.get(id)?;
+        face.data
+            .get_or_init(|| {
+                let bytes = face.candidates.iter().find_map(|p| std::fs::read(PathBuf::from(p)).ok())?;
+                // emoji: guarda as camadas coloridas, se a fonte tiver
+                let _ = face.colr.set(ColorTable::parse(&bytes));
+                Some(Arc::new(bytes))
+            })
+            .clone()
+    }
+
+    /// Face grande do sistema (emoji, chinês, japonês, coreano...): o fontdue
+    /// pré-processaria todos os glifos ao carregar (centenas de ms). Essas
+    /// são lidas pelo ttf-parser, glifo a glifo.
+    fn is_big(&self, id: FontId) -> bool {
+        id < WEB_FONT_BASE && self.face_data(id).is_some_and(|d| d.len() > BIG_FONT)
+    }
+
+    /// A face tem o caractere? (sem carregar o fontdue nas do sistema)
+    fn covers(&self, id: FontId, ch: char) -> bool {
+        if id >= WEB_FONT_BASE {
+            return self.face(id).is_some_and(|f| f.lookup_glyph_index(ch) != 0);
+        }
+        let Some(data) = self.face_data(id) else { return false };
+        ttf_parser::Face::parse(&data, 0).ok().and_then(|f| f.glyph_index(ch)).is_some_and(|g| g.0 != 0)
     }
 
     /// Fonte de um estilo: primeiro as fontes web pelo nome da família,
@@ -613,9 +727,10 @@ impl Fonts {
 
     /// Face que realmente tem o caractere (com fallback).
     fn resolve(&self, id: FontId, ch: char) -> FontId {
-        if let Some(f) = self.face(id)
-            && (f.lookup_glyph_index(ch) != 0 || ch.is_control())
-        {
+        if ch.is_control() && self.face_exists(id) {
+            return id;
+        }
+        if self.covers(id, ch) {
             return id;
         }
         if id >= WEB_FONT_BASE
@@ -623,16 +738,18 @@ impl Fonts {
         {
             return sib;
         }
-        if ch.is_whitespace() && self.face(id).is_some() {
+        if ch.is_whitespace() && self.face_exists(id) {
             return id;
         }
         // emoji: a fonte colorida antes da de símbolos (que tem versões em preto)
-        if (ch as u32) >= 0x1F000 && self.face(EMOJI).is_some_and(|f| f.lookup_glyph_index(ch) != 0) {
+        if (ch as u32) >= 0x1F000 && self.covers(EMOJI, ch) {
             return EMOJI;
         }
-        (FALLBACK_START..self.faces.len())
-            .find(|&i| self.face(i).is_some_and(|f| f.lookup_glyph_index(ch) != 0))
-            .unwrap_or(id)
+        (FALLBACK_START..self.faces.len()).find(|&i| self.covers(i, ch)).unwrap_or(id)
+    }
+
+    fn face_exists(&self, id: FontId) -> bool {
+        if id >= WEB_FONT_BASE { self.face(id).is_some() } else { self.face_data(id).is_some() }
     }
 
     fn key(size: f32) -> u32 {
@@ -651,6 +768,10 @@ impl Fonts {
         let rid = self.resolve(id, ch);
         let a = match self.var_advance(rid, ch, size) {
             Some(a) => a,
+            None if self.is_big(rid) => self
+                .face_data(rid)
+                .and_then(|d| outline_advance(&d, None, ch, size))
+                .unwrap_or(size * 0.5),
             None => self.face(rid).map(|f| f.metrics(ch, size).advance_width).unwrap_or(size * 0.5),
         };
         self.advances.borrow_mut().insert(k, a);
@@ -673,6 +794,13 @@ impl Fonts {
     }
 
     pub fn line_metrics(&self, id: FontId, size: f32) -> LineMetrics {
+        if self.is_big(id)
+            && let Some(f) = self.face_data(id).as_deref().and_then(|d| ttf_parser::Face::parse(d, 0).ok())
+        {
+            let k = size / f.units_per_em() as f32;
+            let (a, d, g) = ((f.ascender() as f32 * k).round(), (-(f.descender() as f32) * k).round(), (f.line_gap() as f32 * k).round());
+            return LineMetrics { ascent: a, descent: d, normal: a + d + g };
+        }
         match self.face(id).and_then(|f| f.horizontal_line_metrics(size)) {
             // como o Chrome (Skia): ascendente, descendente e espaço entre
             // linhas arredondados, cada um, para pixels inteiros
@@ -698,7 +826,7 @@ impl Fonts {
         if (ch as u32) < 0x2000 && !emoji {
             return None;
         }
-        let rid = if emoji && self.face(EMOJI).is_some_and(|f| f.lookup_glyph_index(ch) != 0) { EMOJI } else { self.resolve(id, ch) };
+        let rid = if emoji && self.covers(EMOJI, ch) { EMOJI } else { self.resolve(id, ch) };
         let k = (rid, ch, Self::key(size));
         if let Some(g) = self.color_glyphs.borrow().get(&k) {
             return g.clone();
@@ -713,9 +841,9 @@ impl Fonts {
         if rid >= WEB_FONT_BASE {
             return None;
         }
-        let font = self.face(rid)?;
+        self.face_data(rid)?;
         let table = self.faces.get(rid)?.colr.get()?.as_ref()?;
-        let gid = font.lookup_glyph_index(ch);
+        let gid = ttf_parser::Face::parse(&table.data, 0).ok()?.glyph_index(ch)?.0;
         let &(first, n) = table.base.get(&gid)?;
         let face = ttf_parser::Face::parse(&table.data, 0).ok()?;
         let scale = size / face.units_per_em() as f32;
@@ -805,9 +933,8 @@ impl Fonts {
         }
         let img = bmp.snapshot();
         let adv = face.glyph_hor_advance(ttf_parser::GlyphId(gid)).map(|a| a as f32 * scale).unwrap_or(size);
-        let base = font.metrics(ch, size);
         Some(ColorGlyph {
-            metrics: Metrics { xmin: px0 as i32, ymin: py0 as i32, width: w, height: h, advance_width: adv, ..base },
+            metrics: Metrics { xmin: px0 as i32, ymin: py0 as i32, width: w, height: h, advance_width: adv, ..Metrics::default() },
             rgba: img.rgba,
         })
     }
@@ -823,23 +950,56 @@ impl Fonts {
     /// Avanço numa instância variável (o HVAR entra pelo ttf-parser).
     fn var_advance(&self, id: FontId, ch: char, size: f32) -> Option<f32> {
         let (data, w) = Self::var_face_data(id)?;
-        let mut face = ttf_parser::Face::parse(&data, 0).ok()?;
-        face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), w as f32);
-        let gid = face.glyph_index(ch)?;
-        Some(face.glyph_hor_advance(gid)? as f32 * size / face.units_per_em() as f32)
+        outline_advance(&data, Some(w as f32), ch, size)
     }
 
-    /// Glifo de uma instância variável: o contorno com a variação aplicada,
-    /// preenchido pelo rasterizador do canvas (o fontdue só desenha o padrão).
+    /// Glifo de uma instância variável (o fontdue só desenha o padrão).
     fn var_glyph(&self, id: FontId, ch: char, size: f32) -> Option<(Metrics, Vec<u8>)> {
-        use crate::canvas::{Bitmap, Cmd, Mat, Op, Paint, Style};
         let (data, w) = Self::var_face_data(id)?;
-        let mut face = ttf_parser::Face::parse(&data, 0).ok()?;
-        face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), w as f32);
-        let gid = face.glyph_index(ch)?;
-        let scale = size / face.units_per_em() as f32;
-        let adv = face.glyph_hor_advance(gid).map(|a| a as f32 * scale).unwrap_or(size * 0.5);
-        let base = self.face(id)?.metrics(ch, size);
+        outline_glyph(&data, Some(w as f32), ch, size)
+    }
+
+    pub fn glyph(&self, id: FontId, ch: char, size: f32) -> Option<Glyph> {
+        let k = (id, ch, Self::key(size));
+        if let Some(g) = self.glyphs.borrow().get(&k) {
+            return Some(g.clone());
+        }
+        let rid = self.resolve(id, ch);
+        let (metrics, coverage) = match self.var_glyph(rid, ch, size) {
+            Some(g) => g,
+            None if self.is_big(rid) => outline_glyph(&self.face_data(rid)?, None, ch, size)?,
+            None => self.face(rid)?.rasterize(ch, size),
+        };
+        let g = Glyph {
+            metrics,
+            coverage: std::rc::Rc::new(coverage),
+        };
+        self.glyphs.borrow_mut().insert(k, g.clone());
+        Some(g)
+    }
+}
+
+/// Avanço de um caractere pelo ttf-parser (com o eixo wght, se houver).
+fn outline_advance(data: &[u8], wght: Option<f32>, ch: char, size: f32) -> Option<f32> {
+    let mut face = ttf_parser::Face::parse(data, 0).ok()?;
+    if let Some(w) = wght {
+        face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), w);
+    }
+    let gid = face.glyph_index(ch)?;
+    Some(face.glyph_hor_advance(gid)? as f32 * size / face.units_per_em() as f32)
+}
+
+/// Glifo pelo contorno do ttf-parser, preenchido pelo rasterizador do canvas:
+/// instâncias de fontes variáveis e fontes grandes do sistema.
+fn outline_glyph(data: &[u8], wght: Option<f32>, ch: char, size: f32) -> Option<(Metrics, Vec<u8>)> {
+    use crate::canvas::{Bitmap, Cmd, Mat, Op, Paint, Style};
+    let mut face = ttf_parser::Face::parse(data, 0).ok()?;
+    if let Some(w) = wght {
+        face.set_variation(ttf_parser::Tag::from_bytes(b"wght"), w);
+    }
+    let gid = face.glyph_index(ch)?;
+    let scale = size / face.units_per_em() as f32;
+    let adv = face.glyph_hor_advance(gid).map(|a| a as f32 * scale).unwrap_or(size * 0.5);
         // contorno em unidades da fonte, guardando a caixa (a do glyf não varia)
         #[derive(Default)]
         struct Rec {
@@ -888,7 +1048,7 @@ impl Fonts {
         let mut rec = Rec::default();
         if face.outline_glyph(gid, &mut rec).is_none() || !rec.any {
             // sem contorno (espaço): só o avanço
-            return Some((Metrics { xmin: 0, ymin: 0, width: 0, height: 0, advance_width: adv, ..base }, Vec::new()));
+            return Some((Metrics { xmin: 0, ymin: 0, width: 0, height: 0, advance_width: adv, ..Metrics::default() }, Vec::new()));
         }
         let px0 = (rec.x0 * scale).floor();
         let py0 = (rec.y0 * scale).floor();
@@ -937,26 +1097,10 @@ impl Fonts {
         bmp.fill_path(&cmds, false, &paint);
         let img = bmp.snapshot();
         let coverage: Vec<u8> = img.rgba.chunks(4).map(|px| px[3]).collect();
-        Some((Metrics { xmin: px0 as i32, ymin: py0 as i32, width: wpx, height: hpx, advance_width: adv, ..base }, coverage))
-    }
-
-    pub fn glyph(&self, id: FontId, ch: char, size: f32) -> Option<Glyph> {
-        let k = (id, ch, Self::key(size));
-        if let Some(g) = self.glyphs.borrow().get(&k) {
-            return Some(g.clone());
-        }
-        let rid = self.resolve(id, ch);
-        let (metrics, coverage) = match self.var_glyph(rid, ch, size) {
-            Some(g) => g,
-            None => self.face(rid)?.rasterize(ch, size),
-        };
-        let g = Glyph {
-            metrics,
-            coverage: std::rc::Rc::new(coverage),
-        };
-        self.glyphs.borrow_mut().insert(k, g.clone());
-        Some(g)
-    }
+        Some((
+            Metrics { xmin: px0 as i32, ymin: py0 as i32, width: wpx, height: hpx, advance_width: adv, ..Metrics::default() },
+            coverage,
+        ))
 }
 
 #[cfg(test)]
