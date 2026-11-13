@@ -486,10 +486,14 @@ impl Vm {
 
     /// ToLength para array-likes.
     pub fn length_of(&mut self, o: &ObjRef) -> Result<usize, Value> {
-        match &o.borrow().kind {
-            Kind::Array(v) => return Ok(v.len()),
-            Kind::TypedArray(t) => return Ok(t.len()),
-            _ => {}
+        {
+            let b = o.borrow();
+            match &b.kind {
+                Kind::Array(v) => return Ok(v.len()),
+                // typed array com propriedades próprias pode ter um `length` seu
+                Kind::TypedArray(t) if b.props.is_empty() => return Ok(t.len()),
+                _ => {}
+            }
         }
         let l = self.get_obj(o, &PropKey::str("length"))?;
         let n = self.to_integer(&l)?;
