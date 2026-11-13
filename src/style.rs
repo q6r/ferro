@@ -970,9 +970,11 @@ thread_local! {
 pub fn set_container_sizes(doc_id: usize, sizes: HashMap<NodeId, (f32, f32)>) -> bool {
     CONTAINER_SIZES.with(|c| {
         let mut c = c.borrow_mut();
-        let same = c.0 == doc_id
-            && c.1.len() == sizes.len()
-            && sizes.iter().all(|(k, v)| c.1.get(k).is_some_and(|o| (o.0 - v.0).abs() < 0.5 && (o.1 - v.1).abs() < 0.5));
+        // sem contêineres antes e agora: nada a refazer (a maioria das páginas)
+        let same = (sizes.is_empty() && c.1.is_empty())
+            || (c.0 == doc_id
+                && c.1.len() == sizes.len()
+                && sizes.iter().all(|(k, v)| c.1.get(k).is_some_and(|o| (o.0 - v.0).abs() < 0.5 && (o.1 - v.1).abs() < 0.5)));
         if !same {
             *c = (doc_id, sizes);
         }
