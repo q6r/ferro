@@ -305,8 +305,8 @@ fn to_json(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let (dt, _) = this_date_time(vm, a, "Temporal.PlainDateTime.prototype.toLocaleString")?;
-    locale_string(vm, &dt, &a.arg(0), &a.arg(1), "any", "all")
+    this_date_time(vm, a, "Temporal.PlainDateTime.prototype.toLocaleString")?;
+    locale_string(vm, a, "any", "all")
 }
 
 fn value_of(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {

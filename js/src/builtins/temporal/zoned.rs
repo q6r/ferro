@@ -400,9 +400,9 @@ fn to_json(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let (ns, tz, _) = this_zoned(vm, a, "Temporal.ZonedDateTime.prototype.toLocaleString")?;
-    let dt = zone::date_time_for(vm, &tz, ns);
-    super::locale_string(vm, &dt, &a.arg(0), &a.arg(1), "any", "all")
+    let (_, tz, _) = this_zoned(vm, a, "Temporal.ZonedDateTime.prototype.toLocaleString")?;
+    let s = super::super::intl::temporal_to_locale(vm, &a.this, &a.arg(0), &a.arg(1), "any", "all", Some(tz.id()))?;
+    Ok(Value::str(&s))
 }
 
 fn value_of(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {

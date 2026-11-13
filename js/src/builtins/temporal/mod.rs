@@ -344,18 +344,9 @@ fn check_partial(vm: &mut Vm, v: &Value) -> Result<(), Value> {
     Ok(())
 }
 
-/// toLocaleString básico: formata a data e hora `dt` (contadas como UTC)
-/// com o Intl.DateTimeFormat do motor.
-fn locale_string(vm: &mut Vm, dt: &DateTime, locales: &Value, options: &Value, required: &str, defaults: &str) -> Result<Value, Value> {
-    let proto = match options {
-        Value::Undefined => None,
-        Value::Object(o) => Some(o.clone()),
-        v => Some(vm.to_object(v)?),
-    };
-    let o = ObjRef::new(Object::new(proto, Kind::Ordinary));
-    o.borrow_mut().props.insert(PropKey::str("timeZone"), Property::data(Value::str("UTC")));
-    let ms = iso::epoch_ns(dt).div_euclid(1_000_000) as f64;
-    let s = super::intl::date_to_locale(vm, ms, locales, &Value::Object(o), required, defaults)?;
+/// toLocaleString: Intl.DateTimeFormat com os `required`/`defaults` do tipo.
+fn locale_string(vm: &mut Vm, a: &CallArgs, required: &str, defaults: &str) -> Result<Value, Value> {
+    let s = super::intl::temporal_to_locale(vm, &a.this, &a.arg(0), &a.arg(1), required, defaults, None)?;
     Ok(Value::str(&s))
 }
 

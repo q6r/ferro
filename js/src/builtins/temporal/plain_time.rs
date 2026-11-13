@@ -2,7 +2,7 @@
 
 use super::duration;
 use super::instant::{difference_result, difference_settings, round_options};
-use super::iso::{self, IsoDate, Time};
+use super::iso::{self, Time};
 use super::options::{self, Group, UnitOpt};
 use super::parse::{self, Goal};
 use super::round::{self, InternalDur, RoundingMode, Unit};
@@ -252,8 +252,8 @@ fn to_json(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let t = this_time(vm, a, "Temporal.PlainTime.prototype.toLocaleString")?;
-    locale_string(vm, &IsoDate::new(1970, 1, 1).at(t), &a.arg(0), &a.arg(1), "time", "time")
+    this_time(vm, a, "Temporal.PlainTime.prototype.toLocaleString")?;
+    locale_string(vm, a, "time", "time")
 }
 
 fn value_of(vm: &mut Vm, _a: &mut CallArgs) -> Result<Value, Value> {

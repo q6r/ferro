@@ -381,6 +381,7 @@ fn step_months(cal: Cal, mut y: i64, mut m: u8, n: i64) -> Option<(i64, u8)> {
 }
 
 /// addCalendar sem os dias: (ano, mês, dia limitado ao mês).
+#[allow(clippy::too_many_arguments)]
 fn add_ym(vm: &mut Vm, cal: Cal, year: i64, code: MonthCode, day: u8, years: i64, months: i64, constrain: bool) -> Result<CDate, Value> {
     let (mut years, mut months) = (years, months);
     if let Some((cy, cm)) = cals::cycle(cal)

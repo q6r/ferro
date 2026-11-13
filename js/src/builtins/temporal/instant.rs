@@ -294,9 +294,8 @@ fn to_json(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
 }
 
 fn to_locale_string(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
-    let ns = this_instant(vm, a, "Temporal.Instant.prototype.toLocaleString")?;
-    let ms = ns.div_euclid(1_000_000) as f64;
-    let s = super::super::intl::date_to_locale(vm, ms, &a.arg(0), &a.arg(1), "any", "all")?;
+    this_instant(vm, a, "Temporal.Instant.prototype.toLocaleString")?;
+    let s = super::super::intl::temporal_to_locale(vm, &a.this, &a.arg(0), &a.arg(1), "any", "all", None)?;
     Ok(Value::str(&s))
 }
 
