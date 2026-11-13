@@ -967,18 +967,28 @@ thread_local! {
 
 /// Guarda os tamanhos dos contêineres para a próxima cascata. Devolve se
 /// mudou alguma coisa (então o estilo precisa ser refeito).
-pub fn set_container_sizes(doc_id: usize, sizes: HashMap<NodeId, (f32, f32)>) -> bool {
+pub fn set_container_sizes(doc_id: usize, sizes: HashMap<NodeId, (f32, f32)>) -> Option<Vec<NodeId>> {
     CONTAINER_SIZES.with(|c| {
         let mut c = c.borrow_mut();
         // sem contêineres antes e agora: nada a refazer (a maioria das páginas)
-        let same = (sizes.is_empty() && c.1.is_empty())
-            || (c.0 == doc_id
-                && c.1.len() == sizes.len()
-                && sizes.iter().all(|(k, v)| c.1.get(k).is_some_and(|o| (o.0 - v.0).abs() < 0.5 && (o.1 - v.1).abs() < 0.5)));
-        if !same {
-            *c = (doc_id, sizes);
+        if sizes.is_empty() && c.1.is_empty() {
+            return None;
         }
-        !same
+        let near = |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5;
+        // os contêineres que mudaram (ou entraram, ou saíram): as subárvores
+        // deles refazem o estilo
+        let changed: Vec<NodeId> = if c.0 != doc_id {
+            sizes.keys().copied().collect()
+        } else {
+            sizes
+                .iter()
+                .filter(|(k, v)| !c.1.get(k).is_some_and(|o| near(*o, **v)))
+                .map(|(k, _)| *k)
+                .chain(c.1.keys().filter(|k| !sizes.contains_key(k)).copied())
+                .collect()
+        };
+        *c = (doc_id, sizes);
+        (!changed.is_empty()).then_some(changed)
     })
 }
 

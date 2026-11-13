@@ -497,10 +497,14 @@ pub fn render_styled(
     for _ in 0..2 {
         let sizes: std::collections::HashMap<_, _> =
             page.as_ref().map(|p| p.containers.iter().map(|&(n, w, h)| (n, (w, h))).collect()).unwrap_or_default();
-        if !style::set_container_sizes(doc_id, sizes) {
-            break;
-        }
-        styles = style::compute(&loaded.doc, &sheets, &media);
+        let Some(changed) = style::set_container_sizes(doc_id, sizes) else { break };
+        // só as subárvores dos contêineres que mudaram de tamanho
+        let marks: Vec<crate::dom::Change> = changed
+            .into_iter()
+            .filter(|&n| n < loaded.doc.nodes.len() && loaded.doc.is_connected(n))
+            .map(crate::dom::Change::Inserted)
+            .collect();
+        styles = style::compute_incremental(&loaded.doc, &sheets, &media, Some(&styles), &marks);
         root = layout::build_box_tree(&loaded.doc, &styles);
         page = root.as_ref().map(|root| layout::layout(&loaded.doc, &styles, root, fonts, images, width, height));
     }
