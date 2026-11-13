@@ -55,7 +55,7 @@ pub(crate) fn bytes_of(v: &Value) -> Option<Vec<u8>> {
     }
 }
 
-fn uint8_array(vm: &mut Vm, bytes: &[u8]) -> R {
+pub(crate) fn uint8_array(vm: &mut Vm, bytes: &[u8]) -> R {
     let o = ferro_js::builtins::typed::new_typed(vm, TaKind::U8, bytes.len(), None)?;
     if let Kind::TypedArray(t) = &o.borrow().kind {
         t.data.borrow_mut().copy_from_slice(bytes);
@@ -1023,6 +1023,7 @@ pub(crate) fn install(vm: &mut Vm) {
     super::media::install(vm, &n);
     super::module::install(vm, &n);
     super::canvas::install(vm, &n);
+    super::crypto::install(vm, &n);
     for (name, len, f) in [
         ("requestFullscreen", 1, request_fullscreen as ferro_js::value::NativeFn),
         ("framePost", 3, frame_post),

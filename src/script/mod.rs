@@ -8,10 +8,12 @@
 //! Divisão do trabalho:
 //! - `dom.rs`: Node, Element, Document... em Rust, direto sobre a arena do DOM;
 //! - `web.rs`: o resto da plataforma em Rust (rede, URL, armazenamento...);
+//! - `crypto.rs`: a matemática do Web Crypto (`crypto.subtle`);
 //! - `prelude.js`: o que é mais natural em JS (eventos, `style`, `classList`,
 //!   `dataset`, atributos refletidos, fetch/XHR sobre as funções nativas).
 
 mod canvas;
+mod crypto;
 mod dom;
 mod frames;
 mod media;
