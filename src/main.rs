@@ -500,9 +500,14 @@ fn render_png_inner(a: &Args) -> Result<(), String> {
         let mut sheets = vec![(
             std::rc::Rc::new(ferro::css::parse_stylesheet(ferro::UA_STYLESHEET, &media)),
             ferro::style::Origin::UserAgent,
+            None,
         )];
         for s in &loaded.css {
-            sheets.push((std::rc::Rc::new(ferro::css::parse_stylesheet(&s.text, &media)), ferro::style::Origin::Author));
+            sheets.push((
+                std::rc::Rc::new(ferro::css::parse_stylesheet(&s.text, &media)),
+                ferro::style::Origin::Author,
+                s.scope,
+            ));
         }
         let styles = ferro::style::compute(&loaded.doc, &sheets, &media);
         if let Some(root) = layout::build_box_tree(&loaded.doc, &styles) {
