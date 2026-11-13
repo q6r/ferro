@@ -722,6 +722,8 @@ pub enum Command {
     SelectChoose { nav: u64, node: NodeId, index: usize },
     /// Tecla (valor `key` do DOM e o texto digitado, se houver).
     Key { nav: u64, key: String, text: Option<String>, ctrl: bool, shift: bool, alt: bool, meta: bool },
+    /// Chegou mensagem de outra thread (worker, porta): só acorda o laço.
+    Wake,
     Quit,
 }
 
@@ -761,10 +763,11 @@ impl EngineHandle {
         let (tx, rx) = mpsc::channel();
         let latest = Arc::new(AtomicU64::new(0));
         let l = latest.clone();
+        let wake = tx.clone();
         std::thread::Builder::new()
             .name("ferro-render".into())
             .stack_size(crate::script::STACK_SIZE)
-            .spawn(move || worker(rx, l, send, width, height))
+            .spawn(move || worker(rx, wake, l, send, width, height))
             .expect("não foi possível criar a thread de renderização");
         EngineHandle { tx, latest }
     }
@@ -869,6 +872,7 @@ fn send_frame(cur: &mut Current, send: &impl Fn(Update), width: f32) {
 
 fn worker(
     rx: mpsc::Receiver<Command>,
+    wake: mpsc::Sender<Command>,
     latest: Arc<AtomicU64>,
     send: impl Fn(Update) + Send + Sync + 'static,
     mut width: f32,
@@ -931,6 +935,7 @@ fn worker(
                 Command::Key { nav: n, key, text, ctrl, shift, alt, meta } => {
                     keys.push((n, key, text, ctrl, shift, alt, meta))
                 }
+                Command::Wake => {}
                 Command::Quit => return,
             }
         }
@@ -966,6 +971,11 @@ fn worker(
             let s2 = send.clone();
             session.set_frame_sink(Arc::new(move |node, img| {
                 s2(Update::VideoFrames { nav: n, frames: vec![(node, img)] });
+            }));
+            // mensagem de worker/porta para a página acorda o laço
+            let w = wake.clone();
+            session.set_waker(Arc::new(move || {
+                let _ = w.send(Command::Wake);
             }));
             let mut cur = Current {
                 nav: n,
