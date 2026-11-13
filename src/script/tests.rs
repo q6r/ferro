@@ -488,3 +488,27 @@ fn medir_criacao_de_sessao() {
     });
 }
 
+#[test]
+fn handler_onx_na_ordem_dos_listeners() {
+    with_stack(|| {
+        // como no Chrome: o handler entra na lista no primeiro `onX = f`;
+        // trocar a função mantém o lugar; tirar e pôr de novo vai para o fim
+        let mut s = session(
+            r#"<div id=d></div><script>
+              window.log = [];
+              d.addEventListener('click', () => log.push('antes'));
+              d.onclick = () => log.push('onclick');
+              d.addEventListener('click', () => log.push('depois'));
+              d.onclick = () => log.push('onclick2');
+              d.click();
+              d.onclick = null; d.onclick = () => log.push('fim');
+              d.click();
+              window.onmessage = () => log.push('w-onmessage');
+              addEventListener('message', () => log.push('w-listener'));
+              dispatchEvent(new MessageEvent('message'));
+            </script>"#,
+        );
+        assert_eq!(eval(&mut s, "log.join()"), "antes,onclick2,depois,antes,depois,fim,w-onmessage,w-listener");
+    });
+}
+

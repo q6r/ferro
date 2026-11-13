@@ -133,7 +133,7 @@ methods(ETP, {
     if (!m) LISTENERS.set(t, m = new Map());
     let list = m.get(type);
     if (!list) m.set(type, list = []);
-    if (list.some((l) => l.cb === cb && l.capture === f.capture)) return;
+    if (list.some((l) => !l.handler && l.cb === cb && l.capture === f.capture)) return;
     list.push({ cb, capture: f.capture, once: !!f.once, passive: !!f.passive, removed: false });
     if (f.signal) f.signal.addEventListener('abort', () => t.removeEventListener(type, cb, f));
   },
@@ -143,7 +143,7 @@ methods(ETP, {
     const list = m && m.get(String(type));
     if (!list) return;
     const cap = flagsOf(opts).capture;
-    const i = list.findIndex((l) => l.cb === cb && l.capture === cap);
+    const i = list.findIndex((l) => !l.handler && l.cb === cb && l.capture === cap);
     if (i >= 0) { list[i].removed = true; list.splice(i, 1); }
   },
   dispatchEvent(ev) {
@@ -164,13 +164,30 @@ function handlerOf(t, type) {
   if (set === null) return null;
   return inlineHandlerOf(t, type);
 }
+/// Chama o handler `on*` do alvo (se houver).
+function callHandler(t, ev, s) {
+  const h = handlerOf(t, s.type);
+  if (!h) return;
+  try {
+    const r = h.call(t, ev);
+    if (r === false && s.type !== 'mouseover' && s.type !== 'error') ev.preventDefault();
+  } catch (e) { N.reportError(e); }
+}
 function invoke(t, ev, s, phase) {
   s.currentTarget = t;
   const m = LISTENERS.get(t);
   const list = m && m.get(s.type);
+  // o handler posto por propriedade tem lugar na lista (o do primeiro
+  // `onX = f`); o do atributo HTML roda depois dos listeners
+  let handled = false;
   if (list && list.length) {
     for (const l of list.slice()) {
       if (l.removed) continue;
+      if (l.handler) {
+        if (phase !== 1) { handled = true; callHandler(t, ev, s); }
+        if (s.stopNow) return;
+        continue;
+      }
       if (phase === 1 && !l.capture) continue;
       if (phase === 3 && l.capture) continue;
       if (l.once) t.removeEventListener(s.type, l.cb, { capture: l.capture });
@@ -183,15 +200,7 @@ function invoke(t, ev, s, phase) {
       if (s.stopNow) return;
     }
   }
-  if (phase !== 1) {
-    const h = handlerOf(t, s.type);
-    if (h) {
-      try {
-        const r = h.call(t, ev);
-        if (r === false && s.type !== 'mouseover' && s.type !== 'error') ev.preventDefault();
-      } catch (e) { N.reportError(e); }
-    }
-  }
+  if (phase !== 1 && !handled) callHandler(t, ev, s);
 }
 function dispatch(t, ev) {
   const s = EV.get(ev);
@@ -229,7 +238,21 @@ function defineHandlers(P, names) {
       const t = this ?? G;
       let h = HANDLERS.get(t);
       if (!h) HANDLERS.set(t, h = new Map());
-      h.set(type, typeof v === 'function' ? v : null);
+      const fn = typeof v === 'function' ? v : null;
+      const had = typeof h.get(type) === 'function';
+      h.set(type, fn);
+      // o lugar do handler entre os listeners é o do primeiro `onX = f`
+      if (fn && !had) {
+        let m = LISTENERS.get(t);
+        if (!m) LISTENERS.set(t, m = new Map());
+        let list = m.get(type);
+        if (!list) m.set(type, list = []);
+        list.push({ handler: true, capture: false, removed: false });
+      } else if (!fn && had) {
+        const list = LISTENERS.get(t)?.get(type);
+        const i = list ? list.findIndex((l) => l.handler) : -1;
+        if (i >= 0) { list[i].removed = true; list.splice(i, 1); }
+      }
     });
   }
 }
