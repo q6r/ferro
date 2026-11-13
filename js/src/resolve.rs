@@ -9,7 +9,7 @@
 use crate::fxhash::FxHashSet;
 
 use crate::ast::*;
-use crate::compiler::{annex_b_functions, bound_names, lexical_decls, var_names};
+use crate::compiler::{annex_b_functions, bound_names, lexical_decls, split_params, var_names};
 
 pub type Captures = FxHashSet<(usize, Name)>;
 
@@ -32,6 +32,9 @@ struct Scope {
     names: FxHashSet<Name>,
     /// Escopo de um `with`: todo nome livre lá dentro consulta o objeto.
     is_with: bool,
+    /// Recebe as `var` (topo de função, ou o corpo quando os parâmetros
+    /// têm escopo próprio).
+    is_var: bool,
 }
 
 /// Nome da variável escondida que guarda o objeto de um `with`.
@@ -79,7 +82,7 @@ impl Resolver {
             self.evals.insert(sc.key);
         }
         if self.func > 0
-            && let Some(sc) = self.scopes.iter().find(|sc| sc.func == self.func)
+            && let Some(sc) = self.scopes.iter().rev().find(|sc| sc.func == self.func && sc.is_var)
         {
             self.eval_fns.insert(sc.key);
         }
@@ -104,7 +107,7 @@ impl Resolver {
         let mut lex = Vec::new();
         lexical_decls(body, false, &mut lex);
         names.extend(lex.into_iter().map(|(n, _)| n));
-        self.push(key, names);
+        self.push_var(key, names);
         self.stmts(body);
         self.pop();
         self.strict.pop();
@@ -121,7 +124,16 @@ impl Resolver {
             func: self.func,
             names: names.into_iter().collect(),
             is_with: false,
+            is_var: false,
         });
+    }
+
+    /// Escopo que recebe as `var` de uma função.
+    fn push_var(&mut self, key: usize, names: Vec<Name>) {
+        self.push(key, names);
+        if let Some(sc) = self.scopes.last_mut() {
+            sc.is_var = true;
+        }
     }
 
     fn pop(&mut self) {
@@ -177,6 +189,14 @@ impl Resolver {
         if let Some(r) = &f.rest {
             bound_names(r, &mut names);
         }
+        // parâmetros num escopo próprio (veja `split_params`)
+        let split = split_params(f);
+        if split {
+            self.push_var(key_of(f), std::mem::take(&mut names));
+            for p in f.params.iter().chain(f.rest.as_ref()) {
+                self.pattern(p);
+            }
+        }
         let body: &[Stmt] = match &f.body {
             FnBody::Block(b) => b,
             FnBody::Expr(_) => &[],
@@ -206,18 +226,25 @@ impl Resolver {
         let mut lex = Vec::new();
         lexical_decls(body, false, &mut lex);
         names.extend(lex.into_iter().map(|(n, _)| n));
-        self.push(key_of(f), names);
-        for p in &f.params {
-            self.pattern(p);
-        }
-        if let Some(r) = &f.rest {
-            self.pattern(r);
+        if split {
+            self.push_var(key_of(f) + 1, names);
+        } else {
+            self.push_var(key_of(f), names);
+            for p in &f.params {
+                self.pattern(p);
+            }
+            if let Some(r) = &f.rest {
+                self.pattern(r);
+            }
         }
         match &f.body {
             FnBody::Block(b) => self.stmts(b),
             FnBody::Expr(e) => self.expr(e),
         }
         self.pop();
+        if split {
+            self.pop();
+        }
         self.strict.pop();
         self.func -= 1;
     }
@@ -440,7 +467,7 @@ impl Resolver {
                     var_names(b, &mut names, false, false);
                 }
             }
-            self.push(class_init_key(c, is_static), names);
+            self.push_var(class_init_key(c, is_static), names);
             for m in &ms {
                 match &m.kind {
                     MemberKind::Field(Some(e)) => self.expr(e),
