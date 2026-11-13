@@ -463,8 +463,9 @@ fn hit_to_array(vm: &mut Vm, prog: &Program, s: &JsStr, hit: &Hit) -> Value {
         Value::Undefined
     } else {
         let g = ObjRef::new(Object::new(None, Kind::Ordinary));
-        for (name, idx) in &prog.names {
-            vm.define_data(&g, PropKey::Str(JsStr::new(name)), items[*idx as usize].clone());
+        for (k, (name, _)) in prog.names.iter().enumerate() {
+            let idx = prog.named_group(k, &hit.caps);
+            vm.define_data(&g, PropKey::Str(JsStr::new(name)), items[idx as usize].clone());
         }
         Value::Object(g)
     };
@@ -485,8 +486,9 @@ fn hit_to_array(vm: &mut Vm, prog: &Program, s: &JsStr, hit: &Hit) -> Value {
             Value::Undefined
         } else {
             let g = ObjRef::new(Object::new(None, Kind::Ordinary));
-            for (name, idx) in &prog.names {
-                vm.define_data(&g, PropKey::Str(JsStr::new(name)), pairs[*idx as usize].clone());
+            for (k, (name, _)) in prog.names.iter().enumerate() {
+                let idx = prog.named_group(k, &hit.caps);
+                vm.define_data(&g, PropKey::Str(JsStr::new(name)), pairs[idx as usize].clone());
             }
             Value::Object(g)
         };
@@ -652,8 +654,9 @@ fn sym_replace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
                 Value::Undefined
             } else {
                 let g = ObjRef::new(Object::new(None, Kind::Ordinary));
-                for (name, idx) in &prog.names {
-                    vm.define_data(&g, PropKey::Str(JsStr::new(name)), cap_vals[*idx as usize - 1].clone());
+                for (k, (name, _)) in prog.names.iter().enumerate() {
+                    let idx = prog.named_group(k, &caps);
+                    vm.define_data(&g, PropKey::Str(JsStr::new(name)), cap_vals[idx as usize - 1].clone());
                 }
                 Value::Object(g)
             };
@@ -669,8 +672,9 @@ fn sym_replace(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
                 Value::Undefined
             } else {
                 let g = ObjRef::new(Object::new(None, Kind::Ordinary));
-                for (name, idx) in &prog.names {
-                    vm.define_data(&g, PropKey::Str(JsStr::new(name)), caps[*idx as usize - 1].clone());
+                for (k, (name, _)) in prog.names.iter().enumerate() {
+                    let idx = prog.named_group(k, &hit.caps);
+                    vm.define_data(&g, PropKey::Str(JsStr::new(name)), caps[idx as usize - 1].clone());
                 }
                 Value::Object(g)
             };

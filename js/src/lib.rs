@@ -17,6 +17,7 @@ pub mod parser;
 pub mod regex;
 pub mod resolve;
 pub mod string;
+mod unicode_props;
 pub mod value;
 pub mod vm;
 
