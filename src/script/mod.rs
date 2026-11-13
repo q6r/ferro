@@ -1474,7 +1474,8 @@ pub(crate) fn exec_script(vm: &mut Vm, n: NodeId, text: &str, name: &str) {
     h.borrow_mut().current_script = prev;
 }
 
-/// Coleta de novo as folhas de estilo (depois que `<style>`/`<link>` mudaram).
+/// Coleta de novo as folhas de estilo (depois que `<style>`/`<link>` mudaram),
+/// na ordem da árvore e entrando nas sombras: cada folha sabe de qual árvore é.
 fn recollect_styles(h: &Rc<RefCell<Host>>) {
     let mut hb = h.borrow_mut();
     hb.styles_dirty = false;
@@ -1482,19 +1483,20 @@ fn recollect_styles(h: &Rc<RefCell<Host>>) {
     let mut fetch = Vec::new();
     {
         let doc = &hb.page.doc;
-        let mut all = doc.descendants(Document::ROOT);
-        for (&host, &root) in &doc.shadow_roots {
-            if doc.is_connected(host) {
-                all.extend(doc.descendants(root));
+        // (nó, árvore dele: None = documento, Some(h) = sombra de h)
+        let mut stack: Vec<(NodeId, Option<NodeId>)> = vec![(Document::ROOT, None)];
+        while let Some((n, scope)) = stack.pop() {
+            stack.extend(doc.node(n).children.iter().rev().map(|&c| (c, scope)));
+            if let Some(&root) = doc.shadow_roots.get(&n) {
+                stack.push((root, Some(n)));
             }
-        }
-        for n in all {
             let Some(el) = doc.element(n) else { continue };
             let media = el.attr("media").map(str::to_string);
             match el.tag.as_str() {
                 "style" => out.push(engine::StyleSource {
                     text: engine::absolutize_css_urls(&doc.text_content(n), &hb.page.base),
                     media,
+                    scope,
                 }),
                 "link" => {
                     let rel = el.attr("rel").unwrap_or("").to_ascii_lowercase();
@@ -1508,6 +1510,7 @@ fn recollect_styles(h: &Rc<RefCell<Host>>) {
                             Some(Some(text)) => out.push(engine::StyleSource {
                                 text: engine::absolutize_css_urls(text, &u),
                                 media,
+                                scope,
                             }),
                             Some(None) => {}
                             None => fetch.push(u),

@@ -24,6 +24,8 @@ use crate::{UA_STYLESHEET, html};
 pub struct StyleSource {
     pub text: String,
     pub media: Option<String>,
+    /// Árvore da folha: None = o documento; Some(h) = a sombra do hospedeiro h.
+    pub scope: Option<NodeId>,
 }
 
 /// Documento carregado: DOM, folhas de estilo e URLs.
@@ -398,7 +400,7 @@ fn fetch_stylesheets(doc: &Document, base: &Url, net: &Net) -> (Vec<StyleSource>
                     absolutize_css_urls(&text?, &u)
                 }
             };
-            Some(StyleSource { text, media })
+            Some(StyleSource { text, media, scope: None })
         })
         .collect();
     (list, texts)
@@ -466,16 +468,16 @@ pub fn render_styled(
     let t0 = std::time::Instant::now();
     let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
     let media = MediaContext { width, height };
-    let mut sheets = vec![(cached_sheet(UA_STYLESHEET, &media), Origin::UserAgent)];
+    let mut sheets = vec![(cached_sheet(UA_STYLESHEET, &media), Origin::UserAgent, None)];
     if is_quirks(&loaded.doc) {
-        sheets.push((cached_sheet(QUIRKS_STYLESHEET, &media), Origin::UserAgent));
+        sheets.push((cached_sheet(QUIRKS_STYLESHEET, &media), Origin::UserAgent, None));
     }
     if html::scripting() {
-        sheets.push((cached_sheet("noscript { display: none }", &media), Origin::UserAgent));
+        sheets.push((cached_sheet("noscript { display: none }", &media), Origin::UserAgent, None));
     }
     for s in &loaded.css {
         if s.media.as_deref().is_none_or(|m| css::media_matches(m, &media)) {
-            sheets.push((cached_sheet(&s.text, &media), Origin::Author));
+            sheets.push((cached_sheet(&s.text, &media), Origin::Author, s.scope));
         }
     }
     let t_css = ms(t0);
@@ -520,7 +522,7 @@ pub fn render_styled(
     let mut seen = std::collections::HashSet::new();
     page.missing_fonts = sheets
         .iter()
-        .flat_map(|(sh, _)| &sh.font_faces)
+        .flat_map(|(sh, _, _)| &sh.font_faces)
         .filter(|f| f.latin && used.contains(f.family.as_str()))
         .filter(|f| !f.sources.iter().any(|u| fonts::web_font_tried(u)))
         .filter(|f| seen.insert(f.sources[0].clone()))

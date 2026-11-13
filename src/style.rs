@@ -1308,14 +1308,65 @@ impl Buckets {
     }
 }
 
+/// Uma folha na cascata: a origem e a árvore de onde ela vem (None = o
+/// documento; Some(h) = a sombra do hospedeiro h).
+pub type ScopedSheet = (Rc<Stylesheet>, Origin, Option<NodeId>);
+
 /// Todas as regras das folhas, indexadas. Fica guardado entre um cálculo e
 /// outro enquanto as folhas forem as mesmas.
 struct RuleIndex {
-    sheets: Vec<(Rc<Stylesheet>, Origin)>,
+    sheets: Vec<ScopedSheet>,
     entries: Vec<Entry>,
+    /// Regras de cada árvore: [0] o documento; [1] uma sombra sem folhas; depois
+    /// as sombras com folhas (as com as mesmas folhas dividem o conjunto). As
+    /// do navegador estão em todos.
+    sets: Vec<RuleSet>,
+    /// Hospedeiro → conjunto das regras da sombra dele.
+    shadow_sets: FxMap<NodeId, u32>,
+    /// Quantas regras têm pseudo-elemento (::before, ::after, ::placeholder).
+    pseudo_len: usize,
+    inv: Invalidation,
+}
+
+/// As regras de uma árvore (o documento ou uma sombra).
+#[derive(Default)]
+struct RuleSet {
     normal: Buckets,
     pseudo: Buckets,
-    inv: Invalidation,
+    /// `:host`, `:host()`, `:host-context()`: casam com o hospedeiro.
+    host: Vec<u32>,
+    /// `::slotted()`: casam com os filhos do hospedeiro postos nos slots.
+    slotted: Vec<u32>,
+    /// `::part()`: casam com elementos das sombras dos hospedeiros desta árvore.
+    part: Vec<u32>,
+}
+
+impl RuleSet {
+    /// Põe a regra na lista certa. `:host` e `::slotted()` só casam em sombras.
+    fn place(&mut self, sel: &css::Selector, id: u32, shadow: bool) {
+        if sel.slotted.is_some() {
+            if shadow {
+                self.slotted.push(id);
+            }
+            return;
+        }
+        if sel.part.is_some() {
+            self.part.push(id);
+            return;
+        }
+        if shadow && sel.may_match_host() {
+            self.host.push(id);
+        }
+        if sel.host_only() {
+            return;
+        }
+        let last = sel.compounds.last().unwrap();
+        if sel.pseudo_element.is_some() {
+            self.pseudo.insert(last, id);
+        } else {
+            self.normal.insert(last, id);
+        }
+    }
 }
 
 /// O que os seletores olham, para saber quem recalcular quando algo muda.
@@ -1405,18 +1456,33 @@ impl Invalidation {
     /// `target`: quem o seletor de fora atinge (None = este é o de fora).
     fn selector(&mut self, sel: &css::Selector, outer_subject: bool, target: Option<&InvSet>) {
         let n = sel.compounds.len();
-        let own_target = InvSet::of_subject(sel.compounds.last().unwrap());
+        // ::slotted(X): o estilo vai para quem casa com X, posto no slot (que
+        // é ancestral dele na árvore achatada); ::part(): para os elementos com
+        // `part` na sombra do hospedeiro (idem)
+        let (own_target, beyond) = match (&sel.slotted, &sel.part) {
+            (Some(x), _) => (InvSet::of_subject(x), true),
+            (_, Some(_)) => {
+                self.attrs.insert("part".into());
+                let mut s = InvSet::default();
+                s.attrs.insert("part".into());
+                (s, true)
+            }
+            _ => (InvSet::of_subject(sel.compounds.last().unwrap()), false),
+        };
         let target = target.unwrap_or(&own_target).clone();
+        if let Some(x) = &sel.slotted {
+            self.compound(x, outer_subject, false, &target);
+        }
         let sibling = |c: &css::Combinator| matches!(c, css::Combinator::NextSibling | css::Combinator::SubsequentSibling);
         for (i, c) in sel.compounds.iter().enumerate() {
-            let subject = outer_subject && i + 1 == n;
+            let subject = outer_subject && i + 1 == n && !beyond;
             let sib = sel.combinators.get(i..).is_some_and(|cs| cs.iter().any(sibling));
             self.compound(c, subject, sib, &target);
         }
         if sel.combinators.iter().any(sibling) {
             self.structural = true;
             // `.a + .b .c`: o irmão muda quem casa lá embaixo
-            if sel.combinators[..sel.combinators.len().saturating_sub(1)].iter().any(sibling) || !outer_subject {
+            if sel.combinators[..sel.combinators.len().saturating_sub(1)].iter().any(sibling) || !outer_subject || beyond {
                 self.anc_structural.merge(&target);
             }
         }
@@ -1458,6 +1524,10 @@ impl Invalidation {
                         self.selector(s, subject, Some(target));
                     }
                 }
+                // :host(X) olha o próprio hospedeiro; :host-context(X), também
+                // os ancestrais dele
+                P::Host(Some(x)) => self.compound(x, subject, sib, target),
+                P::HostContext(x) => self.compound(x, false, sib, target),
                 P::FirstChild
                 | P::LastChild
                 | P::OnlyChild
@@ -1507,20 +1577,24 @@ thread_local! {
 
 impl RuleIndex {
     /// O índice dessas folhas (reaproveita o último se forem as mesmas).
-    fn for_sheets(sheets: &[(Rc<Stylesheet>, Origin)]) -> Rc<RuleIndex> {
+    fn for_sheets(sheets: &[ScopedSheet]) -> Rc<RuleIndex> {
         INDEX_CACHE.with(|c| {
             if let Some(ix) = c.borrow().as_ref()
                 && ix.sheets.len() == sheets.len()
-                && ix.sheets.iter().zip(sheets).all(|(a, b)| Rc::ptr_eq(&a.0, &b.0) && a.1 == b.1)
+                && ix.sheets.iter().zip(sheets).all(|(a, b)| Rc::ptr_eq(&a.0, &b.0) && a.1 == b.1 && a.2 == b.2)
             {
                 return ix.clone();
             }
+            let t = std::time::Instant::now();
             let ix = Rc::new(RuleIndex::build(sheets));
             if std::env::var_os("FERRO_TEMPOS").is_some() {
                 eprintln!(
-                    "[ferro] índice de regras: {} seletores ({} testados em todo elemento)",
+                    "[ferro] índice de regras: {} seletores em {:.1} ms ({} testados em todo elemento; {} sombras com folhas, {} conjuntos)",
                     ix.entries.len(),
-                    ix.normal.universal.len()
+                    t.elapsed().as_secs_f64() * 1000.0,
+                    ix.sets[0].normal.universal.len(),
+                    ix.shadow_sets.len(),
+                    ix.sets.len() - 2
                 );
             }
             *c.borrow_mut() = Some(ix.clone());
@@ -1528,63 +1602,140 @@ impl RuleIndex {
         })
     }
 
-    fn build(sheets: &[(Rc<Stylesheet>, Origin)]) -> Self {
+    fn build(sheets: &[ScopedSheet]) -> Self {
         let mut idx = RuleIndex {
             sheets: sheets.to_vec(),
             entries: Vec::new(),
-            normal: Buckets::default(),
-            pseudo: Buckets::default(),
+            sets: Vec::new(),
+            shadow_sets: FxMap::default(),
+            pseudo_len: 0,
             inv: Invalidation::default(),
         };
         let mut order = 0;
-        for (si, (sheet, origin)) in sheets.iter().enumerate() {
-            for (ri, rule) in sheet.rules.iter().enumerate() {
-                for (xi, sel) in rule.selectors.iter().enumerate() {
-                    // pseudo-classe que nunca casa (:visited, ::first-line...): fora
-                    if sel.compounds.iter().any(|c| c.pseudos.iter().any(|p| matches!(p, css::Pseudo::Never))) {
-                        continue;
-                    }
-                    idx.inv.selector(sel, true, None);
-                    // compostos ligados por descendente/filho são ancestrais do elemento
-                    let mut ancestors = Vec::new();
-                    for (c, comb) in sel.compounds.iter().zip(&sel.combinators) {
-                        if matches!(comb, css::Combinator::Descendant | css::Combinator::Child) {
-                            if let Some(id) = &c.id {
-                                ancestors.push(feature_hash(b'#', id));
-                            }
-                            for cl in &c.classes {
-                                ancestors.push(feature_hash(b'.', cl));
-                            }
-                            if let Some(t) = &c.tag {
-                                ancestors.push(feature_hash(b't', t));
-                            }
-                        }
-                    }
-                    let id = idx.entries.len() as u32;
-                    idx.entries.push(Entry {
-                        sheet: si as u32,
-                        rule: ri as u32,
-                        sel: xi as u32,
-                        origin: *origin,
-                        spec: sel.specificity(),
-                        order,
-                        ancestors: ancestors.into_boxed_slice(),
+        // as do navegador valem em todas as árvores
+        let mut ua = Vec::new();
+        for (si, s) in sheets.iter().enumerate() {
+            if s.1 == Origin::UserAgent {
+                ua.extend(idx.add_entries(si, &mut order));
+            }
+        }
+        let mut doc = ua.clone();
+        // folhas de cada sombra, na ordem da árvore
+        let mut shadows: Vec<(NodeId, Vec<usize>)> = Vec::new();
+        let mut at: FxMap<NodeId, usize> = FxMap::default();
+        for (si, s) in sheets.iter().enumerate() {
+            match s {
+                (_, Origin::UserAgent, _) => {}
+                (_, _, None) => doc.extend(idx.add_entries(si, &mut order)),
+                (_, _, Some(h)) => {
+                    let i = *at.entry(*h).or_insert_with(|| {
+                        shadows.push((*h, Vec::new()));
+                        shadows.len() - 1
                     });
-                    order += 1;
-                    let last = sel.compounds.last().unwrap();
-                    if sel.pseudo_element.is_some() {
-                        idx.pseudo.insert(last, id);
-                    } else {
-                        idx.normal.insert(last, id);
-                    }
+                    shadows[i].1.push(si);
                 }
             }
         }
+        let mut sets = vec![RuleSet::default(), RuleSet::default()];
+        for &id in &doc {
+            sets[0].place(idx.selector(id), id, false);
+        }
+        for &id in &ua {
+            sets[1].place(idx.selector(id), id, true);
+        }
+        // sombras com as mesmas folhas (o mesmo componente várias vezes) dividem o conjunto
+        let mut same: HashMap<Vec<usize>, u32> = HashMap::new();
+        for (host, list) in shadows {
+            let key: Vec<usize> = list.iter().map(|&si| Rc::as_ptr(&sheets[si].0) as usize).collect();
+            let at = match same.get(&key) {
+                Some(&at) => at,
+                None => {
+                    let mut ids = ua.clone();
+                    for si in list {
+                        ids.extend(idx.add_entries(si, &mut order));
+                    }
+                    let mut set = RuleSet::default();
+                    for id in ids {
+                        set.place(idx.selector(id), id, true);
+                    }
+                    sets.push(set);
+                    let at = sets.len() as u32 - 1;
+                    same.insert(key, at);
+                    at
+                }
+            };
+            idx.shadow_sets.insert(host, at);
+        }
+        idx.sets = sets;
         idx
+    }
+
+    /// Cria as entradas dos seletores da folha `si`; devolve os índices delas.
+    fn add_entries(&mut self, si: usize, order: &mut usize) -> Vec<u32> {
+        let (sheet, origin, _) = self.sheets[si].clone();
+        let mut ids = Vec::new();
+        for (ri, rule) in sheet.rules.iter().enumerate() {
+            for (xi, sel) in rule.selectors.iter().enumerate() {
+                // pseudo-classe que nunca casa (:visited, ::first-line...): fora
+                if sel.compounds.iter().any(|c| c.pseudos.iter().any(|p| matches!(p, css::Pseudo::Never))) {
+                    continue;
+                }
+                self.inv.selector(sel, true, None);
+                // compostos ligados por descendente/filho são ancestrais do elemento
+                let mut ancestors = Vec::new();
+                for (c, comb) in sel.compounds.iter().zip(&sel.combinators) {
+                    if matches!(comb, css::Combinator::Descendant | css::Combinator::Child) {
+                        if let Some(id) = &c.id {
+                            ancestors.push(feature_hash(b'#', id));
+                        }
+                        for cl in &c.classes {
+                            ancestors.push(feature_hash(b'.', cl));
+                        }
+                        if let Some(t) = &c.tag {
+                            ancestors.push(feature_hash(b't', t));
+                        }
+                    }
+                }
+                ids.push(self.entries.len() as u32);
+                self.entries.push(Entry {
+                    sheet: si as u32,
+                    rule: ri as u32,
+                    sel: xi as u32,
+                    origin,
+                    spec: sel.specificity(),
+                    order: *order,
+                    ancestors: ancestors.into_boxed_slice(),
+                });
+                *order += 1;
+                if sel.pseudo_element.is_some() {
+                    self.pseudo_len += 1;
+                }
+            }
+        }
+        ids
     }
 
     fn rule(&self, e: &Entry) -> &css::Rule {
         &self.sheets[e.sheet as usize].0.rules[e.rule as usize]
+    }
+
+    fn entry(&self, id: u32) -> (&Entry, &css::Rule) {
+        let e = &self.entries[id as usize];
+        (e, self.rule(e))
+    }
+
+    fn selector(&self, id: u32) -> &css::Selector {
+        let (e, rule) = self.entry(id);
+        &rule.selectors[e.sel as usize]
+    }
+
+    /// Regras da árvore (None = documento; Some(h) = sombra de h).
+    fn set_of(&self, tree: Option<NodeId>) -> &RuleSet {
+        let at = match tree {
+            None => 0,
+            Some(h) => self.shadow_sets.get(&h).copied().unwrap_or(1),
+        };
+        &self.sets[at as usize]
     }
 }
 
@@ -1617,7 +1768,7 @@ impl std::ops::Index<NodeId> for Styles {
 
 /// Calcula o estilo de todos os elementos. Índice = NodeId; nós de texto
 /// recebem o estilo do pai.
-pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &MediaContext) -> Styles {
+pub fn compute(doc: &Document, sheets: &[ScopedSheet], media: &MediaContext) -> Styles {
     let index = RuleIndex::for_sheets(sheets);
     let mut styles = Styles {
         nodes: vec![None; doc.nodes.len()],
@@ -1626,15 +1777,7 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
         key: None,
     };
     let root_style = Rc::new(ComputedStyle::initial());
-    let mut cx = Cascade {
-        doc,
-        index: &index,
-        media: *media,
-        root_font: 16.0,
-        own_bits: vec![None; doc.nodes.len()],
-        ancestor_bits: vec![None; doc.nodes.len()],
-        scratch: std::cell::RefCell::new(Vec::new()),
-    };
+    let mut cx = Cascade::new(doc, &index, media, 16.0);
     let mut stack: Vec<(NodeId, Rc<ComputedStyle>)> = doc
         .node(Document::ROOT)
         .children
@@ -1652,7 +1795,7 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
                 if doc.node(node).parent == Some(Document::ROOT) {
                     cx.root_font = s.font_size;
                 }
-                if index.pseudo.len > 0 && s.display != Display::None {
+                if index.pseudo_len > 0 && s.display != Display::None {
                     for (pe, map) in [
                         (css::PseudoElement::Before, &mut styles.before),
                         (css::PseudoElement::After, &mut styles.after),
@@ -1688,7 +1831,7 @@ pub fn compute(doc: &Document, sheets: &[(Rc<Stylesheet>, Origin)], media: &Medi
 /// mudanças do DOM (`changes`) e do estado dinâmico podem ter afetado.
 pub fn compute_incremental(
     doc: &Document,
-    sheets: &[(Rc<Stylesheet>, Origin)],
+    sheets: &[ScopedSheet],
     media: &MediaContext,
     prev: Option<&Styles>,
     changes: &[crate::dom::Change],
@@ -1865,15 +2008,7 @@ pub fn compute_incremental(
         after: HashMap::new(),
         key: None,
     };
-    let mut cx = Cascade {
-        doc,
-        index: &index,
-        media: *media,
-        root_font: key.root_font,
-        own_bits: vec![None; n],
-        ancestor_bits: vec![None; n],
-        scratch: std::cell::RefCell::new(Vec::new()),
-    };
+    let mut cx = Cascade::new(doc, &index, media, key.root_font);
     let root_style = Rc::new(ComputedStyle::initial());
     let mut restyled_count = 0usize;
     // (nó, estilo do pai, herdadas do pai mudaram, pai recalculado, forçar a subárvore)
@@ -1904,7 +2039,7 @@ pub fn compute_incremental(
                         return compute(doc, sheets, media);
                     }
                     restyled_count += 1;
-                    if index.pseudo.len > 0 && s.display != Display::None {
+                    if index.pseudo_len > 0 && s.display != Display::None {
                         for (pe, map) in [
                             (css::PseudoElement::Before, &mut styles.before),
                             (css::PseudoElement::After, &mut styles.after),
@@ -2024,6 +2159,26 @@ fn inherited_same(a: &ComputedStyle, b: &ComputedStyle) -> bool {
         && same_vars(&a.custom, &b.custom)
 }
 
+/// Ordem da cascata: (origem e importância, contexto, especificidade, ordem).
+type CascadeKey = (u8, u8, (u32, u32, u32, u32), usize);
+
+/// Junta as declarações de uma regra que casou. `ctx`: de qual árvore ela vem
+/// (ver `Cascade::style_for`).
+fn push_matched<'r>(matched: &mut Vec<(CascadeKey, &'r Declaration)>, e: &Entry, rule: &'r css::Rule, ctx: u8) {
+    let spec = (0, e.spec.0, e.spec.1, e.spec.2);
+    for d in &rule.declarations {
+        let prio = match (e.origin, d.important) {
+            (Origin::UserAgent, false) => 0,
+            (Origin::Author, false) => 1,
+            (Origin::Author, true) => 2,
+            (Origin::UserAgent, true) => 3,
+        };
+        // normal: a árvore de fora ganha; !important: a de dentro
+        let ctx = if d.important { u8::MAX - ctx } else { ctx };
+        matched.push(((prio, ctx, spec, e.order), d));
+    }
+}
+
 struct Cascade<'a> {
     doc: &'a Document,
     index: &'a RuleIndex,
@@ -2035,9 +2190,108 @@ struct Cascade<'a> {
     ancestor_bits: Vec<Option<Box<Bloom>>>,
     /// Lista de candidatas reaproveitada entre elementos.
     scratch: std::cell::RefCell<Vec<u32>>,
+    /// O documento tem sombras? (Sem elas, tudo é da árvore do documento.)
+    shadow: bool,
+    /// Árvore de cada nó, já descoberta (ver `tree`); vazio sem sombras.
+    trees: std::cell::RefCell<Vec<u32>>,
+    /// Raiz de sombra → os slots dela (o primeiro de cada nome).
+    slots: std::cell::RefCell<FxMap<NodeId, Vec<(Box<str>, NodeId)>>>,
+}
+
+/// `Cascade::trees`: ainda não sabe / árvore do documento (o resto é o hospedeiro).
+const TREE_UNKNOWN: u32 = u32::MAX;
+const TREE_DOC: u32 = u32::MAX - 1;
+
+impl<'a> Cascade<'a> {
+    fn new(doc: &'a Document, index: &'a RuleIndex, media: &MediaContext, root_font: f32) -> Self {
+        let n = doc.nodes.len();
+        let shadow = !doc.shadow_roots.is_empty();
+        Cascade {
+            doc,
+            index,
+            media: *media,
+            root_font,
+            own_bits: vec![None; n],
+            ancestor_bits: vec![None; n],
+            scratch: std::cell::RefCell::new(Vec::new()),
+            shadow,
+            trees: std::cell::RefCell::new(if shadow { vec![TREE_UNKNOWN; n] } else { Vec::new() }),
+            slots: Default::default(),
+        }
+    }
 }
 
 impl Cascade<'_> {
+    /// Árvore do nó: None = documento; Some(h) = sombra do hospedeiro h. Sobe
+    /// pelos pais até um nó já conhecido (a cascata desce da raiz: quase
+    /// sempre o pai) e anota o caminho.
+    fn tree(&self, n: NodeId) -> Option<NodeId> {
+        if !self.shadow {
+            return None;
+        }
+        let mut memo = self.trees.borrow_mut();
+        let mut cur = n;
+        let t = loop {
+            if memo[cur] != TREE_UNKNOWN {
+                break memo[cur];
+            }
+            match self.doc.node(cur).parent {
+                Some(p) => cur = p,
+                None => break self.doc.shadow_hosts.get(&cur).map_or(TREE_DOC, |&h| h as u32),
+            }
+        };
+        let mut cur = n;
+        while memo[cur] == TREE_UNKNOWN {
+            memo[cur] = t;
+            match self.doc.node(cur).parent {
+                Some(p) => cur = p,
+                None => break,
+            }
+        }
+        (t != TREE_DOC).then_some(t as NodeId)
+    }
+
+    /// Slots em que o elemento está posto, com o hospedeiro de cada um: o da
+    /// sombra do pai dele e, se esse slot foi posto em outro, o seguinte (cada
+    /// vez mais para dentro). Um `<slot>` não casa com ::slotted() (como no Chrome).
+    fn slot_chain(&self, node: NodeId) -> Vec<(NodeId, NodeId)> {
+        let mut out = Vec::new();
+        if self.doc.tag(node) == Some("slot") {
+            return out;
+        }
+        let mut cur = node;
+        while let Some(p) = self.doc.node(cur).parent
+            && let Some(&root) = self.doc.shadow_roots.get(&p)
+            && let Some(slot) = self.find_slot(root, cur)
+        {
+            out.push((slot, p));
+            cur = slot;
+        }
+        out
+    }
+
+    /// O slot da sombra `root` para este filho do hospedeiro (pelo atributo
+    /// `slot`; o primeiro com o nome, na ordem da árvore).
+    fn find_slot(&self, root: NodeId, child: NodeId) -> Option<NodeId> {
+        let name = self.doc.element(child).and_then(|e| e.attr("slot")).unwrap_or("");
+        let mut cache = self.slots.borrow_mut();
+        let list = cache.entry(root).or_insert_with(|| {
+            let mut v: Vec<(Box<str>, NodeId)> = Vec::new();
+            for d in self.doc.descendants(root) {
+                if let Some(e) = self.doc.element(d)
+                    && e.tag == "slot"
+                {
+                    let n = e.attr("name").unwrap_or("");
+                    if !v.iter().any(|(x, _)| &**x == n) {
+                        v.push((n.into(), d));
+                    }
+                }
+            }
+            v
+        });
+        list.iter().find(|(x, _)| &**x == name).map(|&(_, s)| s)
+    }
+
     fn own_bloom(&mut self, n: NodeId) -> Bloom {
         if let Some(b) = &self.own_bits[n] {
             return **b;
@@ -2092,7 +2346,7 @@ impl Cascade<'_> {
     /// ::placeholder de <input>/<textarea> com placeholder: a cor fica no
     /// estilo do próprio elemento.
     fn placeholder(&self, node: NodeId, st: &mut ComputedStyle) {
-        if self.index.pseudo.len == 0 || st.display == Display::None {
+        if self.index.pseudo_len == 0 || st.display == Display::None {
             return;
         }
         let Some(el) = self.doc.element(node) else { return };
@@ -2114,39 +2368,71 @@ impl Cascade<'_> {
         let el = self.doc.element(node).unwrap();
 
         // 1. coleta as declarações que casam
-        let buckets = if pseudo.is_some() { &self.index.pseudo } else { &self.index.normal };
+        let tree = self.tree(node);
+        let set = self.index.set_of(tree);
+        let buckets = if pseudo.is_some() { &set.pseudo } else { &set.normal };
         let mut candidates = self.scratch.take();
         buckets.candidates(el, &mut candidates);
         let anc = self.ancestor_bits[node].as_deref();
+        let slots = if self.shadow { self.slot_chain(node) } else { Vec::new() };
+        // Contexto (de qual árvore vem a regra): sombra do próprio elemento
+        // (:host) = 0 < slots, do mais de dentro para o mais de fora
+        // (::slotted) < a árvore do elemento < a de fora (::part). Nas
+        // declarações normais a árvore de fora ganha; nas !important, a de dentro.
+        let own_ctx = slots.len() as u8 + 1;
 
-        // (prioridade, especificidade, ordem) → declaração
-        type Key = (u8, (u32, u32, u32, u32), usize);
-        let mut matched: Vec<(Key, &Declaration)> = Vec::new();
+        let index = self.index;
+        let mut matched: Vec<(CascadeKey, &Declaration)> = Vec::new();
         for &ci in &candidates {
-            let e = &self.index.entries[ci as usize];
+            let e = &index.entries[ci as usize];
             // um ancestral exigido pelo seletor não existe: nem tenta casar
             if let Some(anc) = anc
                 && !e.ancestors.iter().all(|&h| bloom_has(anc, h))
             {
                 continue;
             }
-            let rule = self.index.rule(e);
+            let rule = index.rule(e);
             let selector = &rule.selectors[e.sel as usize];
             if selector.pseudo_element != pseudo || !css::matches(self.doc, node, selector) {
                 continue;
             }
-            let spec = (0, e.spec.0, e.spec.1, e.spec.2);
-            for d in &rule.declarations {
-                let prio = match (e.origin, d.important) {
-                    (Origin::UserAgent, false) => 0,
-                    (Origin::Author, false) => 1,
-                    (Origin::Author, true) => 2,
-                    (Origin::UserAgent, true) => 3,
-                };
-                matched.push(((prio, spec, e.order), d));
-            }
+            push_matched(&mut matched, e, rule, own_ctx);
         }
         self.scratch.replace(candidates);
+        if self.shadow {
+            // :host... da sombra do próprio elemento
+            if self.doc.shadow_roots.contains_key(&node) {
+                for &id in &index.set_of(Some(node)).host {
+                    let (e, rule) = index.entry(id);
+                    let sel = &rule.selectors[e.sel as usize];
+                    if sel.pseudo_element == pseudo && css::matches_host(self.doc, node, sel) {
+                        push_matched(&mut matched, e, rule, 0);
+                    }
+                }
+            }
+            // ::slotted() das sombras onde ele está posto
+            for (k, &(slot, host)) in slots.iter().enumerate() {
+                for &id in &index.set_of(Some(host)).slotted {
+                    let (e, rule) = index.entry(id);
+                    let sel = &rule.selectors[e.sel as usize];
+                    if sel.pseudo_element == pseudo && css::matches_slotted(self.doc, node, slot, sel) {
+                        push_matched(&mut matched, e, rule, (slots.len() - k) as u8);
+                    }
+                }
+            }
+            // ::part() da árvore do hospedeiro
+            if let Some(host) = tree
+                && el.attr("part").is_some()
+            {
+                for &id in &index.set_of(self.tree(host)).part {
+                    let (e, rule) = index.entry(id);
+                    let sel = &rule.selectors[e.sel as usize];
+                    if sel.pseudo_element == pseudo && css::matches_part(self.doc, node, host, sel) {
+                        push_matched(&mut matched, e, rule, own_ctx + 1);
+                    }
+                }
+            }
+        }
         if pseudo.is_some() && matched.is_empty() {
             return (ComputedStyle::inherit_from(parent), false);
         }
@@ -2156,8 +2442,9 @@ impl Cascade<'_> {
             Vec::new()
         };
         for d in &inline {
-            let prio = if d.important { 2 } else { 1 };
-            matched.push(((prio, (1, 0, 0, 0), usize::MAX), d));
+            // o atributo style é da árvore do elemento e ganha das regras dela
+            let (prio, ctx) = if d.important { (2, u8::MAX - own_ctx) } else { (1, own_ctx) };
+            matched.push(((prio, ctx, (1, 0, 0, 0), usize::MAX), d));
         }
         matched.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -3629,7 +3916,7 @@ mod tests {
              :root { --cor: #123456 } b { color: var(--cor) }",
             &media,
         );
-        let styles = compute(&doc, &[(Rc::new(sheet), Origin::Author)], &media);
+        let styles = compute(&doc, &[(Rc::new(sheet), Origin::Author, None)], &media);
         let p = doc.find_first("p").unwrap();
         let b = doc.find_first("b").unwrap();
         let sp = styles[p].as_ref().unwrap();
@@ -3637,6 +3924,76 @@ mod tests {
         assert_eq!(sp.font_size, 20.0);
         assert_eq!(sp.margin[RIGHT], Len::Px(40.0));
         assert_eq!(styles[b].as_ref().unwrap().color, Color::rgb(0x12, 0x34, 0x56));
+    }
+
+    #[test]
+    fn escopo_da_sombra() {
+        // <x-a class=c><span>luz</span></x-a> com sombra <p class=item><slot>
+        let mut doc = html::parse(r#"<p class="item">fora</p><x-a class="c"><span>luz</span></x-a>"#);
+        let host = doc.find_first("x-a").unwrap();
+        let (fora, span) = (doc.find_first("p").unwrap(), doc.find_first("span").unwrap());
+        let root = doc.attach_shadow(host);
+        let item = doc.create_element("p");
+        doc.set_attr(item, "class", "item");
+        doc.append(root, item);
+        let slot = doc.create_element("slot");
+        doc.append(item, slot);
+        let media = MediaContext { width: 800.0, height: 600.0 };
+        let page = css::parse_stylesheet(
+            ".item { color: red } x-a { margin-left: 5px; margin-top: 3px !important } span { color: green }",
+            &media,
+        );
+        let shadow = css::parse_stylesheet(
+            ":host(.c) { margin-left: 50px; margin-top: 7px !important; margin-right: 1px; display: block; --v: 9px } \
+             .item { color: blue; padding-left: var(--v) } x-a { margin-right: 2px } \
+             ::slotted(span) { color: purple; font-size: 30px }",
+            &media,
+        );
+        let sheets = [(Rc::new(page), Origin::Author, None), (Rc::new(shadow), Origin::Author, Some(host))];
+        let styles = compute(&doc, &sheets, &media);
+        let st = |n: NodeId| styles[n].clone().unwrap();
+        // regra do documento só no documento, regra da sombra só na sombra
+        assert_eq!(st(fora).color, Color::rgb(255, 0, 0));
+        assert_eq!(st(item).color, Color::rgb(0, 0, 255));
+        // :host: normal, a regra de fora ganha (mesmo menos específica); !important, a de dentro
+        let h = st(host);
+        assert_eq!((h.margin[LEFT], h.margin[TOP], h.margin[RIGHT]), (Len::Px(5.0), Len::Px(7.0), Len::Px(1.0)));
+        assert_eq!(h.display, Display::Block);
+        // variáveis do :host descem para a sombra
+        assert_eq!(st(item).padding[LEFT], Len::Px(9.0));
+        // ::slotted() perde para o documento, mas vale no que ele não diz
+        assert_eq!((st(span).color, st(span).font_size), (Color::rgb(0, 128, 0), 30.0));
+    }
+
+    #[test]
+    fn escopo_da_sombra_incremental() {
+        // a classe do hospedeiro e a de um ancestral dele mudam quem casa lá dentro
+        let mut doc = html::parse(r#"<div id="w"><x-a></x-a></div>"#);
+        let (w, host) = (doc.find_first("div").unwrap(), doc.find_first("x-a").unwrap());
+        let root = doc.attach_shadow(host);
+        let item = doc.create_element("p");
+        doc.set_attr(item, "class", "item");
+        doc.append(root, item);
+        let media = MediaContext { width: 800.0, height: 600.0 };
+        let shadow = css::parse_stylesheet(
+            ":host(.on) .item { margin-left: 3px } :host-context(.tema) .item { margin-top: 4px } :host(.on) { margin-right: 5px }",
+            &media,
+        );
+        let sheets = [(Rc::new(shadow), Origin::Author, Some(host))];
+        doc.changes.clear();
+        let first = compute(&doc, &sheets, &media);
+        assert_eq!(first[item].as_ref().unwrap().margin[LEFT], Len::Px(0.0));
+        doc.set_attr(host, "class", "on");
+        doc.set_attr(w, "class", "tema");
+        let changes = std::mem::take(&mut doc.changes);
+        let inc = compute_incremental(&doc, &sheets, &media, Some(&first), &changes);
+        let st = inc[item].clone().unwrap();
+        assert_eq!((st.margin[LEFT], st.margin[TOP]), (Len::Px(3.0), Len::Px(4.0)));
+        assert_eq!(inc[host].as_ref().unwrap().margin[RIGHT], Len::Px(5.0));
+        let full = compute(&doc, &sheets, &media);
+        for n in [w, host, item] {
+            assert_eq!(format!("{:?}", inc[n]), format!("{:?}", full[n]));
+        }
     }
 }
 
