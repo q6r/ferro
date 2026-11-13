@@ -35,9 +35,12 @@ pub enum PseudoElement {
 pub fn css_url(s: &str) -> Option<String> {
     let lower = s.to_ascii_lowercase();
     let start = lower.find("url(")? + 4;
-    let rest = &s[start..];
-    let end = rest.find(')')?;
-    let inner = rest[..end].trim().trim_matches(|c| c == '"' || c == '\'');
+    let body = s[start..].trim_start();
+    // entre aspas, a URL pode ter parênteses (`filters:max_age(3600)`)
+    let inner = match body.chars().next() {
+        Some(q @ ('"' | '\'')) => &body[1..1 + body[1..].find(q)?],
+        _ => body[..body.find(')')?].trim(),
+    };
     Some(inner.to_string())
 }
 
@@ -1243,6 +1246,16 @@ mod tests {
         assert!(!media_matches("(max-width: 600px)", &CTX));
         assert!(media_matches("(width >= 1000px)", &CTX));
         assert!(!media_matches("print", &CTX));
+    }
+
+    #[test]
+    fn url_com_parenteses() {
+        assert_eq!(
+            css_url(r#"url("https://x/a/filters:max_age(3600)/b.jpg")"#).as_deref(),
+            Some("https://x/a/filters:max_age(3600)/b.jpg")
+        );
+        assert_eq!(css_url("url( 'a b.png' ) no-repeat").as_deref(), Some("a b.png"));
+        assert_eq!(css_url("url(img/x.png) 0 0").as_deref(), Some("img/x.png"));
     }
 
     #[test]
