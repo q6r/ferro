@@ -928,20 +928,19 @@ fn supports_declaration(name: &str, value: &str) -> bool {
         return true;
     }
     // funções de valor que ainda não existem
-    const UNSUPPORTED_FUNCS: &[&str] = &[
-        "min(", "max(", "clamp(", "color-mix(", "env(", "lab(", "lch(", "oklab(", "oklch(", "attr(",
-        "anchor(", "round(",
-    ];
+    const UNSUPPORTED_FUNCS: &[&str] =
+        &["color-mix(", "env(", "lab(", "lch(", "oklab(", "oklch(", "attr(", "anchor(", "round("];
     if UNSUPPORTED_FUNCS.iter().any(|f| value.contains(f)) {
         return false;
     }
     match name.as_str() {
         "display" => matches!(
             value.split_whitespace().next().unwrap_or(""),
-            "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex" | "list-item" | "contents"
-                | "flow-root" | "table" | "table-row" | "table-cell"
+            "none" | "block" | "inline" | "inline-block" | "flex" | "inline-flex" | "grid" | "inline-grid"
+                | "list-item" | "contents" | "flow-root" | "table" | "inline-table" | "table-row" | "table-cell"
+                | "table-row-group" | "table-header-group" | "table-footer-group" | "table-caption"
         ),
-        "position" => matches!(value.as_str(), "static" | "relative" | "absolute" | "fixed"),
+        "position" => matches!(value.as_str(), "static" | "relative" | "absolute" | "fixed" | "sticky" | "-webkit-sticky"),
         _ => SUPPORTED_PROPERTIES.contains(&name.as_str()),
     }
 }
@@ -1090,7 +1089,8 @@ fn single_media_matches(q: &str, ctx: &MediaContext) -> bool {
         let ok = match cond {
             "" | "all" | "screen" => true,
             "print" | "speech" | "tv" | "projection" | "handheld" => false,
-            _ if cond.starts_with('(') => feature_matches(cond.trim_start_matches('(').trim_end_matches(')'), ctx),
+            // só o par de fora: `(max-width: calc(1120px - 1px))`
+            _ if cond.starts_with('(') && cond.ends_with(')') => feature_matches(&cond[1..cond.len() - 1], ctx),
             _ => false,
         };
         result &= ok;
@@ -1100,6 +1100,10 @@ fn single_media_matches(q: &str, ctx: &MediaContext) -> bool {
 
 fn media_length(v: &str) -> Option<f32> {
     let v = v.trim();
+    if v.contains('(') {
+        // calc(), min(), max(), clamp()
+        return crate::style::media_px(v, 0.0, 0.0);
+    }
     if let Some(n) = v.strip_suffix("px") {
         n.trim().parse().ok()
     } else if let Some(n) = v.strip_suffix("rem").or_else(|| v.strip_suffix("em")) {

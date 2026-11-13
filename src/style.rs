@@ -893,6 +893,17 @@ struct Units {
     vh: f32,
 }
 
+/// Comprimento de uma media query (`calc(1120px - 1px)`, `40em`): em e
+/// rem valem 16 px; vw/vh, a janela.
+pub(crate) fn media_px(v: &str, width: f32, height: f32) -> Option<f32> {
+    let u = Units { em: 16.0, rem: 16.0, vw: width, vh: height };
+    match parse_len(v, &u)? {
+        Len::Px(p) => Some(p),
+        Len::Calc(p, pct) if pct == 0.0 => Some(p),
+        _ => None,
+    }
+}
+
 fn parse_len(v: &str, u: &Units) -> Option<Len> {
     let v = v.trim().to_ascii_lowercase();
     if v == "auto" {
