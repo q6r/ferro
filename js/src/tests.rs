@@ -494,3 +494,35 @@ fn coletor_de_ciclos() {
         .unwrap();
     assert_eq!(out, "vivo 1 2 true true");
 }
+
+#[test]
+fn interrupcao_de_outra_thread() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let flag = Arc::new(AtomicBool::new(false));
+    let f2 = flag.clone();
+    let out = std::thread::Builder::new()
+        .stack_size(512 << 20)
+        .spawn(move || {
+            let mut e = Engine::new();
+            e.vm.interrupt = Some(f2.clone());
+            e.set_output(|_, _| {});
+            // laço sem fim, com catch e finally tentando segurar a parada
+            let r = e.eval(
+                "let n = 0; for (;;) { try { while (true) { n++; } } catch (x) { n = -1 } finally { n = -2 } }",
+                "loop.js",
+            );
+            let parou = matches!(&r, Err(Value::String(s)) if s.to_rust() == crate::vm::INTERRUPTED);
+            // recursão + microtarefas: também param
+            let r2 = e.eval("function f() { f(); f(); } Promise.resolve().then(function g() { Promise.resolve().then(g) }); f()", "rec.js");
+            let parou2 = r2.is_err() && e.vm.microtasks.is_empty();
+            // sem a bandeira, volta ao normal
+            f2.store(false, Ordering::Relaxed);
+            let ok = e.eval("let s = 0; for (let i = 0; i < 10; i++) { try { throw i } catch (x) { s += x } } s", "ok.js");
+            (parou, parou2, ok.ok().map(|v| matches!(v, Value::Number(n) if n == 45.0)))
+        })
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    flag.store(true, Ordering::Relaxed);
+    assert_eq!(out.join().unwrap(), (true, true, Some(true)));
+}

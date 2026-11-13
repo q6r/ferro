@@ -271,6 +271,12 @@ impl Vm {
             if guard > 50_000_000 {
                 break;
             }
+            // parada pedida (Worker.terminate): o resto da fila não roda
+            if self.interrupted() {
+                self.microtasks.clear();
+                self.pending_rejections.clear();
+                return;
+            }
             match job {
                 Job::Reaction(r, arg) => {
                     let res = if r.handler.is_undefined() {
@@ -307,6 +313,11 @@ impl Vm {
 
     /// Exceção que escapou de um callback (timer, microtarefa).
     pub fn report_uncaught(&mut self, e: &Value) {
+        if let Some(f) = self.on_uncaught
+            && f(self, e)
+        {
+            return;
+        }
         let text = format!("Uncaught {}", super::console::inspect(self, e, 2));
         (self.output)(Out::Error, &text);
     }
