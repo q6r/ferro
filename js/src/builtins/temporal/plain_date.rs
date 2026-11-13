@@ -208,7 +208,7 @@ fn difference(vm: &mut Vm, a: &CallArgs, since: bool, method: &str) -> Result<Va
         return super::create_duration(vm, [0.0; 10], None);
     }
     let mut r = InternalDur {
-        date: calendar::date_until(cal, &d, &other, s.largest),
+        date: calendar::date_until(vm, cal, &d, &other, s.largest),
         time: 0,
     };
     if !(s.smallest == Unit::Day && s.inc == 1) {

@@ -1,7 +1,9 @@
 //! Calendários: identificadores, registros de campos (PrepareCalendarFields,
-//! CalendarMergeFields) e a aritmética de datas do calendário ISO 8601.
+//! CalendarMergeFields) e a aritmética de datas. O ISO 8601 é calculado aqui;
+//! os outros (gregoriano, japonês, hebraico, chinês...) em `noniso`/`cals`.
 
 use super::iso::{self, IsoDate};
+use super::noniso;
 use super::parse;
 use super::zone::{self, Tz};
 use super::{TemporalData, range, sat, to_int_trunc, to_positive_int, type_err};
@@ -12,19 +14,77 @@ use crate::vm::{Hint, Vm};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cal {
     Iso,
+    Buddhist,
+    Chinese,
+    Coptic,
+    Dangi,
+    Ethioaa,
+    Ethiopic,
+    Gregory,
+    Hebrew,
+    Indian,
+    IslamicCivil,
+    IslamicTbla,
+    IslamicUmalqura,
+    Japanese,
+    Persian,
+    Roc,
 }
 
 impl Cal {
     pub fn id(self) -> &'static str {
         match self {
             Cal::Iso => "iso8601",
+            Cal::Buddhist => "buddhist",
+            Cal::Chinese => "chinese",
+            Cal::Coptic => "coptic",
+            Cal::Dangi => "dangi",
+            Cal::Ethioaa => "ethioaa",
+            Cal::Ethiopic => "ethiopic",
+            Cal::Gregory => "gregory",
+            Cal::Hebrew => "hebrew",
+            Cal::Indian => "indian",
+            Cal::IslamicCivil => "islamic-civil",
+            Cal::IslamicTbla => "islamic-tbla",
+            Cal::IslamicUmalqura => "islamic-umalqura",
+            Cal::Japanese => "japanese",
+            Cal::Persian => "persian",
+            Cal::Roc => "roc",
         }
+    }
+
+    /// Calendário com eras (campos era e eraYear).
+    pub fn has_eras(self) -> bool {
+        !matches!(self, Cal::Iso | Cal::Chinese | Cal::Dangi)
+    }
+
+    /// Lunissolar: meses intercalares, número de meses varia.
+    pub fn is_lunisolar(self) -> bool {
+        matches!(self, Cal::Hebrew | Cal::Chinese | Cal::Dangi)
     }
 }
 
 /// CanonicalizeCalendar (None: calendário desconhecido).
 pub fn canonicalize(id: &str) -> Option<Cal> {
-    id.eq_ignore_ascii_case("iso8601").then_some(Cal::Iso)
+    Some(match id.to_ascii_lowercase().as_str() {
+        "iso8601" => Cal::Iso,
+        "buddhist" => Cal::Buddhist,
+        "chinese" => Cal::Chinese,
+        "coptic" => Cal::Coptic,
+        "dangi" => Cal::Dangi,
+        "ethioaa" | "ethiopic-amete-alem" => Cal::Ethioaa,
+        "ethiopic" => Cal::Ethiopic,
+        "gregory" => Cal::Gregory,
+        "hebrew" => Cal::Hebrew,
+        "indian" => Cal::Indian,
+        "islamic-civil" | "islamicc" => Cal::IslamicCivil,
+        "islamic-tbla" => Cal::IslamicTbla,
+        "islamic-umalqura" => Cal::IslamicUmalqura,
+        "japanese" => Cal::Japanese,
+        "persian" => Cal::Persian,
+        "roc" => Cal::Roc,
+        _ => return None,
+    })
 }
 
 pub fn canonicalize_or_throw(vm: &mut Vm, id: &str) -> Result<Cal, Value> {
@@ -204,7 +264,9 @@ pub fn month_code(n: u8) -> String {
 }
 
 /// PrepareCalendarFields.
-pub fn prepare(vm: &mut Vm, _cal: Cal, bag: &Value, names: u16, required: Required) -> Result<Fields, Value> {
+pub fn prepare(vm: &mut Vm, cal: Cal, bag: &Value, names: u16, required: Required) -> Result<Fields, Value> {
+    // CalendarExtraFields: era e eraYear junto com year
+    let names = if cal.has_eras() && names & F_YEAR != 0 { names | F_ERA | F_ERA_YEAR } else { names };
     let mut f = Fields::default();
     let mut any = false;
     for (name, flag) in ORDER {
@@ -262,9 +324,22 @@ pub fn prepare(vm: &mut Vm, _cal: Cal, bag: &Value, names: u16, required: Requir
     Ok(f)
 }
 
-/// CalendarMergeFields (calendário ISO: month e monthCode se excluem).
-pub fn merge(_cal: Cal, fields: &Fields, add: &Fields) -> Fields {
+/// CalendarMergeFields (CalendarFieldKeysToIgnore: month e monthCode se
+/// excluem; nos calendários com eras, year, era e eraYear também).
+pub fn merge(cal: Cal, fields: &Fields, add: &Fields) -> Fields {
     let mut m = fields.clone();
+    if cal != Cal::Iso {
+        if add.era.is_some() || add.era_year.is_some() || add.year.is_some() {
+            m.era = None;
+            m.era_year = None;
+            m.year = None;
+        }
+        // eras que começam no meio do ano: mudar mês ou dia muda a era
+        if cal == Cal::Japanese && (add.month.is_some() || add.month_code.is_some() || add.day.is_some()) {
+            m.era = None;
+            m.era_year = None;
+        }
+    }
     macro_rules! take {
         ($($f:ident),*) => {$(
             if add.$f.is_some() {
@@ -281,16 +356,22 @@ pub fn merge(_cal: Cal, fields: &Fields, add: &Fields) -> Fields {
 }
 
 /// ISODateToFields.
-pub fn date_to_fields(_cal: Cal, d: &IsoDate, kind: FieldsKind) -> Fields {
+pub fn date_to_fields(cal: Cal, d: &IsoDate, kind: FieldsKind) -> Fields {
+    let (year, code, day) = if cal == Cal::Iso {
+        (d.year, month_code(d.month), d.day)
+    } else {
+        let c = noniso::cal_date(cal, d);
+        (c.year, c.code.string(), c.day)
+    };
     let mut f = Fields {
-        month_code: Some(month_code(d.month)),
+        month_code: Some(code),
         ..Default::default()
     };
     if kind != FieldsKind::YearMonth {
-        f.day = Some(d.day as f64);
+        f.day = Some(day as f64);
     }
     if kind != FieldsKind::MonthDay {
-        f.year = Some(d.year as f64);
+        f.year = Some(year as f64);
     }
     f
 }
@@ -336,9 +417,14 @@ fn regulate(vm: &mut Vm, y: f64, m: f64, d: f64, constrain: bool) -> Result<IsoD
 }
 
 /// CalendarDateFromFields.
-pub fn date_from_fields(vm: &mut Vm, _cal: Cal, mut f: Fields, constrain: bool) -> Result<IsoDate, Value> {
-    resolve(vm, &mut f, FieldsKind::Date)?;
-    let d = regulate(vm, f.year.unwrap_or(0.0), f.month.unwrap_or(1.0), f.day.unwrap_or(1.0), constrain)?;
+pub fn date_from_fields(vm: &mut Vm, cal: Cal, mut f: Fields, constrain: bool) -> Result<IsoDate, Value> {
+    let d = if cal == Cal::Iso {
+        resolve(vm, &mut f, FieldsKind::Date)?;
+        regulate(vm, f.year.unwrap_or(0.0), f.month.unwrap_or(1.0), f.day.unwrap_or(1.0), constrain)?
+    } else {
+        noniso::resolve_fields(vm, cal, &f, FieldsKind::Date)?;
+        noniso::to_iso(vm, cal, &f, constrain)?
+    };
     if !iso::date_within_limits(&d) {
         return range(vm, "Date is outside of supported range");
     }
@@ -346,10 +432,15 @@ pub fn date_from_fields(vm: &mut Vm, _cal: Cal, mut f: Fields, constrain: bool) 
 }
 
 /// CalendarYearMonthFromFields.
-pub fn year_month_from_fields(vm: &mut Vm, _cal: Cal, mut f: Fields, constrain: bool) -> Result<IsoDate, Value> {
+pub fn year_month_from_fields(vm: &mut Vm, cal: Cal, mut f: Fields, constrain: bool) -> Result<IsoDate, Value> {
     f.day = Some(1.0);
-    resolve(vm, &mut f, FieldsKind::YearMonth)?;
-    let d = regulate(vm, f.year.unwrap_or(0.0), f.month.unwrap_or(1.0), 1.0, constrain)?;
+    let d = if cal == Cal::Iso {
+        resolve(vm, &mut f, FieldsKind::YearMonth)?;
+        regulate(vm, f.year.unwrap_or(0.0), f.month.unwrap_or(1.0), 1.0, constrain)?
+    } else {
+        noniso::resolve_fields(vm, cal, &f, FieldsKind::YearMonth)?;
+        noniso::to_iso(vm, cal, &f, constrain)?
+    };
     if !iso::year_month_within_limits(d.year, d.month) {
         return range(vm, "Year and month are outside of supported range");
     }
@@ -357,7 +448,15 @@ pub fn year_month_from_fields(vm: &mut Vm, _cal: Cal, mut f: Fields, constrain: 
 }
 
 /// CalendarMonthDayFromFields.
-pub fn month_day_from_fields(vm: &mut Vm, _cal: Cal, mut f: Fields, constrain: bool) -> Result<IsoDate, Value> {
+pub fn month_day_from_fields(vm: &mut Vm, cal: Cal, mut f: Fields, constrain: bool) -> Result<IsoDate, Value> {
+    if cal != Cal::Iso {
+        noniso::resolve_fields(vm, cal, &f, FieldsKind::MonthDay)?;
+        let d = noniso::month_day(vm, cal, &f, constrain)?;
+        if !iso::date_within_limits(&d) {
+            return range(vm, "Date is outside of supported range");
+        }
+        return Ok(d);
+    }
     resolve(vm, &mut f, FieldsKind::MonthDay)?;
     let y = f.year.unwrap_or(1972.0);
     let d = regulate(vm, y, f.month.unwrap_or(1.0), f.day.unwrap_or(1.0), constrain)?;
@@ -387,7 +486,10 @@ impl DateDur {
 }
 
 /// CalendarDateAdd.
-pub fn date_add(vm: &mut Vm, _cal: Cal, d: &IsoDate, dur: &DateDur, constrain: bool) -> Result<IsoDate, Value> {
+pub fn date_add(vm: &mut Vm, cal: Cal, d: &IsoDate, dur: &DateDur, constrain: bool) -> Result<IsoDate, Value> {
+    if cal != Cal::Iso {
+        return noniso::date_add(vm, cal, d, dur, constrain);
+    }
     let (y, m) = iso::balance_year_month(d.year.saturating_add(dur.years), d.month as i64 + dur.months);
     let Some(mid) = iso::regulate_date(y, m as i64, d.day as i64, constrain) else {
         return range(vm, "Invalid date: day out of range for the month");
@@ -425,12 +527,15 @@ fn surpasses(sign: i64, base: &IsoDate, years: i64, months: i64, t: &IsoDate) ->
     surpasses_ymd(sign, y, m as i64, base.day as i64, t)
 }
 
-/// CalendarDateUntil (ISO).
-pub fn date_until(_cal: Cal, one: &IsoDate, two: &IsoDate, largest: super::round::Unit) -> DateDur {
+/// CalendarDateUntil.
+pub fn date_until(vm: &mut Vm, cal: Cal, one: &IsoDate, two: &IsoDate, largest: super::round::Unit) -> DateDur {
     use super::round::Unit;
     let sign = -(iso::cmp_date(one, two) as i64);
     if sign == 0 {
         return DateDur::default();
+    }
+    if cal != Cal::Iso {
+        return noniso::date_until(vm, cal, one, two, largest);
     }
     let (mut years, mut months) = (0i64, 0i64);
     if largest == Unit::Year || largest == Unit::Month {
@@ -494,7 +599,10 @@ pub enum DateField {
 }
 
 /// CalendarISOToDate, só o campo pedido.
-pub fn date_field(d: &IsoDate, _cal: Cal, f: DateField) -> Value {
+pub fn date_field(d: &IsoDate, cal: Cal, f: DateField) -> Value {
+    if cal != Cal::Iso {
+        return noniso::date_field(d, cal, f);
+    }
     let n = |x: i64| Value::Number(x as f64);
     match f {
         DateField::Era | DateField::EraYear => Value::Undefined,

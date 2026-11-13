@@ -319,7 +319,7 @@ pub fn diff_date_time(vm: &mut Vm, a: &DateTime, b: &DateTime, cal: Cal, largest
         time -= time_sign as i128 * NS_PER_DAY;
     }
     let date_largest = larger(Unit::Day, largest);
-    let mut dd = calendar::date_until(cal, &a.date, &adjusted, date_largest);
+    let mut dd = calendar::date_until(vm, cal, &a.date, &adjusted, date_largest);
     if largest != date_largest {
         time = check_time(vm, time + dd.days as i128 * NS_PER_DAY)?;
         dd.days = 0;
@@ -360,7 +360,7 @@ pub fn diff_zoned(vm: &mut Vm, ns1: i128, ns2: i128, tz: &Tz, cal: Cal, largest:
         correction += 1;
     }
     let date_largest = larger(Unit::Day, largest);
-    let dd = calendar::date_until(cal, &start.date, &mid.date, date_largest);
+    let dd = calendar::date_until(vm, cal, &start.date, &mid.date, date_largest);
     Ok(InternalDur { date: dd, time })
 }
 
@@ -415,7 +415,7 @@ fn nudge_window(
             let ym = adjust(vm, &dur.date, 0, Some(0), None)?;
             let weeks_start = calendar::date_add(vm, cal, &dt.date, &ym, true)?;
             let weeks_end = iso::add_days(weeks_start, dur.date.days);
-            let until = calendar::date_until(cal, &weeks_start, &weeks_end, Unit::Week);
+            let until = calendar::date_until(vm, cal, &weeks_start, &weeks_end, Unit::Week);
             let w = round_i128((dur.date.weeks + until.weeks) as i128, inc as i128, RoundingMode::Trunc);
             let r2 = w + step;
             let s = adjust(vm, &dur.date, 0, Some(w as i64), None)?;

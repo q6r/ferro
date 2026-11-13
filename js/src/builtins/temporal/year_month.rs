@@ -185,7 +185,7 @@ fn difference(vm: &mut Vm, a: &CallArgs, since: bool, method: &str) -> Result<Va
     };
     let this_date = first(vm, &d)?;
     let other_date = first(vm, &other)?;
-    let dd = calendar::date_until(cal, &this_date, &other_date, s.largest);
+    let dd = calendar::date_until(vm, cal, &this_date, &other_date, s.largest);
     let mut r = InternalDur {
         date: round::adjust(vm, &dd, 0, Some(0), None)?,
         time: 0,

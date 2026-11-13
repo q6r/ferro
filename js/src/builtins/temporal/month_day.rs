@@ -58,7 +58,16 @@ pub fn to_month_day(vm: &mut Vm, v: &Value, options: &Value) -> Result<(IsoDate,
     let cal = calendar::canonicalize_or_throw(vm, p.calendar.as_deref().unwrap_or("iso8601"))?;
     let o = options::get_options(vm, options)?;
     options::overflow(vm, &o)?;
-    Ok((IsoDate::new(1972, p.month, p.day), cal))
+    if cal == Cal::Iso {
+        return Ok((IsoDate::new(1972, p.month, p.day), cal));
+    }
+    // outro calendário: o mês e dia daquele calendário na data ISO dada
+    let d = IsoDate::new(p.year.unwrap_or(1972), p.month, p.day);
+    if !iso::date_within_limits(&d) {
+        return range(vm, format!("Date is outside of supported range: {s}"));
+    }
+    let f = calendar::date_to_fields(cal, &d, FieldsKind::MonthDay);
+    Ok((calendar::month_day_from_fields(vm, cal, f, true)?, cal))
 }
 
 fn ctor(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {

@@ -5,7 +5,9 @@
 //! (`Vm::zones`); sem ele, só UTC e deslocamentos fixos. Instantes em ns
 //! (i128), durações de tempo em ns (i128) e campos de Duration como Number.
 
+mod cal_data;
 pub mod calendar;
+mod cals;
 pub mod iso;
 pub mod parse;
 pub mod zone;
@@ -13,6 +15,7 @@ pub mod zone;
 mod duration;
 mod instant;
 mod month_day;
+mod noniso;
 mod now;
 mod options;
 mod plain_date;
