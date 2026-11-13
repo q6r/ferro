@@ -624,7 +624,68 @@ fn test(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
     Ok(Value::Bool(!matches!(regexp_exec(vm, &a.this, &s)?, Value::Null)))
 }
 
+/// O acessor `name` de `o` é o getter nativo `f` (o original)?
+fn native_getter(o: &ObjRef, name: &PropKey, f: NativeFn) -> bool {
+    match o.borrow().props.get(name) {
+        Some(Property {
+            slot: Slot::Accessor { get: Some(g), .. },
+            ..
+        }) => is_native(g, f),
+        _ => false,
+    }
+}
+
+/// A propriedade de dados `name` de `o` é a função nativa `f`? Devolve a função.
+fn native_value(o: &ObjRef, name: &PropKey, f: NativeFn) -> Option<ObjRef> {
+    match o.borrow().props.get(name) {
+        Some(Property {
+            slot: Slot::Data { value: Value::Object(v), .. },
+            ..
+        }) if is_native(v, f) => Some(v.clone()),
+        _ => None,
+    }
+}
+
+fn is_native(o: &ObjRef, f: NativeFn) -> bool {
+    matches!(&o.borrow().kind, Kind::Function(Func::Native(n)) if std::ptr::fn_addr_eq(n.f, f))
+}
+
+/// Um RegExp sem propriedades próprias além de `lastIndex`, com o
+/// RegExp.prototype e o RegExp intactos (constructor, Symbol.species, exec,
+/// Symbol.match, flags e os getters de cada flag): então SpeciesConstructor,
+/// Get("flags") e Construct não têm efeito observável e dá para pular direto.
+/// Devolve (source, flags) do próprio objeto.
+fn pristine_rx(vm: &Vm, r: &Value) -> Option<(JsStr, JsStr)> {
+    let Value::Object(o) = r else { return None };
+    let b = o.borrow();
+    let Kind::RegExp { source, flags, .. } = &b.kind else { return None };
+    if b.props.len() != 1 {
+        return None;
+    }
+    let p = b.proto.as_ref().filter(|p| p.ptr_eq(&vm.realm.regexp_proto))?;
+    thread_local! {
+        /// As chaves conferidas (sem alocar a cada chamada).
+        static CHAVES: [PropKey; 11] = ["constructor", "exec", "flags", "hasIndices", "global", "ignoreCase", "multiline", "dotAll", "unicode", "unicodeSets", "sticky"].map(PropKey::str);
+    }
+    let getters: [NativeFn; 9] = [self::flags, flag_d, flag_g, flag_i, flag_m, flag_s, flag_u, flag_v, flag_y];
+    let ok = CHAVES.with(|k| {
+        let Some(ctor) = native_value(p, &k[0], regexp_ctor) else { return false };
+        let exec_ok = matches!(p.borrow().props.get(&k[1]), Some(Property {
+            slot: Slot::Data { value: Value::Object(f), .. },
+            ..
+        }) if f.ptr_eq(&vm.realm.regexp_exec));
+        exec_ok
+            && native_value(p, &PropKey::Sym(vm.realm.sym_match.clone()), sym_match).is_some()
+            && getters.iter().zip(&k[2..]).all(|(&f, n)| native_getter(p, n, f))
+            && native_getter(&ctor, &PropKey::Sym(vm.realm.sym_species.clone()), super::array::return_this)
+    });
+    ok.then(|| (source.clone(), flags.clone()))
+}
+
 fn rx_flags(vm: &mut Vm, r: &Value) -> Result<String, Value> {
+    if let Some((_, f)) = pristine_rx(vm, r) {
+        return Ok(f.to_rust());
+    }
     let f = vm.get_str(r, "flags")?;
     vm.to_rust_string(&f)
 }
@@ -872,17 +933,23 @@ fn pristine(vm: &Vm, v: &Value) -> Option<Rc<Program>> {
     let Value::Object(o) = v else { return None };
     let b = o.borrow();
     let Kind::RegExp { prog, .. } = &b.kind else { return None };
-    if b.props.get(&PropKey::str("exec")).is_some() {
+    if b.props.len() != 1 || !b.proto.as_ref().is_some_and(|p| p.ptr_eq(&vm.realm.regexp_proto)) || !exec_original(vm) {
         return None;
     }
-    let proto = b.proto.as_ref().filter(|p| p.ptr_eq(&vm.realm.regexp_proto))?;
-    match proto.borrow().props.get(&PropKey::str("exec")) {
-        Some(Property {
+    Some(prog.clone())
+}
+
+/// O RegExp.prototype.exec ainda é o original?
+fn exec_original(vm: &Vm) -> bool {
+    thread_local! {
+        static EXEC: PropKey = PropKey::str("exec");
+    }
+    EXEC.with(|k| {
+        matches!(vm.realm.regexp_proto.borrow().props.get(k), Some(Property {
             slot: Slot::Data { value: Value::Object(f), .. },
             ..
-        }) if f.ptr_eq(&vm.realm.regexp_exec) => Some(prog.clone()),
-        _ => None,
-    }
+        }) if f.ptr_eq(&vm.realm.regexp_exec))
+    })
 }
 
 /// ToString(Get(rx, "flags")).
@@ -901,21 +968,46 @@ fn sym_split(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         return Err(vm.type_error("RegExp.prototype[Symbol.split] called on non-object"));
     };
     let s = vm.to_string(&a.arg(0))?;
-    let (c, default) = species_ctor(vm, a, ro)?;
-    let flags = get_flags(vm, &r)?;
-    let unicode = has_unit(&flags, 'u') || has_unit(&flags, 'v');
-    let mut nf = flags.units().to_vec();
-    if !has_unit(&flags, 'y') {
-        nf.push('y' as u16);
-    }
-    let splitter = vm.construct(&c, vec![r.clone(), Value::String(JsStr::from_units(nf))], &c)?;
+    // RegExp intacto: SpeciesConstructor, flags e Construct não têm efeito
+    // observável; o splitter (uma cópia com "y") só é criado se precisar
+    let intacto = pristine_rx(vm, &r).and_then(|(src, fl)| regexp_parts(&r).map(|(_, _, p)| (src, fl, p)));
+    let (mut splitter, unicode, default) = match &intacto {
+        Some((_, _, prog)) => (Value::Undefined, prog.flags.full_unicode(), true),
+        None => {
+            let (c, default) = species_ctor(vm, a, ro)?;
+            let flags = get_flags(vm, &r)?;
+            let unicode = has_unit(&flags, 'u') || has_unit(&flags, 'v');
+            let mut nf = flags.units().to_vec();
+            if !has_unit(&flags, 'y') {
+                nf.push('y' as u16);
+            }
+            let splitter = vm.construct(&c, vec![r.clone(), Value::String(JsStr::from_units(nf))], &c)?;
+            (splitter, unicode, default)
+        }
+    };
+    // o limite pode rodar código (valueOf) que troca o exec
     let lim = if a.arg(1).is_undefined() { u32::MAX } else { crate::conv::to_uint32(vm.to_number(&a.arg(1))?) };
     let mut out: Vec<Value> = Vec::new();
     if lim == 0 {
         return Ok(vm.array_value(out));
     }
     let size = s.len();
-    if let Some(prog) = pristine(vm, &splitter).filter(|_| default) {
+    let rapido = match intacto {
+        // o caminho rápido procura sem depender do "y": serve o próprio programa
+        Some((_, _, prog)) if exec_original(vm) => Some(prog),
+        Some((src, flags, _)) => {
+            let mut nf = flags.units().to_vec();
+            if !has_unit(&flags, 'y') {
+                nf.push('y' as u16);
+            }
+            let nf = JsStr::from_units(nf);
+            let prog = vm.compile_regex(&src, &nf)?;
+            splitter = Value::Object(alloc(vm.realm.regexp_proto.clone(), src, nf, prog));
+            None
+        }
+        None => pristine(vm, &splitter).filter(|_| default),
+    };
+    if let Some(prog) = rapido {
         // caminho rápido: procura as ocorrências direto
         if size == 0 {
             if prog.match_at(s.units(), 0).is_none() {
@@ -1003,9 +1095,19 @@ fn sym_match_all(vm: &mut Vm, a: &mut CallArgs) -> Result<Value, Value> {
         return Err(vm.type_error("RegExp.prototype[Symbol.matchAll] called on non-object"));
     };
     let s = vm.to_string(&a.arg(0))?;
-    let (c, _) = species_ctor(vm, a, ro)?;
-    let flags = get_flags(vm, &r)?;
-    let matcher = vm.construct(&c, vec![r.clone(), Value::String(flags.clone())], &c)?;
+    let (matcher, flags) = match pristine_rx(vm, &r) {
+        Some((src, flags)) => {
+            let prog = vm.compile_regex(&src, &flags)?;
+            let m = alloc(vm.realm.regexp_proto.clone(), src, flags.clone(), prog);
+            (Value::Object(m), flags)
+        }
+        None => {
+            let (c, _) = species_ctor(vm, a, ro)?;
+            let flags = get_flags(vm, &r)?;
+            let m = vm.construct(&c, vec![r.clone(), Value::String(flags.clone())], &c)?;
+            (m, flags)
+        }
+    };
     let li = {
         let v = vm.get_str(&r, "lastIndex")?;
         vm.to_integer(&v)?.clamp(0.0, 9007199254740991.0)
