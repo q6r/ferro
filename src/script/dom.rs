@@ -119,7 +119,11 @@ pub(crate) fn interface_of(h: &Host, n: NodeId) -> (&'static str, Option<ObjRef>
                 }
                 return ("DocumentFragment", None);
             }
-            if let Some(c) = h.custom.get(&e.tag)
+            // a classe do elemento personalizado só depois do upgrade (antes
+            // dele o elemento é um HTMLElement, como no Chrome: os setters da
+            // classe não podem rodar sem o construtor)
+            if h.upgraded.contains(&n)
+                && let Some(c) = h.custom.get(&e.tag)
                 && let Some(Value::Object(p)) = c.borrow().own(&ferro_js::value::PropKey::str("prototype")).map(|p| match p.slot {
                     ferro_js::value::Slot::Data { value, .. } => value,
                     _ => Value::Undefined,
@@ -185,7 +189,8 @@ fn iface_for_tag(tag: &str) -> &'static str {
         "abbr" | "address" | "article" | "aside" | "b" | "bdi" | "bdo" | "cite" | "code" | "dd" | "dfn" | "dt"
         | "em" | "figcaption" | "figure" | "footer" | "header" | "hgroup" | "i" | "kbd" | "main" | "mark" | "nav"
         | "noscript" | "rp" | "rt" | "ruby" | "s" | "samp" | "section" | "small" | "strong" | "sub" | "summary"
-        | "sup" | "u" | "var" | "wbr" | "center" | "nobr" | "details" => "HTMLElement",
+        | "sup" | "u" | "var" | "wbr" | "center" | "nobr" => "HTMLElement",
+        "details" => "HTMLDetailsElement",
         "font" => "HTMLFontElement",
         "fieldset" => "HTMLFieldSetElement",
         "legend" => "HTMLLegendElement",
@@ -222,7 +227,7 @@ const HTML_IFACES: &[&str] = &[
     "HTMLFieldSetElement", "HTMLLegendElement", "HTMLTableCaptionElement", "HTMLTableColElement",
     "HTMLEmbedElement", "HTMLObjectElement", "HTMLProgressElement", "HTMLSlotElement", "HTMLOutputElement",
     "HTMLTimeElement", "HTMLDataElement", "HTMLMeterElement", "HTMLMapElement", "HTMLTrackElement",
-    "HTMLQuoteElement", "HTMLModElement", "HTMLMenuElement",
+    "HTMLQuoteElement", "HTMLModElement", "HTMLMenuElement", "HTMLDetailsElement",
 ];
 
 // ---------------------------------------------------- efeitos das mutações

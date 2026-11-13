@@ -860,6 +860,31 @@ reflectAll(HTMLTableCellElement.prototype, [['colSpan', 'colspan', 'int', 1], ['
 reflectAll(HTMLProgressElement.prototype, [['max', 'max', 'int', 1], ['value', 'value', 'int', 0]]);
 reflectAll(HTMLMeterElement.prototype, ['value', 'min', 'max', 'low', 'high', 'optimum']);
 reflectAll(HTMLDialogElement.prototype, [['open', 'open', 'bool'], 'returnValue']);
+// <details>: open refletido; mudar o open dispara `toggle` (uma vez por
+// tarefa, com o estado antigo e o novo, como no Chrome)
+reflectAll(HTMLDetailsElement.prototype, ['name']);
+const DETAILS_PENDING = new WeakMap();
+function detailsToggled(el, wasOpen) {
+  if (DETAILS_PENDING.has(el)) return;
+  DETAILS_PENDING.set(el, wasOpen);
+  setTimeout(() => {
+    const old = DETAILS_PENDING.get(el);
+    DETAILS_PENDING.delete(el);
+    const now = el.hasAttribute('open');
+    if (old === now) return;
+    fireTrusted(el, new G.ToggleEvent('toggle', { oldState: old ? 'open' : 'closed', newState: now ? 'open' : 'closed' }));
+  }, 0);
+}
+Object.defineProperty(HTMLDetailsElement.prototype, 'open', {
+  configurable: true,
+  enumerable: true,
+  get() { return this.hasAttribute('open'); },
+  set(v) {
+    const was = this.hasAttribute('open');
+    if (v) this.setAttribute('open', ''); else this.removeAttribute('open');
+    if (was !== !!v) detailsToggled(this, was);
+  },
+});
 // ------------------------------------------------------------ popover
 // showPopover/hidePopover/togglePopover, :popover-open (o Rust desenha os
 // abertos por cima de tudo), fechar clicando fora ou com Esc (popover=auto)
@@ -2879,6 +2904,15 @@ Object.assign(hooks, {
       // botão com popovertarget: abre/fecha o popover
       const inv = target.closest && target.closest('button[popovertarget], input[popovertarget]');
       if (inv && popoverInvoke(inv)) return false;
+      // <summary> (o primeiro do <details>): abre/fecha o <details>
+      const sum = target.closest && target.closest('summary');
+      if (sum && sum.parentElement && sum.parentElement.localName === 'details'
+          && sum.parentElement.querySelector(':scope > summary') === sum
+          && !(target.closest('a[href], button, input, select, textarea') && target.closest('a[href], button, input, select, textarea') !== sum)) {
+        const d = sum.parentElement;
+        d.open = !d.open;
+        return false;
+      }
       // botão de envio dentro de formulário: submit
       const btn = target.closest && target.closest('button, input[type=submit], input[type=image]');
       if (btn && !btn.disabled && (btn.localName === 'input' || btn.type === 'submit')) {
