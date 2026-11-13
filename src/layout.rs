@@ -192,9 +192,35 @@ fn build(doc: &Document, styles: &Styles, node: NodeId) -> Vec<LayoutBox> {
             if REPLACED.contains(&el.tag.as_str()) {
                 if boxed {
                     // caixa posicionada/flutuante em volta do elemento
-                    // substituído; as margens ficam só nela
+                    // substituído. Margem, padding, borda, fundo, sombra,
+                    // transformação e limites de tamanho ficam só na de fora;
+                    // a de dentro ocupa a área de conteúdo dela
                     let mut inner = (*style).clone();
                     inner.margin = [Len::Px(0.0); 4];
+                    let pad = |l: Len| if let Len::Px(v) = l { v } else { 0.0 };
+                    let hx = pad(style.padding[LEFT]) + pad(style.padding[RIGHT]) + style.border(LEFT) + style.border(RIGHT);
+                    let vx = pad(style.padding[TOP]) + pad(style.padding[BOTTOM]) + style.border(TOP) + style.border(BOTTOM);
+                    inner.width = match style.width {
+                        Len::Px(w) => Len::Px(if style.border_box { (w - hx).max(0.0) } else { w }),
+                        Len::Auto => Len::Auto,
+                        _ => Len::Percent(100.0),
+                    };
+                    if let Len::Px(h) = style.height {
+                        inner.height = Len::Px(if style.border_box { (h - vx).max(0.0) } else { h });
+                    }
+                    inner.border_box = false;
+                    inner.padding = [Len::Px(0.0); 4];
+                    inner.border_width = [0.0; 4];
+                    inner.border_style = [false; 4];
+                    inner.background = Color::TRANSPARENT;
+                    inner.bg_image = None;
+                    inner.box_shadow = None;
+                    inner.transform = None;
+                    inner.opacity = 1.0;
+                    inner.min_width = Len::Auto;
+                    inner.max_width = Len::Auto;
+                    inner.min_height = Len::Auto;
+                    inner.max_height = Len::Auto;
                     let atomic = LayoutBox::new(BoxKind::Atomic(node), Rc::new(inner), Vec::new());
                     return vec![LayoutBox::new(BoxKind::Block(node), style, vec![atomic])];
                 }
