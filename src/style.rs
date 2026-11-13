@@ -482,6 +482,8 @@ pub struct ComputedStyle {
     pub height_kw: Option<SizeKw>,
     /// Cor do texto do placeholder (::placeholder) de <input>/<textarea>.
     pub placeholder_color: Option<Color>,
+    /// `clip-path: inset(topo direita baixo esquerda)` (as outras formas, não).
+    pub clip_inset: Option<[Len; 4]>,
 }
 
 thread_local! {
@@ -588,6 +590,7 @@ impl ComputedStyle {
             width_kw: None,
             height_kw: None,
             placeholder_color: None,
+            clip_inset: None,
             content_hidden: false,
             border_box: false,
             underline: false,
@@ -2709,6 +2712,28 @@ impl Cascade<'_> {
                     s.grid_columns = parse_tracks(cols, &u);
                 }
             }
+            "clip-path" | "-webkit-clip-path" => {
+                // inset(50%) e inset(100%): o truque do "visualmente escondido"
+                s.clipped = v.starts_with("inset(50%") || v.starts_with("inset(100%");
+                s.clip_inset = v
+                    .trim()
+                    .strip_prefix("inset(")
+                    .and_then(|r| r.strip_suffix(')'))
+                    .and_then(|inner| {
+                        // os cantos arredondados (round ...) ficam de fora
+                        let vals: Option<Vec<Len>> = split_values(inner.split(" round ").next().unwrap_or(""))
+                            .iter()
+                            .map(|t| parse_len(t, &u))
+                            .collect();
+                        Some(match vals?.as_slice() {
+                            [a] => [*a; 4],
+                            [a, b] => [*a, *b, *a, *b],
+                            [a, b, c] => [*a, *b, *c, *b],
+                            [a, b, c, d, ..] => [*a, *b, *c, *d],
+                            [] => return None,
+                        })
+                    });
+            }
             "grid-auto-rows" => s.grid_auto_rows = parse_tracks(v, &u).tracks,
             "grid-auto-columns" => s.grid_auto_cols = parse_tracks(v, &u).tracks,
             "grid-area" => {
@@ -2764,7 +2789,6 @@ impl Cascade<'_> {
                     }
                 }
             }
-            "clip-path" => s.clipped = v.starts_with("inset(50%") || v.starts_with("inset(100%"),
             "width" => {
                 if let Some(kw) = size_kw(v) {
                     s.width = Len::Auto;

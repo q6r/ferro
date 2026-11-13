@@ -1720,6 +1720,11 @@ impl<'a> Ctx<'a> {
         // Fundo, bordas e recorte entram antes do conteúdo; o tamanho final só
         // é conhecido depois, então reservamos as posições e preenchemos no fim.
         let mut deco = Deco::default();
+        // clip-path: inset(...) recorta tudo do elemento, inclusive a sombra
+        let clip_path_idx = (!anon && s.clip_inset.is_some()).then(|| {
+            self.items.push(DisplayItem::PushClip(Rect::default()));
+            self.items.len() - 1
+        });
         let canvas_bg = b.node().is_some() && b.node() == self.skip_bg && !b.generated;
         let masked = s.mask_image.is_some();
         let paint_bg = s.visible && !s.background.is_transparent() && !canvas_bg && !masked;
@@ -1950,6 +1955,19 @@ impl<'a> Ctx<'a> {
                 y: y + bm.border[TOP],
                 w: border_box.w - bm.border[LEFT] - bm.border[RIGHT],
                 h: border_box.h - bm.border[TOP] - bm.border[BOTTOM],
+            });
+            self.items.push(DisplayItem::PopClip);
+        }
+        if let (Some(i), Some(ins)) = (clip_path_idx, s.clip_inset) {
+            // valores negativos aumentam a área (o truque do fundo até a borda da janela)
+            let (bw, bh) = (border_box.w, border_box.h);
+            let r = |l: Len, base: f32| l.resolve(base).unwrap_or(0.0);
+            let (t, rt, bo, l) = (r(ins[0], bh), r(ins[1], bw), r(ins[2], bh), r(ins[3], bw));
+            self.items[i] = DisplayItem::PushClip(Rect {
+                x: border_box.x + l,
+                y: border_box.y + t,
+                w: (bw - l - rt).max(0.0),
+                h: (bh - t - bo).max(0.0),
             });
             self.items.push(DisplayItem::PopClip);
         }
