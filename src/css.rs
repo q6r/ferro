@@ -1303,10 +1303,13 @@ mod tests {
     #[test]
     fn supports() {
         assert!(supports_matches("(display: flex)"));
-        assert!(!supports_matches("(display: grid)"));
-        assert!(supports_matches("not (display: grid)"));
+        assert!(supports_matches("(display: grid)"));
+        assert!(!supports_matches("not (display: grid)"));
         assert!(supports_matches("(display: grid) or (display: flex)"));
-        assert!(!supports_matches("(display: flex) and (width: clamp(1px, 2vw, 3px))"));
+        assert!(supports_matches("(display: flex) and (width: clamp(1px, 2vw, 3px))"));
+        assert!(!supports_matches("(color: color-mix(in srgb, red, blue))"));
+        assert!(supports_matches("not (color: oklch(70% 0.1 200))"));
+        assert!(supports_matches("(position: sticky)"));
         assert!(supports_matches("selector(:is(a, b))"));
     }
 
