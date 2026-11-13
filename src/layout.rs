@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::dom::{Document, NodeData, NodeId};
 use crate::fonts::{FontId, Fonts};
-use crate::paint::{DisplayItem, ImageData};
+use crate::paint::{DisplayItem, ImageData, Radii};
 use crate::style::{
     Align, BOTTOM, BgImage, BgSize, Clear, Color, ComputedStyle, ContentPart, Display, FlexBasis, Float, GridLine,
     Justify, LEFT, Len, ListStyle, Position, RIGHT, SizeKw, Styles, TOP, TextAlign, TextTransform, Track, TrackSize, VAlign,
@@ -899,10 +899,9 @@ fn set_rect(it: &mut DisplayItem, top: Option<f32>, h: f32) {
 }
 
 /// Raio dos cantos, resolvido contra a caixa.
-fn radius_of(s: &ComputedStyle, r: Rect) -> f32 {
-    let m = r.w.min(r.h);
-    let m = m.max(0.0);
-    s.border_radius.resolve(m).unwrap_or(0.0).clamp(0.0, m / 2.0)
+fn radius_of(s: &ComputedStyle, r: Rect) -> Radii {
+    let m = r.w.min(r.h).max(0.0);
+    Radii(s.border_radius.map(|l| l.resolve(m).unwrap_or(0.0).max(0.0))).fit(r.w, r.h)
 }
 
 fn colspan(doc: &Document, b: &LayoutBox) -> usize {
@@ -1260,7 +1259,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn bg_item(&self, s: &ComputedStyle, r: Rect, radius: f32) -> Option<DisplayItem> {
+    fn bg_item(&self, s: &ComputedStyle, r: Rect, radius: Radii) -> Option<DisplayItem> {
         if let Some(mask) = &s.mask_image {
             let img = self.images.urls.get(&**mask)?;
             let tile = self.tile_rect(img, r, s.mask_size, s.mask_pos);
@@ -1352,7 +1351,7 @@ impl<'a> Ctx<'a> {
         let [bt, br, bb, bl] = b;
         let radius = radius_of(s, r);
         if !s.background.is_transparent() && s.mask_image.is_none() {
-            self.items.push(if radius > 0.0 {
+            self.items.push(if !radius.is_zero() {
                 DisplayItem::RoundRect {
                     rect: r,
                     radius,
@@ -1371,11 +1370,11 @@ impl<'a> Ctx<'a> {
             self.items.push(item);
         }
         if bt + bb + bl + br > 0.0 {
-            if radius > 0.0 {
+            if !radius.is_zero() {
                 self.items.push(DisplayItem::RoundBorder {
                     rect: r,
                     radius,
-                    width: bt.max(bb).max(bl).max(br),
+                    widths: [bt, br, bb, bl],
                     color: s.border_color(TOP),
                 });
             } else {
@@ -1639,7 +1638,7 @@ impl<'a> Ctx<'a> {
             let n = list.len().min(4);
             deco.shadow = Some((self.items.len(), n));
             for _ in 0..n {
-                self.items.push(DisplayItem::Shadow { rect: Rect::default(), radius: 0.0, blur: 0.0, color: Color::TRANSPARENT });
+                self.items.push(DisplayItem::Shadow { rect: Rect::default(), radius: Radii::ZERO, blur: 0.0, color: Color::TRANSPARENT });
             }
         }
         if paint_bg {
@@ -1663,7 +1662,7 @@ impl<'a> Ctx<'a> {
             });
         }
         let has_border = s.visible && bm.border.iter().any(|&w| w > 0.0);
-        deco.round_border = has_border && s.border_radius != Len::Px(0.0);
+        deco.round_border = has_border && s.border_radius.iter().any(|l| *l != Len::Px(0.0));
         if has_border {
             deco.border = Some(self.items.len());
             for _ in 0..if deco.round_border { 1 } else { 4 } {
@@ -1696,7 +1695,7 @@ impl<'a> Ctx<'a> {
         self.cb_heights.push(definite_h);
 
         let w = bm.content_w;
-        let (mut content_h, first_baseline) = match s.display {
+        let (mut content_h, mut first_baseline) = match s.display {
             _ if anon => {
                 if has_inflow_blocks(b) {
                     self.layout_block_children(b, content_x, content_y, w, &inh)
@@ -1743,6 +1742,17 @@ impl<'a> Ctx<'a> {
         if let Some(min) = fixed(s.min_height) {
             h = h.max(min);
         }
+        // <button> mais alto que o conteúdo: o conteúdo fica no meio (como no Chrome)
+        if h > content_h + 0.5
+            && !anon
+            && !s.display.is_flex()
+            && !s.display.is_grid()
+            && b.node().and_then(|n| self.doc.element(n)).is_some_and(|e| e.tag == "button")
+        {
+            let dy = (h - content_h) / 2.0;
+            self.shift_between(&content_mark, None, 0.0, dy);
+            first_baseline = first_baseline.map(|b| b + dy);
+        }
         let border_box = Rect {
             x: bx,
             y,
@@ -1763,7 +1773,8 @@ impl<'a> Ctx<'a> {
                             w: (border_box.w + 2.0 * sh.spread).max(0.0),
                             h: (border_box.h + 2.0 * sh.spread).max(0.0),
                         },
-                        radius: (radius + sh.spread).max(0.0),
+                        // o raio cresce com o espalhamento; canto reto continua reto
+                        radius: Radii(radius.0.map(|r| if r > 0.0 { (r + sh.spread).max(0.0) } else { 0.0 })),
                         blur: sh.blur,
                         color: sh.color,
                     };
@@ -1771,7 +1782,7 @@ impl<'a> Ctx<'a> {
             }
         }
         if let Some(i) = deco.bg {
-            self.items[i] = if radius > 0.0 {
+            self.items[i] = if !radius.is_zero() {
                 DisplayItem::RoundRect {
                     rect: border_box,
                     radius,
@@ -1795,7 +1806,7 @@ impl<'a> Ctx<'a> {
             self.items[i] = DisplayItem::RoundBorder {
                 rect: border_box,
                 radius,
-                width: bm.border.iter().copied().fold(0.0, f32::max),
+                widths: bm.border,
                 color: s.border_color(TOP),
             };
         } else if let Some(i) = deco.border {
@@ -2518,6 +2529,9 @@ impl<'a> Ctx<'a> {
 
             // layout de cada item na sua posição
             let mut placed: Vec<(Mark, BlockResult, f32)> = Vec::with_capacity(n);
+            // linha única com altura definida: o item esticado já sai com a
+            // altura da linha (um filho com height: 100% acompanha)
+            let line_h = if single_line { definite_h } else { None };
             for it in line.iter() {
                 let outer = it.outer();
                 let rel = if reverse { w - pos - outer } else { pos };
@@ -2527,8 +2541,23 @@ impl<'a> Ctx<'a> {
                     padding: it.padding,
                     content_w: it.size,
                 };
+                let mut opts = Opts::bfc();
+                if let Some(lh) = line_h {
+                    let st = &it.b.style;
+                    if st.align_self.unwrap_or(s.align_items) == Align::Stretch
+                        && st.height == Len::Auto
+                        && st.height_kw.is_none()
+                        && st.aspect_ratio.is_none()
+                        && st.margin[TOP] != Len::Auto
+                        && st.margin[BOTTOM] != Len::Auto
+                        && !matches!(it.b.kind, BoxKind::Anonymous)
+                    {
+                        let vx = it.border[TOP] + it.border[BOTTOM] + it.padding[TOP] + it.padding[BOTTOM];
+                        opts.forced_h = Some((lh - it.margin[TOP] - it.margin[BOTTOM] - vx).max(0.0));
+                    }
+                }
                 let m = self.mark();
-                let r = self.layout_block(it.b, &bm, x + rel, cur_y + it.margin[TOP], inh, Opts::bfc());
+                let r = self.layout_block(it.b, &bm, x + rel, cur_y + it.margin[TOP], inh, opts);
                 let outer_h = r.height + it.margin[TOP] + it.margin[BOTTOM];
                 placed.push((m, r, outer_h));
                 pos += outer + gap + between;
@@ -3330,7 +3359,7 @@ impl<'a> Ctx<'a> {
                     // fundo atrás (PNG transparente) e cantos arredondados (avatares)
                     let radius = radius_of(s, r);
                     if s.visible && !s.background.is_transparent() {
-                        self.items.push(if radius > 0.0 {
+                        self.items.push(if !radius.is_zero() {
                             DisplayItem::RoundRect { rect: r, radius, color: s.background }
                         } else {
                             DisplayItem::Rect { rect: r, color: s.background }
@@ -3390,8 +3419,8 @@ impl<'a> Ctx<'a> {
         if focused && matches!(paint, AtomicPaint::Control | AtomicPaint::TextArea) && b.iter().sum::<f32>() > 0.0 {
             let blue = Color::rgb(0x1a, 0x73, 0xe8);
             let radius = radius_of(s, r);
-            if radius > 0.0 {
-                self.items.push(DisplayItem::RoundBorder { rect: r, radius, width: 2.0, color: blue });
+            if !radius.is_zero() {
+                self.items.push(DisplayItem::RoundBorder { rect: r, radius, widths: [2.0; 4], color: blue });
             } else {
                 for rect in [
                     Rect { x: r.x, y: r.y, w: r.w, h: 2.0 },

@@ -452,7 +452,8 @@ pub struct ComputedStyle {
     pub grid_area: Option<String>,
     pub grid_col: (GridLine, GridLine),
     pub grid_row: (GridLine, GridLine),
-    pub border_radius: Len,
+    /// Raios: topo-esquerda, topo-direita, baixo-direita, baixo-esquerda.
+    pub border_radius: [Len; 4],
     pub bg_image: Option<BgImage>,
     pub bg_size: BgSize,
     pub bg_pos: (Len, Len),
@@ -616,7 +617,7 @@ impl ComputedStyle {
             grid_area: None,
             grid_col: (GridLine::Auto, GridLine::Auto),
             grid_row: (GridLine::Auto, GridLine::Auto),
-            border_radius: Len::Px(0.0),
+            border_radius: [Len::Px(0.0); 4],
             bg_image: None,
             bg_size: BgSize::Auto,
             bg_pos: (Len::Percent(0.0), Len::Percent(0.0)),
@@ -2335,11 +2336,32 @@ impl Cascade<'_> {
                     s.bg_repeat = r;
                 }
             }
-            "border-radius" | "border-top-left-radius" | "border-top-right-radius" | "border-bottom-left-radius"
-            | "border-bottom-right-radius" => {
-                let first = v.split('/').next().unwrap_or("").split_whitespace().next().unwrap_or("");
+            "border-radius" => {
+                // só os raios horizontais (antes da barra): cantos elípticos viram círculos
+                let vals: Option<Vec<Len>> =
+                    split_values(v.split('/').next().unwrap_or("")).iter().map(|t| len(t)).collect();
+                if let Some(vals) = vals {
+                    let r = match vals.as_slice() {
+                        [a] => [*a; 4],
+                        [a, b] => [*a, *b, *a, *b],
+                        [a, b, c] => [*a, *b, *c, *b],
+                        [a, b, c, d, ..] => [*a, *b, *c, *d],
+                        [] => return,
+                    };
+                    s.border_radius = r;
+                }
+            }
+            "border-top-left-radius" | "border-top-right-radius" | "border-bottom-right-radius"
+            | "border-bottom-left-radius" => {
+                let first = v.split_whitespace().next().unwrap_or("");
                 if let Some(l) = len(first) {
-                    s.border_radius = l;
+                    let i = match d.name.as_str() {
+                        "border-top-left-radius" => 0,
+                        "border-top-right-radius" => 1,
+                        "border-bottom-right-radius" => 2,
+                        _ => 3,
+                    };
+                    s.border_radius[i] = l;
                 }
             }
             "mask-image" | "-webkit-mask-image" => {

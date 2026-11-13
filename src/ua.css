@@ -80,7 +80,7 @@ legend { padding-left: 2px; padding-right: 2px; }
 summary { display: block; font-weight: bold; }
 details > :not(summary) { display: none; }
 details[open] > :not(summary) { display: block; }
-button { padding: 1px 6px; border: 1px solid #767676; background-color: #efefef; border-radius: 3px; color: black; }
+button { padding: 1px 6px; border: 1px solid #767676; background-color: #efefef; border-radius: 3px; color: black; text-align: center; }
 
 /* shadow DOM: o slot some, ficam os filhos atribuídos */
 slot { display: contents }

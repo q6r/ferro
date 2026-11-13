@@ -30,7 +30,7 @@ pub enum DisplayItem {
     },
     RoundRect {
         rect: Rect,
-        radius: f32,
+        radius: Radii,
         color: Color,
     },
     Text {
@@ -44,20 +44,20 @@ pub enum DisplayItem {
     Image {
         rect: Rect,
         image: Arc<ImageData>,
-        /// Raio dos cantos (border-radius; 0 = reto).
-        radius: f32,
+        /// Raios dos cantos (border-radius; zero = reto).
+        radius: Radii,
     },
-    /// Borda de largura única com cantos arredondados.
+    /// Borda com cantos arredondados; `widths` = topo, direita, baixo, esquerda.
     RoundBorder {
         rect: Rect,
-        radius: f32,
-        width: f32,
+        radius: Radii,
+        widths: [f32; 4],
         color: Color,
     },
     /// Gradiente linear (ângulo em graus, paradas de 0 a 1).
     Gradient {
         rect: Rect,
-        radius: f32,
+        radius: Radii,
         angle: f32,
         stops: Arc<Vec<(Color, f32)>>,
     },
@@ -92,7 +92,7 @@ pub enum DisplayItem {
     TransformStart { m: [f32; 6], origin: (f32, f32) },
     TransformEnd,
     /// Sombra (box-shadow): retângulo já deslocado e espalhado.
-    Shadow { rect: Rect, radius: f32, blur: f32, color: Color },
+    Shadow { rect: Rect, radius: Radii, blur: f32, color: Color },
     /// Área do elemento que recebe o mouse, na ordem de pintura. Só existe
     /// durante o layout (vira `Page::hits`); nunca chega à pintura.
     Hit { rect: Rect, node: usize },
@@ -163,6 +163,69 @@ fn rr_sdf(px: f32, py: f32, r: Rect, rad: f32) -> f32 {
     let qy = (py - (r.y + r.h / 2.0)).abs() - (r.h / 2.0 - rad);
     let (ox, oy) = (qx.max(0.0), qy.max(0.0));
     (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - rad
+}
+
+/// Raios dos cantos: topo-esquerda, topo-direita, baixo-direita, baixo-esquerda.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Radii(pub [f32; 4]);
+
+impl Radii {
+    pub const ZERO: Radii = Radii([0.0; 4]);
+
+    pub fn all(r: f32) -> Radii {
+        Radii([r; 4])
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.0.iter().all(|&r| r <= 0.0)
+    }
+
+    pub fn scale(self, k: f32) -> Radii {
+        Radii(self.0.map(|r| r * k))
+    }
+
+    /// Cada canto cresce `d` (sombras desfocadas, contornos).
+    pub fn grow(self, d: f32) -> Radii {
+        Radii(self.0.map(|r| (r + d).max(0.0)))
+    }
+
+    /// Os raios cabem no retângulo: se dois vizinhos somam mais que o lado,
+    /// todos diminuem na mesma proporção (como no CSS).
+    pub fn fit(self, w: f32, h: f32) -> Radii {
+        let [tl, tr, br, bl] = self.0.map(|r| r.max(0.0));
+        let mut f = 1.0f32;
+        for (sum, side) in [(tl + tr, w), (bl + br, w), (tl + bl, h), (tr + br, h)] {
+            if sum > side && sum > 0.0 {
+                f = f.min(side.max(0.0) / sum);
+            }
+        }
+        Radii([tl * f, tr * f, br * f, bl * f])
+    }
+
+    /// Raios da borda de dentro: cada canto menos a borda mais larga dos
+    /// dois lados que se encontram nele (`b` = topo, direita, baixo, esquerda).
+    pub fn inner(self, b: [f32; 4]) -> Radii {
+        let [t, r, bo, l] = b;
+        let [tl, tr, br, bl] = self.0;
+        Radii([(tl - t.max(l)).max(0.0), (tr - t.max(r)).max(0.0), (br - bo.max(r)).max(0.0), (bl - bo.max(l)).max(0.0)])
+    }
+
+    /// Raio do canto do quadrante onde fica o ponto.
+    fn at(&self, px: f32, py: f32, r: Rect) -> f32 {
+        let left = px < r.x + r.w / 2.0;
+        let top = py < r.y + r.h / 2.0;
+        match (top, left) {
+            (true, true) => self.0[0],
+            (true, false) => self.0[1],
+            (false, false) => self.0[2],
+            (false, true) => self.0[3],
+        }
+    }
+}
+
+/// Distância até a borda de um retângulo com um raio por canto.
+fn rr_sdf_radii(px: f32, py: f32, r: Rect, rad: &Radii) -> f32 {
+    rr_sdf(px, py, r, rad.at(px, py, r))
 }
 
 #[inline]
@@ -294,7 +357,7 @@ impl Canvas {
                 }
                 DisplayItem::TransformEnd => {}
                 DisplayItem::Shadow { rect, radius, blur, color } => {
-                    self.shadow_clip(t.rect(*rect), radius * t.scale, blur * t.scale, *color, clip)
+                    self.shadow_clip(t.rect(*rect), radius.scale(t.scale), blur * t.scale, *color, clip)
                 }
                 DisplayItem::FixedStart => {
                     fixed += 1;
@@ -308,7 +371,7 @@ impl Canvas {
                 }
                 DisplayItem::Rect { rect, color } => self.fill_clip(t.rect(*rect), *color, clip),
                 DisplayItem::RoundRect { rect, radius, color } => {
-                    self.round_rect_clip(t.rect(*rect), radius * t.scale, *color, None, clip)
+                    self.round_rect_radii(t.rect(*rect), radius.scale(t.scale), *color, None, clip)
                 }
                 DisplayItem::Text {
                     x,
@@ -326,26 +389,24 @@ impl Canvas {
                     self.text_clip(fonts, x * t.scale + t.dx, b, text, *font, s, *color, clip);
                 }
                 DisplayItem::Image { rect, image, radius } => {
-                    self.image_tinted(image, t.rect(*rect), clip, None, radius * t.scale)
+                    self.image_tinted(image, t.rect(*rect), clip, None, radius.scale(t.scale))
                 }
                 DisplayItem::RoundBorder {
                     rect,
                     radius,
-                    width,
+                    widths,
                     color,
-                } => self.round_rect_clip(
-                    t.rect(*rect),
-                    radius * t.scale,
-                    *color,
-                    Some((width * t.scale).max(1.0)),
-                    clip,
-                ),
+                } => {
+                    // bordas finas não somem ao reduzir
+                    let w = widths.map(|w| if w > 0.0 { (w * t.scale).max(1.0) } else { 0.0 });
+                    self.round_rect_radii(t.rect(*rect), radius.scale(t.scale), *color, Some(w), clip)
+                }
                 DisplayItem::Gradient {
                     rect,
                     radius,
                     angle,
                     stops,
-                } => self.gradient_clip(t.rect(*rect), radius * t.scale, *angle, stops, clip),
+                } => self.gradient_clip(t.rect(*rect), radius.scale(t.scale), *angle, stops, clip),
                 DisplayItem::BgImage {
                     rect,
                     image,
@@ -408,12 +469,12 @@ impl Canvas {
 
     /// Sombra desfocada: camadas de retângulos arredondados que vão
     /// crescendo, cada uma um pouco transparente (aproxima a gaussiana).
-    fn shadow_clip(&mut self, r: Rect, radius: f32, blur: f32, color: Color, clip: Clip) {
+    fn shadow_clip(&mut self, r: Rect, radius: Radii, blur: f32, color: Color, clip: Clip) {
         if color.a == 0 || r.w <= 0.0 || r.h <= 0.0 {
             return;
         }
         if blur < 1.0 {
-            self.round_rect_clip(r, radius, color, None, clip);
+            self.round_rect_radii(r, radius, color, None, clip);
             return;
         }
         let steps = ((blur / 2.0).ceil() as usize).clamp(3, 10);
@@ -428,7 +489,7 @@ impl Canvas {
             if rr.w <= 0.0 || rr.h <= 0.0 {
                 continue;
             }
-            self.round_rect_clip(rr, (radius + grow).max(0.0), c, None, clip);
+            self.round_rect_radii(rr, radius.grow(grow), c, None, clip);
         }
     }
 
@@ -792,36 +853,41 @@ impl Canvas {
     /// Retângulo arredondado com antialias via função de distância.
     /// `stroke = Some(w)` desenha só um contorno de largura `w`.
     fn round_rect_clip(&mut self, r: Rect, radius: f32, color: Color, stroke: Option<f32>, clip: Clip) {
+        self.round_rect_radii(r, Radii::all(radius), color, stroke.map(|w| [w; 4]), clip);
+    }
+
+    /// Como `round_rect_clip`, com um raio por canto e (no contorno) uma
+    /// largura por lado: topo, direita, baixo, esquerda.
+    fn round_rect_radii(&mut self, r: Rect, radius: Radii, color: Color, stroke: Option<[f32; 4]>, clip: Clip) {
         if color.a == 0 || r.w <= 0.0 || r.h <= 0.0 {
             return;
         }
-        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        let radius = radius.fit(r.w, r.h);
         let c = clip.intersect(Clip::from_rect(r));
         if c.is_empty() {
             return;
         }
-        let sdf = rr_sdf;
-        let inner = stroke.map(|w| {
+        let inner = stroke.map(|[t, rt, b, l]| {
             (
                 Rect {
-                    x: r.x + w,
-                    y: r.y + w,
-                    w: (r.w - 2.0 * w).max(0.0),
-                    h: (r.h - 2.0 * w).max(0.0),
+                    x: r.x + l,
+                    y: r.y + t,
+                    w: (r.w - l - rt).max(0.0),
+                    h: (r.h - t - b).max(0.0),
                 },
-                (radius - w).max(0.0),
+                radius.inner([t, rt, b, l]),
             )
         });
         for y in c.y0..c.y1 {
             let py = y as f32 + 0.5;
             for x in c.x0..c.x1 {
                 let px = x as f32 + 0.5;
-                let mut cov = (0.5 - sdf(px, py, r, radius)).clamp(0.0, 1.0);
-                if let Some((ir, irad)) = inner
+                let mut cov = (0.5 - rr_sdf_radii(px, py, r, &radius)).clamp(0.0, 1.0);
+                if let Some((ir, irad)) = &inner
                     && cov > 0.0
                 {
                     let inside = if ir.w > 0.0 && ir.h > 0.0 {
-                        (0.5 - sdf(px, py, ir, irad)).clamp(0.0, 1.0)
+                        (0.5 - rr_sdf_radii(px, py, *ir, irad)).clamp(0.0, 1.0)
                     } else {
                         0.0
                     };
@@ -906,7 +972,7 @@ impl Canvas {
         }
     }
 
-    fn gradient_clip(&mut self, r: Rect, radius: f32, angle: f32, stops: &[(Color, f32)], clip: Clip) {
+    fn gradient_clip(&mut self, r: Rect, radius: Radii, angle: f32, stops: &[(Color, f32)], clip: Clip) {
         let c = clip.intersect(Clip::from_rect(r));
         if c.is_empty() || stops.is_empty() {
             return;
@@ -930,13 +996,14 @@ impl Canvas {
         let (dx, dy) = (a.sin(), -a.cos());
         let len = (r.w * dx.abs() + r.h * dy.abs()).max(1.0);
         let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-        let radius = radius.clamp(0.0, r.w.min(r.h) / 2.0);
+        let radius = radius.fit(r.w, r.h);
+        let round = !radius.is_zero();
         for y in c.y0..c.y1 {
             let py = y as f32 + 0.5;
             for x in c.x0..c.x1 {
                 let px = x as f32 + 0.5;
-                let cov = if radius > 0.0 {
-                    (0.5 - rr_sdf(px, py, r, radius)).clamp(0.0, 1.0)
+                let cov = if round {
+                    (0.5 - rr_sdf_radii(px, py, r, &radius)).clamp(0.0, 1.0)
                 } else {
                     1.0
                 };
@@ -965,7 +1032,7 @@ impl Canvas {
         while y < area.y1 as f32 && count < 4000 {
             let mut x = x0;
             while x < area.x1 as f32 && count < 4000 {
-                self.image_tinted(img, Rect { x, y, w: tile.w, h: tile.h }, area, tint, 0.0);
+                self.image_tinted(img, Rect { x, y, w: tile.w, h: tile.h }, area, tint, Radii::ZERO);
                 count += 1;
                 if !repeat.0 {
                     break;
@@ -980,13 +1047,13 @@ impl Canvas {
     }
 
     fn image_clip(&mut self, img: &ImageData, r: Rect, clip: Clip) {
-        self.image_tinted(img, r, clip, None, 0.0);
+        self.image_tinted(img, r, clip, None, Radii::ZERO);
     }
 
     /// Imagem escalada: bilinear para ampliar, média de amostras para reduzir.
     /// Com `tint`, usa só o alfa da imagem e pinta com essa cor. Com `radius`,
     /// recorta os cantos arredondados (borda suave).
-    fn image_tinted(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>, radius: f32) {
+    fn image_tinted(&mut self, img: &ImageData, r: Rect, clip: Clip, tint: Option<Color>, radius: Radii) {
         if img.width == 0 || img.height == 0 || r.w < 0.5 || r.h < 0.5 {
             return;
         }
@@ -1009,12 +1076,13 @@ impl Canvas {
         // número de amostras por eixo ao reduzir
         let nx = sx.ceil().clamp(1.0, 4.0) as usize;
         let ny = sy.ceil().clamp(1.0, 4.0) as usize;
-        let radius = radius.min(r.w / 2.0).min(r.h / 2.0);
+        let radius = radius.fit(r.w, r.h);
+        let round = !radius.is_zero();
         for y in c.y0..c.y1 {
             for x in c.x0..c.x1 {
                 // cobertura do canto arredondado (1 no miolo)
-                let cov = if radius > 0.0 {
-                    (0.5 - rr_sdf(x as f32 + 0.5, y as f32 + 0.5, r, radius)).clamp(0.0, 1.0)
+                let cov = if round {
+                    (0.5 - rr_sdf_radii(x as f32 + 0.5, y as f32 + 0.5, r, &radius)).clamp(0.0, 1.0)
                 } else {
                     1.0
                 };
