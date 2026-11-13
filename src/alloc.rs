@@ -98,18 +98,35 @@ static SHARED: SpinShared = SpinShared {
     }),
 };
 
-fn with_shared<R>(f: impl FnOnce(&mut Shared) -> R) -> R {
+/// Roda `f` com o estoque global travado. Desiste (None) se a trava não vier
+/// depois de `tries` tentativas: no fim do processo o Windows mata as outras
+/// threads de uma vez, e uma delas pode ter morrido segurando a trava; quem
+/// esperasse por ela giraria para sempre.
+fn with_shared<R>(tries: u32, f: impl FnOnce(&mut Shared) -> R) -> Option<R> {
+    let mut n = 0u32;
     while SHARED
         .lock
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        std::hint::spin_loop();
+        n += 1;
+        if n >= tries {
+            return None;
+        }
+        if n % 64 == 0 {
+            std::thread::yield_now();
+        } else {
+            std::hint::spin_loop();
+        }
     }
     let r = f(unsafe { &mut *SHARED.data.get() });
     SHARED.lock.store(false, Ordering::Release);
-    r
+    Some(r)
 }
+
+/// Tentativas antes de desistir da trava (dá dezenas de milissegundos; em uso
+/// normal ela fica presa só por poucas instruções).
+const TRIES: u32 = 200_000;
 
 /// Ao fim da thread, devolve o que ela tinha ao estoque global.
 struct ExitGuard;
@@ -118,18 +135,28 @@ impl Drop for ExitGuard {
     fn drop(&mut self) {
         let _ = LOCAL.try_with(|l| unsafe {
             let l = &mut *l.get();
-            with_shared(|s| {
+            // o fim de cada lista é achado antes de travar (a lista é só desta
+            // thread): com a trava, só a emenda
+            let mut tails = [null_mut::<u8>(); NCLASS];
+            for c in 0..NCLASS {
+                let mut tail = l.free[c];
+                if tail.is_null() {
+                    continue;
+                }
+                while !(*(tail as *mut *mut u8)).is_null() {
+                    tail = *(tail as *mut *mut u8);
+                }
+                tails[c] = tail;
+            }
+            // sem a trava (processo terminando), a memória simplesmente fica
+            let _ = with_shared(TRIES, |s| {
                 for c in 0..NCLASS {
                     let head = l.free[c];
                     if head.is_null() {
                         continue;
                     }
                     // emenda a lista da thread no começo da global
-                    let mut tail = head;
-                    while !(*(tail as *mut *mut u8)).is_null() {
-                        tail = *(tail as *mut *mut u8);
-                    }
-                    *(tail as *mut *mut u8) = s.free[c];
+                    *(tails[c] as *mut *mut u8) = s.free[c];
                     s.free[c] = head;
                     l.free[c] = null_mut();
                 }
@@ -150,7 +177,7 @@ impl Alloc {
     #[cold]
     unsafe fn refill(l: &mut Local, c: usize, size: usize) -> *mut u8 {
         // primeiro, o estoque global
-        let got = with_shared(|s| {
+        let got = with_shared(TRIES, |s| {
             let head = s.free[c];
             if !head.is_null() {
                 s.free[c] = null_mut();
@@ -161,7 +188,8 @@ impl Alloc {
                 return (null_mut(), Some(s.spare[s.nspare]));
             }
             (null_mut(), None)
-        });
+        })
+        .unwrap_or((null_mut(), None));
         match got {
             (head, _) if !head.is_null() => {
                 l.free[c] = unsafe { *(head as *mut *mut u8) };
@@ -239,8 +267,9 @@ unsafe impl GlobalAlloc for Alloc {
             l.free[c] = ptr;
         });
         if ok.is_err() {
-            // sem lista local: vai para o estoque global
-            with_shared(|s| unsafe {
+            // sem lista local: vai para o estoque global (ou fica, se a trava
+            // não vier: só acontece com a thread terminando)
+            let _ = with_shared(TRIES, |s| unsafe {
                 *(ptr as *mut *mut u8) = s.free[c];
                 s.free[c] = ptr;
             });
