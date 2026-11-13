@@ -568,6 +568,9 @@ struct Layer {
     items: Vec<DisplayItem>,
     /// Dentro de um `position: fixed` (não rola com a página).
     fixed: bool,
+    /// Recorte (overflow dos ancestrais) ativo onde a camada estava no fluxo:
+    /// um relativo dentro de um `overflow: hidden` continua recortado.
+    clip: Option<Rect>,
 }
 
 /// Um float já posicionado (caixa de margem, coordenadas absolutas).
@@ -702,16 +705,25 @@ pub fn layout<'a>(
         l.items = split_layers(std::mem::take(&mut l.items), l.fixed, &mut extra);
     }
     layers.extend(extra);
-    layers.push(Layer { key: Box::new([(0, 0)]), items: flow, fixed: false });
+    layers.push(Layer { key: Box::new([(0, 0)]), items: flow, fixed: false, clip: None });
     layers.sort_by(|a, b| a.key.cmp(&b.key));
     let mut items = Vec::new();
     for l in layers.iter_mut() {
-        if l.fixed && !l.items.is_empty() {
+        if l.items.is_empty() {
+            continue;
+        }
+        if l.fixed {
             items.push(DisplayItem::FixedStart);
-            items.append(&mut l.items);
+        }
+        if let Some(c) = l.clip {
+            items.push(DisplayItem::PushClip(c));
+        }
+        items.append(&mut l.items);
+        if l.clip.is_some() {
+            items.push(DisplayItem::PopClip);
+        }
+        if l.fixed {
             items.push(DisplayItem::FixedEnd);
-        } else {
-            items.append(&mut l.items);
         }
     }
     let hits = extract_hits(&mut items);
@@ -771,27 +783,42 @@ fn split_layers(items: Vec<DisplayItem>, fixed: bool, out: &mut Vec<Layer>) -> V
             .filter(|it| !matches!(it, DisplayItem::LayerEnd))
             .collect();
     }
-    // pilha de trechos abertos: (chave, itens); a base é o resto
-    let mut stack: Vec<(Option<Box<[(i32, usize)]>>, Vec<DisplayItem>)> = vec![(None, Vec::new())];
+    // pilha de trechos abertos: (chave, recorte de onde começou, itens); a base é o resto
+    type Open = (Option<Box<[(i32, usize)]>>, Option<Rect>, Vec<DisplayItem>);
+    let mut stack: Vec<Open> = vec![(None, None, Vec::new())];
+    // recortes ativos, na ordem dos itens (de qualquer trecho)
+    let mut clips: Vec<Rect> = Vec::new();
     for it in items {
         match it {
-            DisplayItem::LayerStart { key } => stack.push((Some(key), Vec::new())),
+            DisplayItem::LayerStart { key } => stack.push((Some(key), clips.last().copied(), Vec::new())),
             DisplayItem::LayerEnd => {
                 if stack.len() > 1
-                    && let Some((Some(key), items)) = stack.pop()
+                    && let Some((Some(key), clip, items)) = stack.pop()
                 {
-                    out.push(Layer { key, items, fixed });
+                    out.push(Layer { key, items, fixed, clip });
                 }
             }
-            other => stack.last_mut().unwrap().1.push(other),
+            other => {
+                match &other {
+                    DisplayItem::PushClip(r) => {
+                        let r = clips.last().map_or(*r, |c| c.intersect(r));
+                        clips.push(r);
+                    }
+                    DisplayItem::PopClip => {
+                        clips.pop();
+                    }
+                    _ => {}
+                }
+                stack.last_mut().unwrap().2.push(other)
+            }
         }
     }
     while stack.len() > 1 {
-        if let Some((Some(key), items)) = stack.pop() {
-            out.push(Layer { key, items, fixed });
+        if let Some((Some(key), clip, items)) = stack.pop() {
+            out.push(Layer { key, items, fixed, clip });
         }
     }
-    stack.pop().map(|t| t.1).unwrap_or_default()
+    stack.pop().map(|t| t.2).unwrap_or_default()
 }
 
 struct Ctx<'a> {
@@ -1555,8 +1582,13 @@ impl<'a> Ctx<'a> {
         self.next_layer += 1;
         let mark = self.mark();
         let res = self.layout_block(b, &bm, x, top + bm.margin[TOP], inh, Opts::bfc());
+        // o float fica no fluxo marcado como camada: herda o recorte do
+        // overflow dos ancestrais, a transformação e a opacidade, e é
+        // deslocado junto com o que está em volta
         let items = self.items.split_off(mark.items);
-        self.layers.push(Layer { key: self.layer_key(None, order), items, fixed: self.in_fixed > 0 });
+        self.items.push(DisplayItem::LayerStart { key: self.layer_key(None, order) });
+        self.items.extend(items);
+        self.items.push(DisplayItem::LayerEnd);
         let f = FloatBox {
             rect: Rect {
                 x,
@@ -2284,6 +2316,7 @@ impl<'a> Ctx<'a> {
             key,
             items,
             fixed: is_fixed || self.in_fixed > 0,
+            clip: None,
         });
     }
 
