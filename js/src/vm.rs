@@ -963,7 +963,17 @@ impl Vm {
                     let key = self.to_property_key(&k)?;
                     if let Some(Value::Object(o)) = f.stack.last() {
                         let o = o.clone();
-                        self.define_data(&o, key, v);
+                        if crate::builtins::proxy::is_proxy(&o) {
+                            // campo de classe num Proxy (construtor que devolve outro
+                            // objeto): CreateDataPropertyOrThrow passa pelas armadilhas
+                            let d = crate::builtins::object::Descriptor::data(v, true);
+                            if !crate::builtins::object::define_own_property(self, &o, key.clone(), d)? {
+                                let k = crate::ops::key_display(&key);
+                                return Err(self.type_error(format!("Cannot define property {k}, object is not extensible")));
+                            }
+                        } else {
+                            self.define_data(&o, key, v);
+                        }
                     }
                 }
                 Op::DefinePropNamed => {
