@@ -3004,64 +3004,151 @@ impl<'a> Ctx<'a> {
             });
         }
 
-        // larguras das colunas
+        // larguras das colunas, como no Chrome (CSS Grid §12): cada trilha
+        // começa no mínimo (fixo, ou o min-content dos itens) com um teto
+        // (fixo, ou o max-content); a sobra vai por igual para as trilhas
+        // abaixo do teto, depois para as fr na proporção, e por fim estica
+        // as auto
         let avail = (w - cgap * (ncols - 1) as f32).max(0.0);
-        // mínimo de cada trilha (minmax(45%, max-content) nunca fica abaixo de 45%)
-        let min_w: Vec<f32> = tracks.iter().map(|t| track_fixed(t.min, w).unwrap_or(0.0).max(0.0)).collect();
-        let mut widths = min_w.clone();
+        let mut base = vec![0.0f32; ncols];
+        let mut limit = vec![f32::INFINITY; ncols];
         let mut fr = vec![0.0f32; ncols];
         for (i, t) in tracks.iter().enumerate() {
-            if let Some(v) = track_fixed(t.max, w) {
-                widths[i] = v.max(track_fixed(t.min, w).unwrap_or(0.0));
-            } else if let Track::Fr(f) = t.max {
-                fr[i] = f;
-                widths[i] = track_fixed(t.min, w).unwrap_or(0.0);
+            if let Some(v) = track_fixed(t.min, w) {
+                base[i] = v.max(0.0);
+            }
+            match t.max {
+                Track::Fr(f) => fr[i] = f.max(0.0),
+                m => {
+                    if let Some(v) = track_fixed(m, w) {
+                        limit[i] = v.max(0.0);
+                    }
+                }
             }
         }
-        // trilhas auto/min-content/max-content: pelo conteúdo dos itens
-        for i in 0..ncols {
+        // o mínimo automático de um item: o min-content, ou o min-width dele
+        // (min-width: 0 ou overflow escondido deixam a trilha encolher)
+        let auto_min = |st: &ComputedStyle, mn: f32| {
+            if st.min_width != Len::Auto || st.overflow_clip {
+                st.min_width.resolve(w).unwrap_or(0.0).max(0.0)
+            } else {
+                mn
+            }
+        };
+        for it in items.iter().filter(|it| it.cspan == 1) {
+            let i = it.col;
             let t = tracks[i];
-            let content_track = matches!(t.max, Track::Auto | Track::MinContent | Track::MaxContent);
-            let auto_min = matches!(t.min, Track::Auto | Track::MinContent) && fr[i] > 0.0;
-            if !content_track && !auto_min {
+            let st = &it.b.style;
+            let m = px(st.margin[LEFT]) + px(st.margin[RIGHT]);
+            let (mn, mx) = self.intrinsic(it.b);
+            let (mn, mx) = (mn + m, mx + m);
+            match t.min {
+                Track::Auto => base[i] = base[i].max(auto_min(st, mn)),
+                Track::MinContent => base[i] = base[i].max(mn),
+                Track::MaxContent => base[i] = base[i].max(mx),
+                _ => {}
+            }
+            if fr[i] == 0.0 {
+                let grow = match t.max {
+                    Track::Auto | Track::MaxContent => Some(mx),
+                    Track::MinContent => Some(mn),
+                    _ => None,
+                };
+                if let Some(g) = grow {
+                    limit[i] = if limit[i].is_infinite() { g } else { limit[i].max(g) };
+                }
+            }
+        }
+        // itens de várias colunas: o que faltar do min-content (e do
+        // max-content, no teto) vai por igual para as trilhas intrínsecas
+        for it in items.iter().filter(|it| it.cspan > 1) {
+            let span: Vec<usize> = (it.col..(it.col + it.cspan).min(ncols)).collect();
+            let flex: Vec<usize> =
+                span.iter().copied().filter(|&i| track_fixed(tracks[i].min, w).is_none() && fr[i] == 0.0).collect();
+            if flex.is_empty() {
                 continue;
             }
-            let mut need = 0.0f32;
-            for it in items.iter().filter(|it| it.col == i && it.cspan == 1) {
-                let (mn, mx) = self.intrinsic(it.b);
-                let m = px(it.b.style.margin[LEFT]) + px(it.b.style.margin[RIGHT]);
-                need = need.max(if t.max == Track::MinContent || auto_min { mn } else { mx } + m);
+            let st = &it.b.style;
+            let m = px(st.margin[LEFT]) + px(st.margin[RIGHT]);
+            let (mn, mx) = self.intrinsic(it.b);
+            let gaps = cgap * (span.len() - 1) as f32;
+            let have: f32 = span.iter().map(|&i| base[i]).sum::<f32>() + gaps;
+            let want = auto_min(st, mn) + m;
+            if want > have {
+                let each = (want - have) / flex.len() as f32;
+                for &i in &flex {
+                    base[i] += each;
+                }
             }
-            widths[i] = widths[i].max(need);
+            let lim: f32 = span.iter().map(|&i| if limit[i].is_infinite() { base[i] } else { limit[i] }).sum::<f32>() + gaps;
+            if mx + m > lim {
+                // primeiro as trilhas ainda sem teto (sem itens só delas)
+                let open: Vec<usize> = flex.iter().copied().filter(|&i| limit[i].is_infinite()).collect();
+                let to = if open.is_empty() { &flex } else { &open };
+                let each = (mx + m - lim) / to.len() as f32;
+                for &i in to {
+                    limit[i] = if limit[i].is_infinite() { base[i] + each } else { limit[i] + each };
+                }
+            }
         }
-        let used: f32 = widths.iter().sum();
-        let fr_total: f32 = fr.iter().sum();
-        if fr_total > 0.0 {
-            let fixed_used: f32 = (0..ncols).filter(|&i| fr[i] == 0.0).map(|i| widths[i]).sum();
-            let unit = ((avail - fixed_used) / fr_total).max(0.0);
-            for i in 0..ncols {
-                if fr[i] > 0.0 {
-                    widths[i] = widths[i].max(unit * fr[i]);
+        for i in 0..ncols {
+            // auto sem itens: o teto é o próprio mínimo; fr crescem depois
+            if limit[i].is_infinite() || limit[i] < base[i] || fr[i] > 0.0 {
+                limit[i] = base[i];
+            }
+        }
+        let mut widths = base.clone();
+        let mut free = avail - widths.iter().sum::<f32>();
+        // sobra: por igual para as trilhas abaixo do teto
+        for _ in 0..ncols + 1 {
+            if free <= 0.01 {
+                break;
+            }
+            let open: Vec<usize> = (0..ncols).filter(|&i| widths[i] < limit[i] - 0.01).collect();
+            if open.is_empty() {
+                break;
+            }
+            let each = free / open.len() as f32;
+            for &i in &open {
+                let g = each.min(limit[i] - widths[i]);
+                widths[i] += g;
+                free -= g;
+            }
+        }
+        if fr.iter().any(|&f| f > 0.0) {
+            // fr: o resto na proporção; uma fr cujo mínimo passa da parte dela
+            // fica no mínimo e sai da conta
+            let mut flexible: Vec<bool> = fr.iter().map(|&f| f > 0.0).collect();
+            for _ in 0..ncols + 1 {
+                let fixed_used: f32 = (0..ncols).filter(|&i| !flexible[i]).map(|i| widths[i]).sum();
+                let tot: f32 = (0..ncols).filter(|&i| flexible[i]).map(|i| fr[i]).sum();
+                if tot <= 0.0 {
+                    break;
+                }
+                // soma das fr abaixo de 1: só essa fração da sobra é usada
+                let unit = ((avail - fixed_used) / tot.max(1.0)).max(0.0);
+                let mut changed = false;
+                for i in 0..ncols {
+                    if flexible[i] && base[i] > unit * fr[i] {
+                        flexible[i] = false;
+                        widths[i] = base[i];
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    for i in 0..ncols {
+                        if flexible[i] {
+                            widths[i] = unit * fr[i];
+                        }
+                    }
+                    break;
                 }
             }
-        } else if used > avail {
-            // trilhas auto encolhem até o min-content
-            let auto_cols: Vec<usize> = (0..ncols).filter(|&i| track_fixed(tracks[i].max, w).is_none()).collect();
-            let over = used - avail;
-            // só encolhe o que está acima do mínimo da trilha
-            let room: f32 = auto_cols.iter().map(|&i| (widths[i] - min_w[i]).max(0.0)).sum();
-            if room > 0.0 {
-                let cut = over.min(room);
-                for &i in &auto_cols {
-                    let r = (widths[i] - min_w[i]).max(0.0);
-                    widths[i] -= cut * r / room;
-                }
-            }
-        } else if used < avail {
-            // sobra espaço: trilhas auto crescem por igual (justify-content: normal)
+        } else if free > 0.01 {
+            // sem fr: as trilhas auto esticam por igual (justify-content: normal)
             let auto_cols: Vec<usize> = (0..ncols).filter(|&i| tracks[i].max == Track::Auto).collect();
             if !auto_cols.is_empty() {
-                let each = (avail - used) / auto_cols.len() as f32;
+                let each = free / auto_cols.len() as f32;
                 for &i in &auto_cols {
                     widths[i] += each;
                 }
