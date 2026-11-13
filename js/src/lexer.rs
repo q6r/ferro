@@ -696,6 +696,9 @@ impl Lexer {
             self.pos += 1;
             match c {
                 '\\' => {
+                    if self.pos >= self.src.len() || is_line_term(self.peek()) {
+                        return Err(self.err("expressão regular sem fim"));
+                    }
                     pattern.push(c);
                     pattern.push(self.peek());
                     self.pos += 1;
@@ -712,6 +715,14 @@ impl Lexer {
         while is_id_part(self.peek()) {
             flags.push(self.peek());
             self.pos += 1;
+        }
+        // padrão inválido é erro de análise (early error), como no V8
+        let Some(f) = crate::regex::Flags::parse(&flags) else {
+            return Err(self.err("Invalid regular expression flags"));
+        };
+        let units: Vec<u16> = pattern.encode_utf16().collect();
+        if let Err(e) = crate::regex::validate(&units, f) {
+            return Err(self.err(format!("Invalid regular expression: /{pattern}/{flags}: {}", e.0)));
         }
         Ok(Tok::Regex {
             pattern: pattern.into(),
