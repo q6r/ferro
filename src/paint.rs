@@ -76,7 +76,9 @@ pub enum DisplayItem {
     /// Começo do conteúdo de um elemento posicionado (relative/sticky): o
     /// layout separa o trecho numa camada pintada na ordem da árvore.
     /// `z: None` = z-index auto. Nunca chegam à pintura.
-    LayerStart { z: Option<i32>, order: usize },
+    /// `key`: posição na ordem de pintura (caminho de contextos de
+    /// empilhamento, ver `layout::Layer`).
+    LayerStart { key: Box<[(i32, usize)]> },
     LayerEnd,
     /// Área de um `<video>`: o pintor põe ali o quadro atual (sem refazer o layout).
     Video { rect: Rect, node: usize },
