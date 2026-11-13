@@ -3335,11 +3335,14 @@ impl<'a> Ctx<'a> {
             return ((row_y[all_rows] - y - rgap).max(0.0), first_baseline);
         }
 
-        // linhas: altura pelo conteúdo, item a item
-        let nrows = items.iter().map(|it| it.row + 1).max().unwrap_or(0);
+        // linhas: altura pelo conteúdo, item a item; um item de várias linhas
+        // faz a última linha que ele ocupa crescer o que faltar
+        let nrows = all_rows;
         let mut row_y = y;
         let mut first_baseline = None;
         let mut k = 0;
+        // (última linha, topo onde foi montado, altura externa) dos itens de várias linhas
+        let mut spanning: Vec<(usize, f32, f32)> = Vec::new();
         for r in 0..nrows {
             let mut placed: Vec<(Mark, BlockResult, usize)> = Vec::new();
             while k < items.len() && items[k].row == r {
@@ -3354,8 +3357,15 @@ impl<'a> Ctx<'a> {
                 placed.push((m, res, k));
                 k += 1;
             }
-            let fixed_row = s.grid_rows.tracks.get(r).and_then(|t| track_fixed(t.max, w));
-            let row_h = placed
+            for p in &placed {
+                let it = &items[p.2];
+                if it.rspan > 1 {
+                    let outer = p.1.height + px(it.b.style.margin[TOP]) + px(it.b.style.margin[BOTTOM]);
+                    spanning.push((it.row + it.rspan - 1, row_y, outer));
+                }
+            }
+            let fixed_row = row_fixed(row_track(r).max).or_else(|| track_fixed(row_track(r).min, w));
+            let mut row_h = placed
                 .iter()
                 .filter(|p| items[p.2].rspan == 1)
                 .map(|p| {
@@ -3363,6 +3373,11 @@ impl<'a> Ctx<'a> {
                     p.1.height + px(it.b.style.margin[TOP]) + px(it.b.style.margin[BOTTOM])
                 })
                 .fold(fixed_row.unwrap_or(0.0), f32::max);
+            for &(last, top, outer) in &spanning {
+                if last == r {
+                    row_h = row_h.max(top + outer - row_y);
+                }
+            }
             for p in &placed {
                 let it = &items[p.2];
                 let align = it.b.style.align_self.unwrap_or(s.align_items);
