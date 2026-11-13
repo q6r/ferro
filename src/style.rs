@@ -1392,6 +1392,22 @@ struct Buckets {
     by_attr: FxMap<Box<str>, Vec<u32>>,
     universal: Vec<u32>,
     len: usize,
+    /// Há regras em mais de um balde (`:is(.a, .b)`): as candidatas
+    /// precisam tirar as repetidas.
+    multi: bool,
+}
+
+/// A chave (id, classe, tag ou atributo) da parte mais à direita de um seletor.
+fn bucket_key(c: &css::Compound) -> Option<(u8, String)> {
+    if let Some(id) = &c.id {
+        Some((0, id.clone()))
+    } else if let Some(class) = c.classes.first() {
+        Some((1, class.clone()))
+    } else if let Some(tag) = &c.tag {
+        Some((2, tag.clone()))
+    } else {
+        c.attrs.first().map(|a| (3, a.name.to_ascii_lowercase()))
+    }
 }
 
 impl Buckets {
@@ -1407,6 +1423,29 @@ impl Buckets {
             self.by_attr.entry(a.name.to_ascii_lowercase().into()).or_default().push(entry);
         } else if last.pseudos.iter().any(|p| matches!(p, css::Pseudo::Root)) {
             self.by_tag.entry("html".into()).or_default().push(entry);
+        } else if let Some(keys) = last.pseudos.iter().find_map(|p| match p {
+            // :is(.a, .b) / :where(...) com chave em todos os argumentos: a
+            // regra vai para o balde de cada um, não para o universal
+            css::Pseudo::Is(list) | css::Pseudo::Where(list) if !list.is_empty() => {
+                list.iter().map(|sel| sel.compounds.last().and_then(bucket_key)).collect::<Option<Vec<_>>>()
+            }
+            _ => None,
+        }) {
+            let mut keys = keys;
+            keys.sort();
+            keys.dedup();
+            if keys.len() > 1 {
+                self.multi = true;
+            }
+            for (kind, k) in keys {
+                let map = match kind {
+                    0 => &mut self.by_id,
+                    1 => &mut self.by_class,
+                    2 => &mut self.by_tag,
+                    _ => &mut self.by_attr,
+                };
+                map.entry(k.into()).or_default().push(entry);
+            }
         } else {
             self.universal.push(entry);
         }
@@ -1439,6 +1478,10 @@ impl Buckets {
             }
         }
         out.extend(&self.universal);
+        if self.multi {
+            out.sort_unstable();
+            out.dedup();
+        }
     }
 }
 
@@ -2620,14 +2663,19 @@ impl Cascade<'_> {
 
         // 2. aplica, começando pelas propriedades customizadas (--x)
         let mut style = ComputedStyle::inherit_from(parent);
-        let mut own: Option<ferro_js::fxhash::FxHashMap<Rc<str>, Rc<str>>> = None;
-        for (_, d) in &matched {
-            if d.name.starts_with("--") {
-                own.get_or_insert_with(Default::default)
-                    .insert(Rc::from(d.name.as_str()), Rc::from(d.value.as_str()));
+        // variáveis que só repetem o valor herdado (regras em `*` declaram as
+        // mesmas em todo elemento): o mapa do pai serve, sem alocar outro
+        let differs = matched
+            .iter()
+            .filter(|(_, d)| d.name.starts_with("--"))
+            .any(|(_, d)| parent.custom.get(&d.name).is_none_or(|v| **v != *d.value));
+        if differs {
+            let mut own: ferro_js::fxhash::FxHashMap<Rc<str>, Rc<str>> = Default::default();
+            for (_, d) in &matched {
+                if d.name.starts_with("--") {
+                    own.insert(Rc::from(d.name.as_str()), Rc::from(d.value.as_str()));
+                }
             }
-        }
-        if let Some(own) = own {
             style.custom = CustomVars::child(&parent.custom, own);
         }
 
